@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHmac, createHash } from "node:crypto";
 import { promisify } from "node:util";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../../infrastructure/config.js";
 import { query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
@@ -321,6 +321,29 @@ export async function writeAudit(adminUserId: string | null, action: string, res
      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
     [adminUserId, action, resourceType, resourceId, JSON.stringify(oldValue), JSON.stringify(newValue)]
   );
+}
+
+export async function enforceSessionRevocation(request: FastifyRequest, reply: FastifyReply) {
+  if (request.url.startsWith("/api/auth/logout")) return;
+  const token = tokenFromRequest(request);
+  if (!token) return;
+  if (isTokenRevoked(token)) {
+    return reply.code(401).send({ message: "Session has been revoked." });
+  }
+  const tokenDigest = tokenHash(token);
+  const { rows } = await query(
+    `SELECT revoked_at, expires_at
+     FROM admin_sessions
+     WHERE token_hash = $1
+     LIMIT 1`,
+    [tokenDigest]
+  ).catch(() => ({ rows: [] as any[] }));
+  const session = rows[0];
+  if (!session) return;
+  if (session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
+    revokeToken(token);
+    return reply.code(401).send({ message: "Session has expired or been revoked." });
+  }
 }
 
 async function ensureDefaultAdmin() {

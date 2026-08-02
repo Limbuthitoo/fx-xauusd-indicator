@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
+import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -233,7 +234,7 @@ export default function App() {
 
   async function restoreSession() {
     const [savedToken, savedApi, savedPushToken, savedPushSyncedAt] = await Promise.all([
-      AsyncStorage.getItem(TOKEN_KEY),
+      readSecureToken(),
       AsyncStorage.getItem(API_URL_KEY),
       AsyncStorage.getItem(PUSH_TOKEN_KEY),
       AsyncStorage.getItem(PUSH_SYNC_KEY)
@@ -257,7 +258,7 @@ export default function App() {
     if (!response.ok) throw new Error("Invalid tenant login.");
     const payload = await response.json() as { token: string };
     await Promise.all([
-      AsyncStorage.setItem(TOKEN_KEY, payload.token),
+      writeSecureToken(payload.token),
       AsyncStorage.setItem(API_URL_KEY, apiBaseUrl)
     ]);
     setToken(payload.token);
@@ -267,7 +268,14 @@ export default function App() {
   }
 
   async function logout() {
-    await AsyncStorage.removeItem(TOKEN_KEY);
+    if (token) {
+      fetch(`${apiBaseUrl}/api/auth/logout`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({})
+      }).catch(() => undefined);
+    }
+    await clearSecureToken();
     setToken(null);
     setDashboard(null);
     setChart(null);
@@ -548,6 +556,32 @@ export default function App() {
       </View>
     </SafeAreaView>
   );
+}
+
+async function readSecureToken() {
+  const secureToken = await SecureStore.getItemAsync(TOKEN_KEY);
+  if (secureToken) return secureToken;
+  const legacyToken = await AsyncStorage.getItem(TOKEN_KEY);
+  if (!legacyToken) return null;
+  await SecureStore.setItemAsync(TOKEN_KEY, legacyToken, {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY
+  });
+  await AsyncStorage.removeItem(TOKEN_KEY);
+  return legacyToken;
+}
+
+async function writeSecureToken(token: string) {
+  await SecureStore.setItemAsync(TOKEN_KEY, token, {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY
+  });
+  await AsyncStorage.removeItem(TOKEN_KEY);
+}
+
+async function clearSecureToken() {
+  await Promise.all([
+    SecureStore.deleteItemAsync(TOKEN_KEY),
+    AsyncStorage.removeItem(TOKEN_KEY)
+  ]);
 }
 
 function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {

@@ -7,7 +7,7 @@ import { config } from "./infrastructure/config.js";
 import { cleanupOperationalEvents, recordOperationalEvent } from "./infrastructure/observability/operational-events.js";
 import { adminRoutes } from "./modules/admin/routes.js";
 import { analyticsRoutes } from "./modules/analytics/routes.js";
-import { authRoutes } from "./modules/auth/routes.js";
+import { authRoutes, enforceSessionRevocation } from "./modules/auth/routes.js";
 import { backtestRoutes } from "./modules/backtests/routes.js";
 import { candleRoutes } from "./modules/candles/routes.js";
 import { dashboardRoutes } from "./modules/dashboard/routes.js";
@@ -70,6 +70,7 @@ await app.register(cors, {
   }
 });
 await app.register(websocket);
+app.addHook("preHandler", enforceSessionRevocation);
 await app.register(authRoutes);
 await app.register(adminRoutes);
 await app.register(liveStreamRoutes);
