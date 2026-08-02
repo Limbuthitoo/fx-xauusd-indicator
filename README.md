@@ -199,6 +199,20 @@ FIREBASE_PRIVATE_KEY=...
 
 Also set a strong `ADMIN_PASSWORD` with uppercase, lowercase, number, and symbol.
 
+Password-only helper:
+
+```bash
+npm run password:admin
+```
+
+This generates a strong admin password, updates `ADMIN_PASSWORD` in `.env.production`, and prints the matching backend `scrypt` hash. For an already deployed admin, also create a SQL sync file:
+
+```bash
+npm run password:admin -- --sql-file /tmp/admin-password-sync.sql
+```
+
+Run the SQL against production PostgreSQL to update `admin_users.password_hash` and revoke old admin sessions.
+
 Do not commit `.env`, `.env.production`, Firebase service-account JSON files, or database backups.
 
 ## Mobile APK
@@ -249,6 +263,12 @@ FIREBASE_PROJECT_ID=...
 FIREBASE_CLIENT_EMAIL=...
 FIREBASE_PRIVATE_KEY=...
 ADMIN_PASSWORD=strong-password-with-symbol
+```
+
+Or generate and sync only the admin password automatically:
+
+```bash
+npm run password:admin
 ```
 
 Then run:

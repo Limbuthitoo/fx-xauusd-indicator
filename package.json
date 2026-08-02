@@ -27,6 +27,7 @@
     "db:backup:retention": "bash scripts/db-backup-retention.sh",
     "deploy:verify": "node scripts/deploy-verify.mjs",
     "deploy:vps-preflight": "node scripts/vps-preflight.mjs",
+    "password:admin": "python3 scripts/admin_password_helper.py",
     "release:local-readiness": "node scripts/local-production-readiness.mjs .env.production",
     "release:validate-production": "node scripts/validate-production-env.mjs .env.production",
     "qa:final": "node scripts/final-production-qa.mjs",
