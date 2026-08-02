@@ -232,18 +232,190 @@ Primary deployment target:
 
 `https://fx.bijaysubbalimbu.com.np`
 
-Recommended production path:
+### 1. Finish Local Production Secrets
 
-1. Fill `.env.production`
-2. Run local validation
-3. Create VPS
-4. Point Cloudflare `fx` A record to the VPS
-5. Install Docker, Nginx, Certbot
-6. Clone repo on VPS
-7. Run migrations
-8. Start Docker production stack
-9. Enable HTTPS
-10. Run deployment verification
+Create or update `.env.production`:
+
+```bash
+cp .env.production.example .env.production
+```
+
+Fill the real values:
+
+```env
+TWELVE_DATA_API_KEY=...
+EXPO_PUBLIC_EAS_PROJECT_ID=...
+FIREBASE_PROJECT_ID=...
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY=...
+ADMIN_PASSWORD=strong-password-with-symbol
+```
+
+Then run:
+
+```bash
+npm run release:validate-production
+npm run release:local-readiness
+npm run qa:final
+```
+
+### 2. Prepare VPS
+
+Recommended VPS:
+
+- Ubuntu 22.04 or 24.04
+- 2 CPU / 4 GB RAM minimum
+- SSH key login
+- Firewall allowing only `22`, `80`, and `443`
+
+Install required packages on the VPS:
+
+```bash
+sudo apt update
+sudo apt install -y git nginx certbot python3-certbot-nginx ca-certificates curl
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+```
+
+Log out and back in after adding the Docker group.
+
+### 3. Clone Project On VPS
+
+```bash
+sudo mkdir -p /opt/xauusd-signal
+sudo chown -R $USER:$USER /opt/xauusd-signal
+cd /opt/xauusd-signal
+git clone https://github.com/Limbuthitoo/fx-xauusd-indicator.git .
+```
+
+Create the production env on the VPS:
+
+```bash
+nano .env.production
+```
+
+Do not commit this file.
+
+### 4. Cloudflare DNS
+
+In Cloudflare DNS:
+
+- Type: `A`
+- Name: `fx`
+- Value: VPS public IP
+- Proxy status: Proxied
+- TTL: Auto
+
+Recommended Cloudflare settings:
+
+- SSL/TLS: Full strict after Certbot succeeds
+- WebSockets: On
+- Always Use HTTPS: On after HTTPS works
+- Cache bypass for `/api/*`
+
+### 5. Validate On VPS
+
+```bash
+npm ci
+npm run release:validate-production
+npm run deploy:vps-preflight
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod config --quiet
+```
+
+### 6. Build And Start Docker Stack
+
+```bash
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod build
+```
+
+Run migrations:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod-tools run --rm migrate
+```
+
+Start the production services:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d postgres redis api worker web
+```
+
+Check containers:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod ps
+```
+
+### 7. Configure Nginx
+
+```bash
+sudo cp nginx/cloudflare-real-ip.conf /etc/nginx/conf.d/cloudflare-real-ip.conf
+sudo cp nginx/xauusd-signal.conf /etc/nginx/sites-available/xauusd-signal.conf
+sudo ln -sf /etc/nginx/sites-available/xauusd-signal.conf /etc/nginx/sites-enabled/xauusd-signal.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Enable HTTPS:
+
+```bash
+sudo certbot --nginx -d fx.bijaysubbalimbu.com.np
+```
+
+After HTTPS works, set Cloudflare SSL/TLS mode to `Full strict`.
+
+### 8. Verify Live Deployment
+
+```bash
+API_BASE_URL=http://localhost:7073 ADMIN_EMAIL=your-admin-email ADMIN_PASSWORD=your-admin-password npm run deploy:verify
+```
+
+Manual checks:
+
+- `https://fx.bijaysubbalimbu.com.np` opens web dashboard
+- Platform admin login works
+- Tenant login works
+- `/api/health` returns `ok`
+- `/api/live/ws` websocket works through Nginx
+- Twelve Data guardrail shows healthy usage
+- Module 1, 2, and 3 assigned screens load
+- Valid entry alert includes entry, SL, TP, direction, module, and scenario
+- Mobile test push sends successfully
+
+### 9. Build Mobile APK
+
+After the VPS and domain are live:
+
+```bash
+cd apps/mobile
+npx eas-cli build -p android --profile production-apk
+```
+
+Install the APK on Android and verify:
+
+- Tenant login
+- Assigned modules
+- Live chart
+- Push registration
+- Test push
+- Valid entry push with entry, SL, TP
+
+### 10. Backups
+
+Create first backup:
+
+```bash
+npm run db:backup
+```
+
+Install backup timer if using host/systemd backups:
+
+```bash
+sudo cp deploy/systemd/xauusd-backup.service /etc/systemd/system/xauusd-backup.service
+sudo cp deploy/systemd/xauusd-backup.timer /etc/systemd/system/xauusd-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now xauusd-backup.timer
+```
 
 Runbook:
 
