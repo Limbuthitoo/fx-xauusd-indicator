@@ -12,8 +12,8 @@ function upsertGradleProperty(properties, key, value) {
 
 module.exports = function withSmallAndroidApk(config) {
   config = withGradleProperties(config, (gradleConfig) => {
-    upsertGradleProperty(gradleConfig.modResults, "android.enableProguardInReleaseBuilds", "true");
-    upsertGradleProperty(gradleConfig.modResults, "android.enableShrinkResourcesInReleaseBuilds", "true");
+    upsertGradleProperty(gradleConfig.modResults, "android.enableProguardInReleaseBuilds", "false");
+    upsertGradleProperty(gradleConfig.modResults, "android.enableShrinkResourcesInReleaseBuilds", "false");
     upsertGradleProperty(gradleConfig.modResults, "reactNativeArchitectures", "arm64-v8a");
     return gradleConfig;
   });
