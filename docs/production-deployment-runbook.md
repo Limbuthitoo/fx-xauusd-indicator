@@ -12,12 +12,12 @@ cp .env.production.example .env.production
 - `ADMIN_EMAIL`
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
-- `PUBLIC_API_BASE_URL`
+- `PUBLIC_API_BASE_URL=https://fx.bijaysubbalimbu.com.np`
 - `TWELVE_DATA_API_KEY`
 - `REDIS_REQUIRED=true`
 - `PUSH_PROVIDER=firebase`
 - Firebase service-account credentials
-- `EXPO_PUBLIC_API_BASE_URL=https://your-domain.com`
+- `EXPO_PUBLIC_API_BASE_URL=https://fx.bijaysubbalimbu.com.np`
 - `EXPO_PUBLIC_EAS_PROJECT_ID`
 
 Keep `EMBEDDED_MARKET_DATA_WORKER=false`. Production must run API and market-data worker as separate services.
@@ -84,7 +84,7 @@ PM2 processes:
 
 ## Nginx
 
-Copy the template and replace `example.com`:
+Copy the template:
 
 ```bash
 sudo cp nginx/xauusd-signal.conf /etc/nginx/sites-available/xauusd-signal.conf
@@ -98,7 +98,7 @@ The template supports websocket proxying for `/api/live/ws`, which is required f
 For HTTPS:
 
 ```bash
-sudo certbot --nginx -d your-domain.com -d www.your-domain.com
+sudo certbot --nginx -d fx.bijaysubbalimbu.com.np
 ```
 
 ## Firewall
@@ -109,12 +109,12 @@ Expose only:
 - `80/tcp` HTTP
 - `443/tcp` HTTPS
 
-Keep PostgreSQL, Redis, API, and web preview ports private unless you explicitly need temporary debugging.
+Docker binds PostgreSQL, Redis, API, web preview, and quant ports to `127.0.0.1` by default. Keep the firewall closed for those ports unless you explicitly need temporary debugging.
 
 ## Verify
 
 ```bash
-API_BASE_URL=http://localhost:7070 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=your-password npm run deploy:verify
+API_BASE_URL=http://localhost:7073 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=your-password npm run deploy:verify
 ```
 
 Verification checks API health, PostgreSQL, Redis, dedicated worker heartbeat, Platform System Health, backup status, Twelve Data guardrail, and push provider status.
@@ -159,7 +159,7 @@ Build the APK with the VPS URL:
 
 ```bash
 cd apps/mobile
-EXPO_PUBLIC_API_BASE_URL=https://your-domain.com EXPO_PUBLIC_EAS_PROJECT_ID=your-eas-id npx eas-cli build -p android --profile preview-apk
+EXPO_PUBLIC_API_BASE_URL=https://fx.bijaysubbalimbu.com.np EXPO_PUBLIC_EAS_PROJECT_ID=your-eas-id npx eas-cli build -p android --profile preview-apk
 ```
 
 After installing:
