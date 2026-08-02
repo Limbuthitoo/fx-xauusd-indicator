@@ -5,6 +5,7 @@
 - `npm ci`
 - `npm run release:check`
 - `npm run qa:final`
+- `npm run release:local-readiness`
 - `npm run deploy:vps-preflight -- .env.production`
 - `docker compose --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml --profile prod config --quiet`
 - Confirm `.env` and `backups/postgres/*.dump` are not committed.
