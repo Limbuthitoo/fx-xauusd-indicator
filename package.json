@@ -46,7 +46,15 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "react-native": "0.74.5",
+    "metro": "0.80.12",
+    "metro-config": "0.80.12",
+    "metro-resolver": "0.80.12",
+    "metro-transform-worker": "0.80.12"
+  },
   "devDependencies": {
-    "pm2": "^7.0.3"
+    "pm2": "^7.0.3",
+    "react-native": "0.74.5"
   }
 }

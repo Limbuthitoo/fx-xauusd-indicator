@@ -27,5 +27,10 @@ module.exports = {
         ? { projectId: easProjectId }
         : appJson.expo.extra?.eas,
     },
+
+    plugins: [
+      ...(appJson.expo.plugins ?? []),
+      "./plugins/with-small-android-apk",
+    ],
   },
 };
