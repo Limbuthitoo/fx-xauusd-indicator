@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "355654122329",
+    "project_id": "fx-indicator-e58df",
+    "storage_bucket": "fx-indicator-e58df.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:355654122329:android:e4ed0b25321c5f8e0daa48",
+        "android_client_info": {
+          "package_name": "com.onehub.fxindicator"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDPrklmk-k_6qYMufDFbkIYIfW_Mh9_VMQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
