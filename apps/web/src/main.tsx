@@ -95,7 +95,8 @@ type AdminUser = {
 };
 
 function App() {
-  const isPlatformAdminRoute = window.location.pathname.startsWith("/platform-admin");
+  const currentPath = window.location.pathname;
+  const isPlatformAdminRoute = currentPath === "/platform" || currentPath.startsWith("/platform/") || currentPath.startsWith("/platform-admin");
   const [state, setState] = useState<PanelState>({ strategies: [] });
   const [message, setMessage] = useState("Automatic paper trading is ready.");
   const [activeSection, setActiveSection] = useState<ActiveSection>("live");
@@ -813,7 +814,7 @@ function App() {
   }
 
   if (!user) {
-    return <LoginScreen onLogin={login} />;
+    return <LoginScreen mode={isPlatformAdminRoute ? "platform" : "tenant"} onLogin={login} />;
   }
 
   if (isPlatformAdminRoute) {
@@ -1254,8 +1255,8 @@ function App() {
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, otp?: string) => Promise<void> }) {
-  const [email, setEmail] = useState("admin@orb.local");
+function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: (email: string, password: string, otp?: string) => Promise<void> }) {
+  const [email, setEmail] = useState(mode === "platform" ? "" : "admin@orb.local");
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
@@ -1278,8 +1279,8 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, o
     <main className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-mark"><Lock size={22} /></div>
-        <h1>XAUUSD ORB Admin</h1>
-        <p>Sign in to manage live chart, strategy records, settings, reports, and data tools.</p>
+        <h1>{mode === "platform" ? "Platform Admin" : "Subscriber Dashboard"}</h1>
+        <p>{mode === "platform" ? "Sign in to manage subscribers, modules, plans, platform settings, and production operations." : "Sign in to monitor assigned strategy modules, live chart signals, reports, notifications, and account settings."}</p>
         <label>
           Email
           <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoFocus />
