@@ -2618,14 +2618,16 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   let paperTrade = null;
   if (saved?.setup?.status === "LONG SETUP READY" || saved?.setup?.status === "SHORT SETUP READY") {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
+    const alert = entryAlertDetails("orb_max_options", saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     await notifyTenantOnce(
       session.tenant_id,
       `setup-ready-${saved.setup.id}`,
       "SETUP_READY",
-      `XAUUSD ${saved.setup.direction} SETUP READY`,
-      settings.paperTradingEnabled
-        ? "All automatic conditions passed. Paper trade automation will place the simulated entry."
-        : "All automatic conditions passed. Paper trade automation is disabled in Settings."
+      `${alert.title} signal ready`,
+      `${alert.body} | ${settings.paperTradingEnabled ? "Paper trading will simulate this setup." : "Paper trading is disabled in Settings."}`,
+      "HIGH",
+      alert.data,
+      "validEntries"
     );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current)
@@ -2723,7 +2725,17 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   let paperTrade = null;
   if (isProductionReadySetup(saved?.setup, decision)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
-    await notifyTenantOnce(session.tenant_id, `module3-setup-ready-${saved.setup.id}`, "MODULE3_SETUP_READY", `Module 3 ${saved.setup.direction} signal`, `${saved.setup.final_reason} Paper trading will simulate the setup.`);
+    const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
+    await notifyTenantOnce(
+      session.tenant_id,
+      `module3-setup-ready-${saved.setup.id}`,
+      "MODULE3_SETUP_READY",
+      `${alert.title} signal ready`,
+      `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 3 checklist matched."}`,
+      "HIGH",
+      alert.data,
+      "validEntries"
+    );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
@@ -3019,12 +3031,16 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   let paperTrade = null;
   if (isProductionReadySetup(saved?.setup, decision)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
+    const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     await notifyTenantOnce(
       session.tenant_id,
       `module2-setup-ready-${saved.setup.id}`,
       "MODULE2_SETUP_READY",
-      `Module 2 ${saved.setup.direction} signal`,
-      `${saved.setup.final_reason} Paper trading will simulate the setup.`
+      `${alert.title} signal ready`,
+      `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 2 checklist matched."}`,
+      "HIGH",
+      alert.data,
+      "validEntries"
     );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
@@ -4158,12 +4174,16 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     ) VALUES ($5,$1,$2,$3,'PAPER_TRADE_OPENED','AUTO','NONE',$4,'A','PAPER_ACTIVE')`,
     [setup.id, trade.id, session.id, `Automatic paper ${setup.direction} opened from ${setup.scenario}. ${setup.final_reason ?? ""}`.trim(), session.tenant_id]
   );
+  const alert = entryAlertDetails(moduleCode, setup, trade, rewardToRisk);
   await notifyTenantOnce(
     session.tenant_id,
     `paper-entry-${trade.id}`,
     "PAPER_TRADE_OPENED",
-    `Paper ${setup.direction} opened`,
-    `Entry ${setup.entry_price} Stop ${setup.stop_price} Target ${setup.target_price}.`
+    alert.title,
+    alert.body,
+    "HIGH",
+    alert.data,
+    "paperTradeOpened"
   );
   return { trade, plan };
 }
@@ -4618,7 +4638,16 @@ async function notifyOnce(eventKey: string, eventType: string, title: string, bo
   return notifyTenantOnce(tenantId, eventKey, eventType, title, body);
 }
 
-async function notifyTenantOnce(tenantId: string | null, eventKey: string, eventType: string, title: string, body: string, priority = "NORMAL") {
+async function notifyTenantOnce(
+  tenantId: string | null,
+  eventKey: string,
+  eventType: string,
+  title: string,
+  body: string,
+  priority = "NORMAL",
+  data: Record<string, unknown> = {},
+  preferenceKey?: "nyPreSession" | "validEntries" | "paperTradeOpened" | "takeProfitStopLoss" | "dailyReports" | "weeklyMonthlyReports" | "learningReviews" | "systemDiagnostics"
+) {
   if (!(await canCreateTenantNotification(tenantId, priority))) return { skipped: true, reason: "NOTIFICATION_PLAN_LIMIT" };
   const inserted = await query(
     `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
@@ -4628,8 +4657,56 @@ async function notifyTenantOnce(tenantId: string | null, eventKey: string, event
     [eventKey, eventType, title, body, tenantId, priority]
   );
   if (inserted.rows[0]) {
-    await sendTenantPush({ tenantId, title, body, eventKey, eventType, data: { eventKey, eventType, notificationId: inserted.rows[0].id } });
+    await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...data, eventKey, eventType, notificationId: inserted.rows[0].id } });
   }
+}
+
+function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToRisk: number) {
+  const direction = setup.direction === "SHORT" ? "SHORT" : "LONG";
+  const action = direction === "LONG" ? "BUY" : "SELL";
+  const entry = formatPrice(trade?.actual_entry ?? setup.entry_price);
+  const stopLoss = formatPrice(trade?.actual_stop ?? setup.stop_price);
+  const takeProfit = formatPrice(trade?.actual_target ?? setup.target_price);
+  const moduleName = moduleDisplayName(moduleCode);
+  const scenario = String(setup.scenario ?? "VALID_SETUP");
+  const grade = setup.favorability_grade ?? setup.scenario_flags?.tradeGrade ?? setup.scenario_flags?.grade ?? null;
+  const confidence = setup.favorability_score ?? setup.scenario_flags?.confidence ?? null;
+  const rr = Number.isFinite(rewardToRisk) ? rewardToRisk.toFixed(2) : "--";
+  const title = `${moduleName}: ${action} ${direction}`;
+  const bodyParts = [
+    `${scenario}`,
+    `Entry ${entry}`,
+    `SL ${stopLoss}`,
+    `TP ${takeProfit}`,
+    `RR ${rr}`,
+    grade ? `Grade ${grade}` : null,
+    confidence != null ? `Confidence ${confidence}%` : null
+  ].filter(Boolean);
+  return {
+    title,
+    body: bodyParts.join(" | "),
+    data: {
+      moduleCode,
+      moduleName,
+      scenario,
+      direction,
+      action,
+      entry,
+      stopLoss,
+      takeProfit,
+      rewardToRisk: rr,
+      grade,
+      confidence,
+      setupCandidateId: setup.id,
+      tradeId: trade?.id ?? null,
+      symbol: setup.symbol ?? "XAUUSD"
+    }
+  };
+}
+
+function formatPrice(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "--";
 }
 
 async function activeAutomationModules() {
