@@ -19,6 +19,9 @@
 - Confirm Twelve Data thresholds are below the daily limit.
 - Confirm Firebase push status is `CONFIGURED` when `PUSH_PROVIDER=firebase`.
 - Confirm `PUBLIC_API_BASE_URL` and `EXPO_PUBLIC_API_BASE_URL` use the VPS/domain URL.
+- Confirm Cloudflare DNS has `fx.bijaysubbalimbu.com.np` as a proxied `A` record to the VPS IP.
+- Confirm Cloudflare SSL/TLS is `Full strict` after Certbot installs the origin certificate.
+- Confirm Cloudflare WebSockets are enabled and API cache is bypassed.
 
 ## Deploy
 

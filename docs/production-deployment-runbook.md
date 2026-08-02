@@ -33,8 +33,29 @@ npm run deploy:vps-preflight -- .env.production
 - PostgreSQL and Redis run in Docker with persistent volumes.
 - API and market-data worker run as separate services.
 - Web runs behind Nginx.
-- Nginx terminates HTTP/HTTPS and proxies `/api` plus `/api/live/ws`.
+- Cloudflare proxies the public hostname.
+- Nginx terminates HTTP/HTTPS on the VPS and proxies `/api` plus `/api/live/ws`.
 - Firebase credentials stay outside git, preferably at `/etc/xauusd/firebase-service-account.json`.
+
+## Cloudflare DNS
+
+In Cloudflare DNS, create:
+
+- Type: `A`
+- Name: `fx`
+- IPv4 address: your VPS public IP
+- Proxy status: Proxied
+- TTL: Auto
+
+Recommended Cloudflare settings:
+
+- SSL/TLS mode: Full strict after the VPS certificate is installed.
+- WebSockets: On.
+- Always Use HTTPS: On after Certbot succeeds.
+- Minimum TLS version: TLS 1.2 or newer.
+- Cache rule: bypass cache for `fx.bijaysubbalimbu.com.np/api/*`.
+
+Keep the root domain and other subdomains separate unless they should also point to this app.
 
 ## Build
 
@@ -84,16 +105,26 @@ PM2 processes:
 
 ## Nginx
 
-Copy the template:
+Copy the templates:
 
 ```bash
+sudo cp nginx/cloudflare-real-ip.conf /etc/nginx/conf.d/cloudflare-real-ip.conf
 sudo cp nginx/xauusd-signal.conf /etc/nginx/sites-available/xauusd-signal.conf
 sudo ln -s /etc/nginx/sites-available/xauusd-signal.conf /etc/nginx/sites-enabled/xauusd-signal.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The template supports websocket proxying for `/api/live/ws`, which is required for the live chart.
+The template supports websocket proxying for `/api/live/ws`, which is required for the live chart. It also restores the original visitor IP from Cloudflare's `CF-Connecting-IP` header for logs and rate limiting.
+
+Refresh Cloudflare IP ranges when needed:
+
+```bash
+bash scripts/update-cloudflare-real-ip.sh
+sudo cp nginx/cloudflare-real-ip.conf /etc/nginx/conf.d/cloudflare-real-ip.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
 
 For HTTPS:
 
@@ -110,6 +141,8 @@ Expose only:
 - `443/tcp` HTTPS
 
 Docker binds PostgreSQL, Redis, API, web preview, and quant ports to `127.0.0.1` by default. Keep the firewall closed for those ports unless you explicitly need temporary debugging.
+
+After Cloudflare is verified, you can restrict `80/tcp` and `443/tcp` at the VPS firewall to Cloudflare IP ranges only. Keep SSH protected separately with key login and fail2ban or your VPS provider firewall.
 
 ## Verify
 
