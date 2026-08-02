@@ -2353,6 +2353,17 @@ aside {
   font-style: normal;
 }
 
+.ticket-queue > div {
+  padding: 12px;
+}
+
+.ticket-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .ticket-actions {
   display: flex;
   flex-wrap: wrap;

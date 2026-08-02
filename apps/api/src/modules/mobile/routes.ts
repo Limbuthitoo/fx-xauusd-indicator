@@ -90,7 +90,7 @@ export async function mobileRoutes(app: FastifyInstance) {
   app.get("/api/mobile/dashboard", async (request) => {
     const session = requireAdmin(request);
     if (!session.tenantId) return { user: session, tenant: null, modules: [], notifications: [], clocks: clocks() };
-    const [tenant, modules, notifications, supportInfo] = await Promise.all([
+    const [tenant, modules, notifications, supportTickets, supportInfo] = await Promise.all([
       query(
         `SELECT t.*, s.status AS subscription_status, p.name AS plan_name
          FROM platform_tenants t
@@ -119,6 +119,15 @@ export async function mobileRoutes(app: FastifyInstance) {
          WHERE tenant_id = $1
          ORDER BY created_at DESC
          LIMIT 30`,
+        [session.tenantId]
+      ),
+      query(
+        `SELECT st.*, m.name AS requested_module_name
+         FROM platform_support_tickets st
+         LEFT JOIN platform_strategy_modules m ON m.code = st.requested_module_code
+         WHERE st.tenant_id = $1
+         ORDER BY st.created_at DESC
+         LIMIT 20`,
         [session.tenantId]
       ),
       query("SELECT value FROM app_settings WHERE key = 'platform.business' LIMIT 1")
@@ -180,6 +189,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       clocks: clocks(),
       modules: moduleRows,
       notifications: notifications.rows,
+      supportTickets: supportTickets.rows,
       supportInfo: normalizeSupportInfo(supportInfo.rows[0]?.value)
     };
   });

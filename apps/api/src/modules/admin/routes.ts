@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { config } from "../../infrastructure/config.js";
 import { poolStats, query } from "../../infrastructure/db/client.js";
 import { redisHealth } from "../../infrastructure/redis/client.js";
-import { hashPassword, requirePermission, requireTenantModule, writeAudit } from "../auth/routes.js";
+import { hashPassword, requireAdmin, requirePermission, requireTenantModule, writeAudit } from "../auth/routes.js";
 import { handleBillingWebhook } from "../billing/provider.js";
 import { pushProviderHealth, sendTenantPush } from "../notifications/push.js";
 import { runOrbLearningPython } from "./learning.js";
@@ -502,28 +502,69 @@ export async function adminRoutes(app: FastifyInstance) {
     return { audit: audit.rows, tickets: tickets.rows, invoices: invoices.rows };
   });
 
-  app.post("/api/platform/tenants/:id/support-tickets", async (request) => {
-    const session = requirePlatformSuperAdmin(request);
-    const { id } = request.params as { id: string };
+  app.get("/api/platform/support-tickets", async (request) => {
+    requirePlatformSuperAdmin(request);
+    const { rows } = await query(
+      `SELECT
+         st.*,
+         t.name AS tenant_name,
+         t.owner_email,
+         m.name AS requested_module_name,
+         creator.email AS created_by_email,
+         resolver.email AS resolved_by_email
+       FROM platform_support_tickets st
+       JOIN platform_tenants t ON t.id = st.tenant_id
+       LEFT JOIN platform_strategy_modules m ON m.code = st.requested_module_code
+       LEFT JOIN admin_users creator ON creator.id = st.created_by
+       LEFT JOIN admin_users resolver ON resolver.id = st.resolved_by
+       ORDER BY
+         CASE st.status
+           WHEN 'OPEN' THEN 0
+           WHEN 'IN_PROGRESS' THEN 1
+           WHEN 'WAITING_USER' THEN 2
+           WHEN 'RESOLVED' THEN 3
+           ELSE 4
+         END,
+         CASE st.priority
+           WHEN 'URGENT' THEN 0
+           WHEN 'HIGH' THEN 1
+           WHEN 'NORMAL' THEN 2
+           ELSE 3
+         END,
+         st.created_at DESC
+       LIMIT 200`
+    );
+    return rows;
+  });
+
+  app.post("/api/tenant/support-tickets", async (request) => {
+    const session = requireAdmin(request);
+    if (session.platformSuperAdmin || !session.tenantId) {
+      const error = new Error("Subscriber account required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
+    }
     const body = request.body as { ticketType?: string; priority?: string; title?: string; description?: string; requestedModuleCode?: string | null };
     const title = body.title?.trim();
     if (!title) return { error: "Ticket title is required." };
+    const ticketType = supportTicketType(body.ticketType);
+    const priority = supportTicketPriority(body.priority ?? (ticketType === "FORGOT_PASSWORD" ? "HIGH" : "NORMAL"));
     const { rows } = await query(
       `INSERT INTO platform_support_tickets (
         tenant_id, ticket_type, priority, title, description, requested_module_code, created_by
       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
       RETURNING *`,
       [
-        id,
-        supportTicketType(body.ticketType),
-        supportTicketPriority(body.priority),
+        session.tenantId,
+        ticketType,
+        priority,
         title,
         body.description?.trim() || null,
-        body.requestedModuleCode || null,
+        ticketType === "MODULE_UPGRADE" ? body.requestedModuleCode || null : null,
         session.sub
       ]
     );
-    await writeAudit(session.sub, "SUPPORT_TICKET_CREATE", "platform_support_ticket", rows[0].id, null, rows[0]);
+    await writeAudit(session.sub, "TENANT_SUPPORT_TICKET_CREATE", "platform_support_ticket", rows[0].id, null, rows[0]);
     return rows[0];
   });
 

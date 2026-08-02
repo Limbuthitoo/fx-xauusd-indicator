@@ -383,6 +383,15 @@ export async function authRoutes(app: FastifyInstance) {
        LIMIT 1`,
       [session.tenantId]
     );
+    const supportTickets = await query(
+      `SELECT st.*, m.name AS requested_module_name
+       FROM platform_support_tickets st
+       LEFT JOIN platform_strategy_modules m ON m.code = st.requested_module_code
+       WHERE st.tenant_id = $1
+       ORDER BY st.created_at DESC
+       LIMIT 20`,
+      [session.tenantId]
+    );
     const usage = await tenantPlanUsage(session.tenantId);
     const supportInfo = await query("SELECT value FROM app_settings WHERE key = 'platform.business' LIMIT 1");
     return {
@@ -393,6 +402,7 @@ export async function authRoutes(app: FastifyInstance) {
       usage,
       invoices: invoices.rows,
       latestCheckoutSession: latestCheckoutSession.rows[0] ?? null,
+      supportTickets: supportTickets.rows,
       supportInfo: supportInfo.rows[0]?.value ?? null,
       platformSuperAdmin: session.platformSuperAdmin
     };

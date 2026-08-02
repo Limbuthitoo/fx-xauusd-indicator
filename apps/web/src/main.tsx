@@ -20,7 +20,7 @@ const DEFAULT_PUSH_PREFERENCES = {
 };
 
 type ActiveSection = "command" | "live" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
-type PlatformSection = "overview" | "subscribers" | "modules" | "plans" | "billing" | "automation" | "usage" | "system" | "settings";
+type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
   clocks?: { utc: string; newYork: string; nepal: string };
@@ -81,6 +81,7 @@ type PanelState = {
   platformRequestLoad?: any;
   platformBusinessSettings?: any;
   platformPushOverview?: any;
+  platformTickets?: any[];
   tenantPushStatus?: any;
   tenantContext?: any;
 };
@@ -154,6 +155,7 @@ function App() {
         platformBackupStatus: bundle?.platformBackupStatus,
         platformBusinessSettings: bundle?.platformBusinessSettings,
         platformPushOverview: bundle?.platformPushOverview,
+        platformTickets: bundle?.platformTickets ?? [],
         platformRequestLoad: bundle?.requestLoad
       }));
       return;
@@ -820,12 +822,30 @@ function App() {
     await refresh();
   }
 
+  async function updateSupportTicket(ticketId: string, status: string, priority?: string) {
+    await api<any>(`/api/platform/support-tickets/${ticketId}`, {
+      method: "PUT",
+      body: JSON.stringify({ status, priority })
+    });
+    setMessage("Support ticket updated.");
+    await refresh();
+  }
+
   async function updatePlatformBusinessSettings(value: any) {
     await api<any>("/api/platform/business-settings", {
       method: "PUT",
       body: JSON.stringify({ value })
     });
     setMessage("Platform business settings updated.");
+    await refresh();
+  }
+
+  async function createTenantSupportTicket(input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) {
+    await api<any>("/api/tenant/support-tickets", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+    setMessage("Support ticket submitted.");
     await refresh();
   }
 
@@ -877,6 +897,7 @@ function App() {
         deleteTenant={deleteTenant}
         resetSubscriberPassword={resetSubscriberPassword}
         updateManualInvoiceStatus={updateManualInvoiceStatus}
+        updateSupportTicket={updateSupportTicket}
         updatePlatformBusinessSettings={updatePlatformBusinessSettings}
         sendPlatformPushTest={sendPlatformPushTest}
       />
@@ -974,7 +995,7 @@ function App() {
 
         {activeSection === "account" ? (
           <section className="admin-page-grid">
-            <MyAccountPanel state={state} user={user} onCheckout={createBillingCheckout} onSavePushPreferences={updateTenantPushPreferences} onDisablePushDevice={disableTenantPushDevice} />
+            <MyAccountPanel state={state} user={user} onCheckout={createBillingCheckout} onCreateTicket={createTenantSupportTicket} onSavePushPreferences={updateTenantPushPreferences} onDisablePushDevice={disableTenantPushDevice} />
             <AccountModulesPanel state={state} />
             <PlanUsagePanel state={state} />
             <PasswordPlaceholderPanel />
@@ -1370,6 +1391,7 @@ function PlatformAdminApp({
   deleteTenant,
   resetSubscriberPassword,
   updateManualInvoiceStatus,
+  updateSupportTicket,
   updatePlatformBusinessSettings,
   sendPlatformPushTest
 }: {
@@ -1389,6 +1411,7 @@ function PlatformAdminApp({
   deleteTenant: (tenantId: string) => Promise<void>;
   resetSubscriberPassword: (tenantId: string, password: string) => Promise<void>;
   updateManualInvoiceStatus: (invoiceId: string, status: "PAID" | "PAST_DUE" | "CANCELED") => Promise<void>;
+  updateSupportTicket: (ticketId: string, status: string, priority?: string) => Promise<void>;
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
   sendPlatformPushTest: () => Promise<void>;
 }) {
@@ -1431,6 +1454,7 @@ function PlatformAdminApp({
           <PlatformNavGroup label="Business">
             <PlatformNavButton icon={<LineChart />} label="Overview" active={platformSection === "overview"} onClick={() => setPlatformSection("overview")} />
             <PlatformNavButton icon={<Users />} label="Subscribers" active={platformSection === "subscribers"} onClick={() => setPlatformSection("subscribers")} />
+            <PlatformNavButton icon={<FileText />} label="Tickets" active={platformSection === "tickets"} onClick={() => setPlatformSection("tickets")} />
             <PlatformNavButton icon={<CreditCard />} label="Billing" active={platformSection === "billing"} onClick={() => setPlatformSection("billing")} />
           </PlatformNavGroup>
           <PlatformNavGroup label="Product">
@@ -1496,6 +1520,7 @@ function PlatformAdminApp({
               onResetPassword={resetSubscriberPassword}
             />
           ) : null}
+          {platformSection === "tickets" ? <PlatformTicketsPanel tickets={state.platformTickets ?? []} onUpdate={updateSupportTicket} /> : null}
           {platformSection === "modules" ? <PlatformModulesPanel modules={modules} /> : null}
           {platformSection === "plans" ? <PlatformPlansPanel plans={plans} /> : null}
           {platformSection === "billing" ? <PlatformBillingPanel billing={platform.billing} onInvoiceStatus={updateManualInvoiceStatus} /> : null}
@@ -1782,6 +1807,46 @@ function ModuleChecklist({ modules, selected, onChange, allowedCodes }: { module
         );
       })}
     </div>
+  );
+}
+
+function PlatformTicketsPanel({ tickets, onUpdate }: { tickets: any[]; onUpdate: (ticketId: string, status: string, priority?: string) => Promise<void> }) {
+  const openTickets = tickets.filter((ticket) => !["RESOLVED", "CLOSED"].includes(ticket.status));
+  const resolvedTickets = tickets.filter((ticket) => ["RESOLVED", "CLOSED"].includes(ticket.status));
+  return (
+    <section className="platform-panel platform-wide">
+      <div className="panel-title-row">
+        <div>
+          <h2><FileText size={18} />Support Tickets</h2>
+          <p className="reason">Tenant-created requests from web and mobile. Use this queue for forgot-password, module upgrade, billing, and technical support flow.</p>
+        </div>
+        <div className="overview-kpis compact">
+          <Metric label="Open" value={openTickets.length} />
+          <Metric label="Resolved" value={resolvedTickets.length} />
+        </div>
+      </div>
+      <div className="activity-list ticket-queue">
+        {tickets.map((ticket) => (
+          <div key={ticket.id}>
+            <div className="ticket-heading">
+              <strong>{ticket.title}</strong>
+              <span className={`pill ${ticket.priority === "URGENT" || ticket.priority === "HIGH" ? "bad" : ticket.status === "RESOLVED" ? "good" : "warn"}`}>{ticket.priority} · {ticket.status}</span>
+            </div>
+            <span>{ticket.tenant_name ?? "Subscriber"} · {ticket.owner_email ?? ticket.created_by_email ?? "--"} · {ticket.ticket_type} · {formatNepalTime(ticket.created_at)}</span>
+            <em>{ticket.description ?? ticket.requested_module_name ?? "No notes"}</em>
+            {ticket.requested_module_name ? <span>Requested module: {ticket.requested_module_name}</span> : null}
+            <div className="ticket-actions">
+              {["IN_PROGRESS", "WAITING_USER", "RESOLVED", "CLOSED"].map((status) => (
+                <button key={status} disabled={ticket.status === status} onClick={() => onUpdate(ticket.id, status).catch(() => undefined)}>{status.replaceAll("_", " ")}</button>
+              ))}
+              {ticket.priority !== "HIGH" ? <button onClick={() => onUpdate(ticket.id, ticket.status, "HIGH").catch(() => undefined)}>Mark High</button> : null}
+              {ticket.priority !== "NORMAL" ? <button onClick={() => onUpdate(ticket.id, ticket.status, "NORMAL").catch(() => undefined)}>Normal</button> : null}
+            </div>
+          </div>
+        ))}
+        {tickets.length === 0 ? <p className="reason">No tenant-created support tickets yet.</p> : null}
+      </div>
+    </section>
   );
 }
 
@@ -2351,13 +2416,8 @@ function SubscriberDetailPanel({
   const [renewsAt, setRenewsAt] = useState(dateInputValue(tenant.subscription_renews_at));
   const [temporaryPassword, setTemporaryPassword] = useState("");
   const [activity, setActivity] = useState<any>({ audit: [], tickets: [], invoices: [] });
-  const [ticketType, setTicketType] = useState("FORGOT_PASSWORD");
-  const [ticketTitle, setTicketTitle] = useState("");
-  const [ticketDescription, setTicketDescription] = useState("");
-  const [requestedModuleCode, setRequestedModuleCode] = useState("");
   const selectedPlan = plans.find((plan) => plan.code === planCode);
   const allowedModuleCodes = new Set<string>((selectedPlan?.modules ?? []).map((module: any) => module.code));
-  const allowedModules = modules.filter((module) => allowedModuleCodes.has(module.code));
 
   useEffect(() => {
     setPlanCode(tenant.plan_code ?? "starter_orb");
@@ -2367,23 +2427,6 @@ function SubscriberDetailPanel({
     setTemporaryPassword("");
     loadSubscriberActivity(tenant.id).then(setActivity).catch(() => setActivity({ audit: [], tickets: [], invoices: [] }));
   }, [tenant.id, tenant.plan_code, tenant.modules, tenant.subscription_status, tenant.subscription_renews_at]);
-
-  async function createTicket() {
-    await api<any>(`/api/platform/tenants/${tenant.id}/support-tickets`, {
-      method: "POST",
-      body: JSON.stringify({
-        ticketType,
-        priority: ticketType === "FORGOT_PASSWORD" ? "HIGH" : "NORMAL",
-        title: ticketTitle || ticketType.replaceAll("_", " "),
-        description: ticketDescription,
-        requestedModuleCode: ticketType === "MODULE_UPGRADE" ? requestedModuleCode || null : null
-      })
-    });
-    setTicketTitle("");
-    setTicketDescription("");
-    setRequestedModuleCode("");
-    setActivity(await loadSubscriberActivity(tenant.id));
-  }
 
   async function updateTicket(ticketId: string, status: string) {
     await api<any>(`/api/platform/support-tickets/${ticketId}`, {
@@ -2479,22 +2522,7 @@ function SubscriberDetailPanel({
       <div className="subscriber-detail-grid two">
         <section className="detail-block">
           <h3>Support Tickets</h3>
-          <label>Type
-            <select value={ticketType} onChange={(event) => setTicketType(event.target.value)}>
-              {["FORGOT_PASSWORD", "MODULE_UPGRADE", "BILLING", "TECHNICAL", "GENERAL"].map((type) => <option key={type} value={type}>{type.replaceAll("_", " ")}</option>)}
-            </select>
-          </label>
-          {ticketType === "MODULE_UPGRADE" ? (
-            <label>Requested module
-              <select value={requestedModuleCode} onChange={(event) => setRequestedModuleCode(event.target.value)}>
-                <option value="">Select module</option>
-                {modules.map((module) => <option key={module.code} value={module.code}>{module.name}</option>)}
-              </select>
-            </label>
-          ) : null}
-          <label>Title<input value={ticketTitle} onChange={(event) => setTicketTitle(event.target.value)} placeholder="Ticket title" /></label>
-          <label>Description<textarea value={ticketDescription} onChange={(event) => setTicketDescription(event.target.value)} placeholder="Ticket notes" /></label>
-          <button onClick={() => createTicket().catch(() => undefined)}>Create Ticket</button>
+          <p className="reason">Tickets are created by subscribers from their dashboard or mobile app. Platform admin can triage, resolve, and use verified forgot-password tickets for password resets.</p>
           <div className="activity-list">
             {(activity.tickets ?? []).map((ticket: any) => (
               <div key={ticket.id}>
@@ -5495,12 +5523,14 @@ function MyAccountPanel({
   state,
   user,
   onCheckout,
+  onCreateTicket,
   onSavePushPreferences,
   onDisablePushDevice
 }: {
   state: PanelState;
   user: AdminUser;
   onCheckout: (planCode: string, mode: "SUBSCRIPTION" | "RENEWAL") => Promise<void>;
+  onCreateTicket: (input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) => Promise<void>;
   onSavePushPreferences: (preferences: any) => Promise<void>;
   onDisablePushDevice: (deviceId: string) => Promise<void>;
 }) {
@@ -5509,8 +5539,27 @@ function MyAccountPanel({
   const latestCheckout = state.tenantContext?.latestCheckoutSession;
   const invoices = state.tenantContext?.invoices ?? [];
   const supportInfo = state.tenantContext?.supportInfo ?? {};
+  const supportTickets = state.tenantContext?.supportTickets ?? [];
+  const modules = state.tenantContext?.availableModules ?? state.tenantContext?.modules ?? [];
   const currentPlan = subscription.plan_code ?? "starter_orb";
   const upgradePlan = currentPlan === "starter_orb" ? "professional_multi_strategy" : "enterprise_platform";
+  const [ticketType, setTicketType] = useState("TECHNICAL");
+  const [ticketTitle, setTicketTitle] = useState("");
+  const [ticketDescription, setTicketDescription] = useState("");
+  const [requestedModuleCode, setRequestedModuleCode] = useState("");
+
+  async function submitTicket() {
+    await onCreateTicket({
+      ticketType,
+      title: ticketTitle.trim() || ticketType.replaceAll("_", " "),
+      description: ticketDescription,
+      requestedModuleCode: ticketType === "MODULE_UPGRADE" ? requestedModuleCode || null : null
+    });
+    setTicketTitle("");
+    setTicketDescription("");
+    setRequestedModuleCode("");
+  }
+
   return (
     <Panel icon={<CreditCard />} title="My Account">
       <Metric label="Name" value={user.displayName ?? tenant.name ?? "--"} />
@@ -5533,9 +5582,38 @@ function MyAccountPanel({
         <span>Phone: {supportInfo.supportPhone ?? "--"} · Email: {supportInfo.supportEmail ?? "--"}</span>
         <span>Address: {supportInfo.businessAddress ?? "--"} · Hours: {supportInfo.supportHours ?? "--"}</span>
       </div>
+      <div className="manual-payment-note">
+        <strong>Create Support Ticket</strong>
+        <span>Send account, password, billing, module upgrade, or technical requests to the platform admin team.</span>
+        <label>Request type
+          <select value={ticketType} onChange={(event) => setTicketType(event.target.value)}>
+            {["TECHNICAL", "FORGOT_PASSWORD", "MODULE_UPGRADE", "BILLING", "GENERAL"].map((type) => <option key={type} value={type}>{type.replaceAll("_", " ")}</option>)}
+          </select>
+        </label>
+        {ticketType === "MODULE_UPGRADE" ? (
+          <label>Requested module
+            <select value={requestedModuleCode} onChange={(event) => setRequestedModuleCode(event.target.value)}>
+              <option value="">Select module</option>
+              {modules.map((module: any) => <option key={module.code} value={module.code}>{module.name}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <label>Title<input value={ticketTitle} onChange={(event) => setTicketTitle(event.target.value)} placeholder="Short request title" /></label>
+        <label>Details<textarea value={ticketDescription} onChange={(event) => setTicketDescription(event.target.value)} placeholder="Explain what you need help with" /></label>
+        <button disabled={!ticketTitle.trim() && !ticketDescription.trim()} onClick={() => submitTicket().catch(() => undefined)}><FileText size={16} />Submit Ticket</button>
+      </div>
       <div className="account-actions">
         <button onClick={() => onCheckout(currentPlan, "RENEWAL").catch(() => undefined)}><CreditCard size={16} />Request Renewal</button>
         <button onClick={() => onCheckout(upgradePlan, "SUBSCRIPTION").catch(() => undefined)}><Layers size={16} />Request Upgrade</button>
+      </div>
+      <div className="admin-list">
+        {supportTickets.slice(0, 5).map((ticket: any) => (
+          <div className="admin-row" key={ticket.id}>
+            <strong>{ticket.title}</strong>
+            <span>{ticket.ticket_type} · {ticket.status} · {ticket.priority} · {formatNepalTime(ticket.created_at)}</span>
+          </div>
+        ))}
+        {supportTickets.length === 0 ? <p className="reason">No support tickets submitted yet.</p> : null}
       </div>
       <div className="admin-list">
         {invoices.slice(0, 4).map((invoice: any) => (
@@ -6213,6 +6291,7 @@ function platformSectionTitle(section: PlatformSection) {
   const titles: Record<PlatformSection, string> = {
     overview: "Platform Overview",
     subscribers: "Subscriber Management",
+    tickets: "Support Tickets",
     modules: "Strategy Modules",
     plans: "Plans & Access",
     billing: "Manual Billing",
@@ -6228,6 +6307,7 @@ function platformSectionFromPath(pathname: string): PlatformSection {
   const section = pathname.split("/").filter(Boolean)[1];
   if (
     section === "subscribers" ||
+    section === "tickets" ||
     section === "modules" ||
     section === "plans" ||
     section === "billing" ||
@@ -6245,6 +6325,7 @@ function platformSectionSubtitle(section: PlatformSection) {
   const subtitles: Record<PlatformSection, string> = {
     overview: "High-level subscriber, module, plan, automation, and API usage health.",
     subscribers: "Create users, assign plans, enable modules, and manage subscription status.",
+    tickets: "Review tenant-created tickets, prioritize requests, and move them through resolution.",
     modules: "Control the strategy module catalog available to subscriber plans.",
     plans: "Review subscription plans, included modules, account limits, and automation access.",
     billing: "Track manual payment requests, invoices, revenue, and billing audit activity.",

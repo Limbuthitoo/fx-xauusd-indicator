@@ -59,6 +59,7 @@ type Dashboard = {
   clocks: { newYork: string; nepal: string; utc: string };
   modules: ModuleRow[];
   notifications: any[];
+  supportTickets?: any[];
   supportInfo?: any;
 };
 
@@ -420,6 +421,20 @@ export default function App() {
     setPushPreferences(normalizePushPreferences(result.preferences));
   }
 
+  async function submitSupportTicket(input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) {
+    if (!token) return;
+    const response = await fetch(`${apiBaseUrl}/api/tenant/support-tickets`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(input)
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await loadDashboard(token, false, false);
+  }
+
   async function sendTestPush() {
     if (!token) return;
     setPushDiagnostics((previous) => ({ ...previous, lastTestStatus: "Sending..." }));
@@ -540,6 +555,7 @@ export default function App() {
             onTestPush={() => sendTestPush().catch((error) => Alert.alert("Test push failed", error.message))}
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
             onSavePushPreferences={(preferences) => savePushPreferences(preferences).catch((error) => Alert.alert("Save failed", error.message))}
+            onCreateTicket={(input) => submitSupportTicket(input).then(() => Alert.alert("Ticket submitted", "Platform support will review your request.")).catch((error) => Alert.alert("Ticket failed", error.message))}
           />
         ) : null}
 
@@ -843,7 +859,8 @@ function MoreScreen({
   onRegisterPush,
   onTestPush,
   onDisablePushDevice,
-  onSavePushPreferences
+  onSavePushPreferences,
+  onCreateTicket
 }: {
   dashboard: Dashboard | null;
   apiBaseUrl: string;
@@ -857,9 +874,28 @@ function MoreScreen({
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
   onSavePushPreferences: (preferences: PushPreferences) => void;
+  onCreateTicket: (input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) => void;
 }) {
   const modules = dashboard?.modules ?? [];
   const supportInfo = dashboard?.supportInfo ?? {};
+  const supportTickets = dashboard?.supportTickets ?? [];
+  const [ticketType, setTicketType] = useState("TECHNICAL");
+  const [ticketTitle, setTicketTitle] = useState("");
+  const [ticketDescription, setTicketDescription] = useState("");
+  const [requestedModuleCode, setRequestedModuleCode] = useState("");
+
+  function submitTicket() {
+    onCreateTicket({
+      ticketType,
+      title: ticketTitle.trim() || ticketType.replaceAll("_", " "),
+      description: ticketDescription,
+      requestedModuleCode: ticketType === "MODULE_UPGRADE" ? requestedModuleCode || null : null
+    });
+    setTicketTitle("");
+    setTicketDescription("");
+    setRequestedModuleCode("");
+  }
+
   if (view === "profile") {
     return (
       <>
@@ -955,6 +991,37 @@ function MoreScreen({
           <Metric label="Hours" value={supportInfo.supportHours ?? "--"} />
           <Metric label="Website" value={supportInfo.websiteUrl || "--"} />
           <Metric label="WhatsApp" value={supportInfo.whatsappUrl || "--"} />
+        </View>
+        <View style={styles.moreDiagnosticsCard}>
+          <Text style={styles.sectionMini}>Create Ticket</Text>
+          <View style={styles.ticketTypeGrid}>
+            {["TECHNICAL", "FORGOT_PASSWORD", "MODULE_UPGRADE", "BILLING", "GENERAL"].map((type) => (
+              <Pressable key={type} style={[styles.ticketTypeButton, ticketType === type && styles.ticketTypeButtonActive]} onPress={() => setTicketType(type)}>
+                <Text style={[styles.ticketTypeText, ticketType === type && styles.ticketTypeTextActive]}>{type.replaceAll("_", " ")}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {ticketType === "MODULE_UPGRADE" ? (
+            <View style={styles.ticketTypeGrid}>
+              {modules.map((module) => (
+                <Pressable key={module.code} style={[styles.ticketTypeButton, requestedModuleCode === module.code && styles.ticketTypeButtonActive]} onPress={() => setRequestedModuleCode(module.code)}>
+                  <Text style={[styles.ticketTypeText, requestedModuleCode === module.code && styles.ticketTypeTextActive]}>{module.shortName}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          <TextInput style={styles.input} value={ticketTitle} onChangeText={setTicketTitle} placeholder="Ticket title" placeholderTextColor="#6f7b75" />
+          <TextInput style={[styles.input, styles.ticketTextArea]} value={ticketDescription} onChangeText={setTicketDescription} placeholder="What do you need help with?" placeholderTextColor="#6f7b75" multiline />
+          <Pressable style={[styles.fullButton, !ticketTitle.trim() && !ticketDescription.trim() && styles.disabledButton]} disabled={!ticketTitle.trim() && !ticketDescription.trim()} onPress={submitTicket}>
+            <Text style={styles.fullButtonText}>Submit Ticket</Text>
+          </Pressable>
+        </View>
+        <View style={styles.moreMenuGroup}>
+          <Text style={styles.sectionMini}>Ticket History</Text>
+          {supportTickets.slice(0, 8).map((ticket: any) => (
+            <MoreMenuRow key={ticket.id} icon="account" title={ticket.title} subtitle={`${ticket.ticket_type} · ${formatTime(ticket.created_at)}`} value={ticket.status} />
+          ))}
+          {supportTickets.length === 0 ? <Text style={styles.muted}>No support tickets submitted yet.</Text> : null}
         </View>
       </>
     );
@@ -1907,6 +1974,13 @@ const styles = StyleSheet.create({
   },
   fullButton: { marginTop: 14, backgroundColor: "#2fbf8b", borderRadius: 22, paddingVertical: 14, alignItems: "center" },
   fullButtonText: { color: "#04100b", fontWeight: "900" },
+  disabledButton: { opacity: 0.45 },
+  ticketTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, marginBottom: 10 },
+  ticketTypeButton: { backgroundColor: "#171a18", borderWidth: 1, borderColor: "#2a302d", borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9 },
+  ticketTypeButtonActive: { backgroundColor: "#173328", borderColor: "#2fbf8b" },
+  ticketTypeText: { color: "#8d9791", fontSize: 11, fontWeight: "900" },
+  ticketTypeTextActive: { color: "#2fe6a8" },
+  ticketTextArea: { minHeight: 104, textAlignVertical: "top" },
   secondaryButton: {
     marginTop: 10,
     backgroundColor: "#171a18",
