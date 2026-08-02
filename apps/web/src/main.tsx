@@ -778,6 +778,15 @@ function App() {
     await refresh();
   }
 
+  async function updateTenantStatus(tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") {
+    await api<any>(`/api/platform/tenants/${tenantId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ status })
+    });
+    setMessage(status === "ACTIVE" ? "Subscriber resumed." : status === "PAUSED" ? "Subscriber paused. Login and automation are disabled." : "Subscriber removed. Login and automation are disabled.");
+    await refresh();
+  }
+
   async function resetSubscriberPassword(tenantId: string, password: string) {
     await api<any>(`/api/platform/tenants/${tenantId}/owner-password`, {
       method: "PUT",
@@ -858,6 +867,7 @@ function App() {
         forceSyncNow={runPlatformForceSync}
         updateTenantAutomation={updateTenantAutomation}
         updateTenantSubscription={updateTenantSubscription}
+        updateTenantStatus={updateTenantStatus}
         resetSubscriberPassword={resetSubscriberPassword}
         updateManualInvoiceStatus={updateManualInvoiceStatus}
         updatePlatformBusinessSettings={updatePlatformBusinessSettings}
@@ -1349,6 +1359,7 @@ function PlatformAdminApp({
   forceSyncNow,
   updateTenantAutomation,
   updateTenantSubscription,
+  updateTenantStatus,
   resetSubscriberPassword,
   updateManualInvoiceStatus,
   updatePlatformBusinessSettings,
@@ -1366,6 +1377,7 @@ function PlatformAdminApp({
   forceSyncNow: () => Promise<void>;
   updateTenantAutomation: (tenantId: string, enabled: boolean) => Promise<void>;
   updateTenantSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
+  updateTenantStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
   resetSubscriberPassword: (tenantId: string, password: string) => Promise<void>;
   updateManualInvoiceStatus: (invoiceId: string, status: "PAID" | "PAST_DUE" | "CANCELED") => Promise<void>;
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
@@ -1385,7 +1397,7 @@ function PlatformAdminApp({
           <div className="login-mark"><ShieldCheck size={22} /></div>
           <h1>Platform Admin</h1>
           <p>Your account does not have super-user platform access.</p>
-          <button onClick={() => { window.location.href = "/dashboard"; }}>Open User Dashboard</button>
+          <button onClick={logout}>Logout</button>
         </section>
       </main>
     );
@@ -1426,7 +1438,6 @@ function PlatformAdminApp({
         <div className="nav-footer">
           <span>{user.displayName}</span>
           <strong>SUPER USER</strong>
-          <button onClick={() => { window.location.href = "/dashboard"; }}><LineChart size={16} />User Dashboard</button>
           <button onClick={logout}><LogOut size={16} />Logout</button>
         </div>
       </aside>
@@ -1444,7 +1455,6 @@ function PlatformAdminApp({
             <button onClick={() => refresh().catch(() => undefined)}><Database size={16} />Refresh</button>
             <button onClick={() => setPlatformSection("modules")}><Layers size={16} />Modules</button>
             <button onClick={() => setPlatformSection("plans")}><KeyRound size={16} />Plans</button>
-            <button onClick={() => { window.location.href = "/dashboard"; }}><LineChart size={16} />User Dashboard</button>
           </div>
         </header>
 
@@ -1472,6 +1482,7 @@ function PlatformAdminApp({
               onCreate={createTenant}
               onUpdate={updateTenantModules}
               onUpdateSubscription={updateTenantSubscription}
+              onUpdateStatus={updateTenantStatus}
               onResetPassword={resetSubscriberPassword}
             />
           ) : null}
@@ -2227,6 +2238,7 @@ function PlatformSubscribersPanel({
   onCreate,
   onUpdate,
   onUpdateSubscription,
+  onUpdateStatus,
   onResetPassword
 }: {
   tenants: any[];
@@ -2239,6 +2251,7 @@ function PlatformSubscribersPanel({
   onCreate: (input: { name: string; ownerEmail: string; password: string; planCode: string; moduleCodes: string[] }) => Promise<void>;
   onUpdate: (tenantId: string, planCode: string, moduleCodes: string[]) => Promise<void>;
   onUpdateSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
+  onUpdateStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
   onResetPassword: (tenantId: string, password: string) => Promise<void>;
 }) {
   const selectedTenant = tenants.find((tenant) => tenant.id === selectedTenantId);
@@ -2251,6 +2264,7 @@ function PlatformSubscribersPanel({
         onBack={() => onSelectTenant(null)}
         onUpdate={onUpdate}
         onUpdateSubscription={onUpdateSubscription}
+        onUpdateStatus={onUpdateStatus}
         onResetPassword={onResetPassword}
       />
     );
@@ -2301,6 +2315,7 @@ function SubscriberDetailPanel({
   onBack,
   onUpdate,
   onUpdateSubscription,
+  onUpdateStatus,
   onResetPassword
 }: {
   tenant: any;
@@ -2309,6 +2324,7 @@ function SubscriberDetailPanel({
   onBack: () => void;
   onUpdate: (tenantId: string, planCode: string, moduleCodes: string[]) => Promise<void>;
   onUpdateSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
+  onUpdateStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
   onResetPassword: (tenantId: string, password: string) => Promise<void>;
 }) {
   const [planCode, setPlanCode] = useState(tenant.plan_code ?? "starter_orb");
@@ -2359,6 +2375,21 @@ function SubscriberDetailPanel({
     setActivity(await loadSubscriberActivity(tenant.id));
   }
 
+  function pauseSubscriber() {
+    if (!window.confirm(`Pause ${tenant.name}? This will disable subscriber login, revoke active sessions, and pause automation without deleting history.`)) return;
+    onUpdateStatus(tenant.id, "PAUSED").catch(() => undefined);
+  }
+
+  function resumeSubscriber() {
+    onUpdateStatus(tenant.id, "ACTIVE").catch(() => undefined);
+  }
+
+  function removeSubscriber() {
+    if (!window.confirm(`Remove ${tenant.name}? This is a soft removal: login and automation will be disabled and the latest subscription will be canceled. Historical trades, journals, invoices, and reports are kept.`)) return;
+    if (!window.confirm(`Confirm removal of ${tenant.name}. This action affects subscriber access immediately.`)) return;
+    onUpdateStatus(tenant.id, "REMOVED").catch(() => undefined);
+  }
+
   return (
     <section className="platform-panel platform-wide subscriber-detail">
       <div className="panel-title-row">
@@ -2367,10 +2398,16 @@ function SubscriberDetailPanel({
           <h2><Users size={18} />{tenant.name}</h2>
           <p className="reason">{tenant.primary_login_email ?? tenant.owner_email ?? "No email"} · {tenant.slug}</p>
         </div>
-        <span className={`pill ${["TRIAL", "ACTIVE"].includes(tenant.subscription_status) ? "good" : "bad"}`}>{tenant.subscription_status ?? tenant.status}</span>
+        <div className="tenant-lifecycle-actions">
+          <span className={`pill ${tenant.status === "ACTIVE" && ["TRIAL", "ACTIVE"].includes(tenant.subscription_status) ? "good" : tenant.status === "PAUSED" ? "warn" : "bad"}`}>{tenant.status ?? "ACTIVE"} · {tenant.subscription_status ?? "--"}</span>
+          {tenant.status === "PAUSED" ? <button onClick={resumeSubscriber}>Resume</button> : null}
+          {tenant.status === "ACTIVE" ? <button onClick={pauseSubscriber}>Pause</button> : null}
+          {tenant.status !== "REMOVED" ? <button className="danger-button" onClick={removeSubscriber}>Remove</button> : null}
+        </div>
       </div>
 
       <div className="subscriber-profile-grid">
+        <Metric label="Account" value={tenant.status ?? "ACTIVE"} />
         <Metric label="Login" value={tenant.primary_login_status ?? "NOT CREATED"} />
         <Metric label="Last login" value={formatNepalTime(tenant.primary_login_last_login_at)} />
         <Metric label="Plan" value={tenant.plan_name ?? "--"} />

@@ -56,7 +56,15 @@ export async function authRoutes(app: FastifyInstance) {
       });
       return reply.code(429).send({ message: "Too many login attempts. Try again later.", retryAfterSeconds: Math.ceil((rate.lockedUntil - Date.now()) / 1000) });
     }
-    const { rows } = await query("SELECT * FROM admin_users WHERE lower(email) = $1 AND status = 'ACTIVE' LIMIT 1", [email]);
+    const { rows } = await query(
+      `SELECT au.*, t.status AS tenant_status
+       FROM admin_users au
+       LEFT JOIN platform_tenants t ON t.id = au.tenant_id
+       WHERE lower(au.email) = $1
+         AND au.status = 'ACTIVE'
+       LIMIT 1`,
+      [email]
+    );
     const admin = rows[0];
     if (!admin || !(await verifyPassword(password, admin.password_hash))) {
       const failed = await registerFailedLogin(request, email);
@@ -67,6 +75,16 @@ export async function authRoutes(app: FastifyInstance) {
         metadata: { attempts: failed.attempts, lockedUntil: failed.lockedUntil ? new Date(failed.lockedUntil).toISOString() : null }
       });
       return reply.code(401).send({ message: "Invalid admin credentials." });
+    }
+    if (!admin.platform_super_admin && admin.tenant_id && admin.tenant_status !== "ACTIVE") {
+      await recordSecurityEvent({
+        adminUserId: admin.id,
+        eventType: "AUTH_INACTIVE_SUBSCRIBER_BLOCKED",
+        email: admin.email,
+        request,
+        metadata: { tenantId: admin.tenant_id, tenantStatus: admin.tenant_status }
+      });
+      return reply.code(403).send({ message: "Subscriber account is paused or removed." });
     }
     if (admin.mfa_enabled === true) {
       const mfaValid = verifyTotp(String(admin.mfa_secret_encrypted ?? ""), otp);

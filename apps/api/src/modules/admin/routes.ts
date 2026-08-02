@@ -236,6 +236,79 @@ export async function adminRoutes(app: FastifyInstance) {
     return { tenantId: id, planCode: body.planCode, moduleCodes: body.moduleCodes ?? [] };
   });
 
+  app.put("/api/platform/tenants/:id/status", async (request) => {
+    const session = requirePlatformSuperAdmin(request);
+    const { id } = request.params as { id: string };
+    const body = request.body as { status?: string };
+    const status = subscriberStatus(body.status);
+    const before = await query("SELECT * FROM platform_tenants WHERE id = $1 LIMIT 1", [id]);
+    if (!before.rows[0]) {
+      const error = new Error("Subscriber not found.") as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+    const { rows } = await query(
+      `UPDATE platform_tenants
+       SET status = $2, updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [id, status]
+    );
+    const loginStatus = status === "ACTIVE" ? "ACTIVE" : status === "PAUSED" ? "SUSPENDED" : "DISABLED";
+    await query("UPDATE admin_users SET status = $2, updated_at = now() WHERE tenant_id = $1 AND platform_super_admin = false", [id, loginStatus]);
+    await query(
+      `UPDATE admin_sessions
+       SET revoked_at = now(), last_seen_at = now()
+       WHERE admin_user_id IN (
+         SELECT id FROM admin_users WHERE tenant_id = $1 AND platform_super_admin = false
+       )
+       AND revoked_at IS NULL`,
+      [id]
+    );
+    if (status === "ACTIVE") {
+      await query(
+        `UPDATE tenant_automation_states
+         SET enabled = true,
+             running = false,
+             phase = CASE WHEN phase = 'PAUSED' THEN 'STARTING' ELSE phase END,
+             latest_reason = 'Subscriber account is active. Automation will resume on the next heartbeat.',
+             updated_at = now()
+         WHERE tenant_id = $1`,
+        [id]
+      );
+    } else {
+      const reason = status === "PAUSED"
+        ? "Subscriber account is paused by platform admin. Login and automation are disabled."
+        : "Subscriber account is removed by platform admin. Login and automation are disabled.";
+      await query(
+        `UPDATE tenant_automation_states
+         SET enabled = false,
+             running = false,
+             phase = 'PAUSED',
+             latest_reason = $2,
+             updated_at = now()
+         WHERE tenant_id = $1`,
+        [id, reason]
+      );
+    }
+    if (status === "REMOVED") {
+      await query(
+        `UPDATE tenant_subscriptions
+         SET status = 'CANCELED', updated_at = now()
+         WHERE tenant_id = $1
+           AND id = (
+             SELECT id FROM tenant_subscriptions
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+           )`,
+        [id]
+      );
+    }
+    await writeAudit(session.sub, "SUBSCRIBER_STATUS_UPDATE", "platform_tenant", id, before.rows[0], rows[0]);
+    return rows[0];
+  });
+
   app.put("/api/platform/tenants/:id/subscription", async (request) => {
     const session = requirePlatformSuperAdmin(request);
     const { id } = request.params as { id: string };
@@ -911,6 +984,12 @@ function subscriptionStatus(value: string | undefined) {
   const normalized = String(value ?? "TRIAL").toUpperCase();
   if (["TRIAL", "ACTIVE", "PAST_DUE", "CANCELED", "EXPIRED"].includes(normalized)) return normalized;
   throw new Error("Subscription status must be TRIAL, ACTIVE, PAST_DUE, CANCELED, or EXPIRED.");
+}
+
+function subscriberStatus(value: string | undefined) {
+  const normalized = String(value ?? "ACTIVE").toUpperCase();
+  if (["ACTIVE", "PAUSED", "REMOVED"].includes(normalized)) return normalized;
+  throw new Error("Subscriber status must be ACTIVE, PAUSED, or REMOVED.");
 }
 
 function supportTicketType(value?: string) {

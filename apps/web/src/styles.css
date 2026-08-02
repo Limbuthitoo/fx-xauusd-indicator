@@ -2366,6 +2366,18 @@ aside {
   font-size: 12px;
 }
 
+.tenant-lifecycle-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tenant-lifecycle-actions button {
+  min-height: 34px;
+}
+
 .ghost-button {
   justify-content: flex-start;
   width: fit-content;
@@ -2373,6 +2385,17 @@ aside {
   background: transparent;
   color: #9ba8a0;
   padding-left: 0;
+}
+
+.danger-button {
+  border-color: #553032;
+  background: #261213;
+  color: #ffb4b8;
+}
+
+.danger-button:hover {
+  border-color: #ff6b72;
+  color: #ffd7da;
 }
 
 .platform-row,
