@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Bell, CheckCircle2, Clock, CreditCard, Database, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Trash2, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
-import { api, clearAuthToken, getAuthToken, setAuthToken } from "./shared/api";
+import { api, clearAuthToken } from "./shared/api";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
@@ -213,10 +213,6 @@ function App() {
 
   useEffect(() => {
     async function restoreSession() {
-      if (!getAuthToken()) {
-        setAuthChecked(true);
-        return;
-      }
       setAuthChecked(true);
       const result = await api<{ user: AdminUser }>("/api/auth/me").catch(() => undefined);
       if (result?.user) {
@@ -242,7 +238,7 @@ function App() {
     const timer = window.setInterval(() => {
       api<{ token: string; user: AdminUser }>("/api/auth/refresh", { method: "POST", body: JSON.stringify({}) })
         .then((result) => {
-          setAuthToken(result.token);
+          clearAuthToken();
           setUser(result.user);
         })
         .catch(() => {
@@ -322,13 +318,14 @@ function App() {
       method: "POST",
       body: JSON.stringify({ email, password })
     });
-    setAuthToken(result.token);
+    clearAuthToken();
     setUser(result.user);
     setMessage("Admin dashboard unlocked.");
     refresh().catch(() => setMessage("API offline. Start PostgreSQL and the API server."));
   }
 
   function logout() {
+    api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => undefined);
     clearAuthToken();
     setUser(null);
     setState({ strategies: [] });

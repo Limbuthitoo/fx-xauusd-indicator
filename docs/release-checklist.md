@@ -19,6 +19,9 @@
 - Confirm Twelve Data thresholds are below the daily limit.
 - Confirm Firebase push status is `CONFIGURED` when `PUSH_PROVIDER=firebase`.
 - Confirm `PUBLIC_API_BASE_URL` and `EXPO_PUBLIC_API_BASE_URL` use the VPS/domain URL.
+- Confirm `ADMIN_PASSWORD` passes the strong password policy and `ADMIN_SESSION_SECRET` is at least 32 characters.
+- Confirm browser auth uses the HttpOnly `xauusd_admin_session` cookie after login.
+- Confirm logout clears the auth cookie and records an `AUTH_LOGOUT` security event.
 - Confirm Cloudflare DNS has `fx.bijaysubbalimbu.com.np` as a proxied `A` record to the VPS IP.
 - Confirm Cloudflare SSL/TLS is `Full strict` after Certbot installs the origin certificate.
 - Confirm Cloudflare WebSockets are enabled and API cache is bypassed.

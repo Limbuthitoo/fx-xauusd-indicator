@@ -28,6 +28,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
+      credentials: "include",
       signal: options.signal ?? controller.signal,
       headers: {
         "Content-Type": "application/json",

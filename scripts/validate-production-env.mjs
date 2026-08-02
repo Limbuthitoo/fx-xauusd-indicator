@@ -22,6 +22,9 @@ if (!allowPlaceholders) {
   for (const key of ["POSTGRES_PASSWORD", "LOCAL_PIN", "ADMIN_PASSWORD", "ADMIN_SESSION_SECRET", "TWELVE_DATA_API_KEY"]) {
     if (isPlaceholder(env[key])) errors.push(`${key} still contains a placeholder value.`);
   }
+  const passwordError = validateStrongPassword(env.ADMIN_PASSWORD ?? "");
+  if (passwordError) errors.push(`ADMIN_PASSWORD ${passwordError}`);
+  if ((env.ADMIN_SESSION_SECRET ?? "").length < 32) errors.push("ADMIN_SESSION_SECRET must be at least 32 characters.");
 }
 
 if (env.REDIS_REQUIRED !== "true") errors.push("REDIS_REQUIRED must be true in production.");
@@ -56,6 +59,16 @@ function required(key) {
 function isPlaceholder(value) {
   const text = String(value ?? "");
   return text.includes("change-this") || text.includes("CHANGE_ME") || text.includes("example.com");
+}
+
+function validateStrongPassword(password) {
+  if (password.length < 12) return "must be at least 12 characters.";
+  if (!/[a-z]/.test(password)) return "must include a lowercase letter.";
+  if (!/[A-Z]/.test(password)) return "must include an uppercase letter.";
+  if (!/[0-9]/.test(password)) return "must include a number.";
+  if (!/[^A-Za-z0-9]/.test(password)) return "must include a symbol.";
+  if (/change-this|password|admin|1234/i.test(password)) return "contains a blocked weak phrase.";
+  return null;
 }
 
 function numberValue(key) {

@@ -56,6 +56,7 @@ app.addHook("onResponse", async (request, reply) => {
 });
 
 await app.register(cors, {
+  credentials: true,
   origin: (origin, callback) => {
     if (!origin || config.nodeEnv !== "production") return callback(null, true);
     const allowed = new Set([

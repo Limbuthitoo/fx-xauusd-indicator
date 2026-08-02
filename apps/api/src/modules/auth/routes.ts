@@ -1,4 +1,4 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHmac } from "node:crypto";
+import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHmac, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { config } from "../../infrastructure/config.js";
@@ -12,6 +12,8 @@ const scrypt = promisify(scryptCallback);
 const TOKEN_TTL_MS = Math.max(config.adminTokenTtlMinutes, 15) * 60 * 1000;
 const TOKEN_SECRET = config.adminSessionSecret || `${config.databaseUrl}:${config.adminPassword}`;
 const loginAttempts = new Map<string, { attempts: number; firstAttemptAt: number; lockedUntil: number }>();
+const revokedTokenSignatures = new Map<string, number>();
+const AUTH_COOKIE_NAME = "xauusd_admin_session";
 
 type AdminSession = {
   sub: string;
@@ -21,6 +23,7 @@ type AdminSession = {
   tenantId: string | null;
   platformSuperAdmin: boolean;
   permissions: string[];
+  sid?: string;
   exp: number;
 };
 
@@ -30,6 +33,16 @@ export async function authRoutes(app: FastifyInstance) {
     const body = request.body as { email?: string; password?: string; pin?: string };
     const email = (body.email || config.adminEmail).toLowerCase().trim();
     const password = body.password || body.pin || "";
+    const passwordPolicyError = productionCredentialError(password);
+    if (adminUsesBootstrapEmail(email) && passwordPolicyError) {
+      await recordSecurityEvent({
+        eventType: "AUTH_WEAK_BOOTSTRAP_PASSWORD_BLOCKED",
+        email,
+        request,
+        metadata: { reason: passwordPolicyError }
+      });
+      return reply.code(403).send({ message: "Production admin password does not meet security policy." });
+    }
     const rate = await loginRateStatus(request, email);
     if (rate.locked) {
       await recordSecurityEvent({
@@ -65,6 +78,7 @@ export async function authRoutes(app: FastifyInstance) {
       metadata: { platformSuperAdmin: admin.platform_super_admin === true, tenantId: admin.tenant_id ?? null }
     });
 
+    const sessionId = randomUUID();
     const session: AdminSession = {
       sub: admin.id,
       role: "ADMIN",
@@ -73,16 +87,22 @@ export async function authRoutes(app: FastifyInstance) {
       tenantId: admin.tenant_id ?? null,
       platformSuperAdmin: admin.platform_super_admin === true,
       permissions,
+      sid: sessionId,
       exp: Date.now() + TOKEN_TTL_MS
     };
 
-    return { token: signSession(session), user: session };
+    const token = signSession(session);
+    await persistAdminSession(session, token, request);
+    setAuthCookie(reply, token, session.exp);
+    return { token, user: session };
   });
 
   app.post("/api/auth/refresh", async (request, reply) => {
     const session = verifyAdminSession(request);
     if (!session) return reply.code(401).send({ message: "Authentication required." });
     const refreshed = { ...session, exp: Date.now() + TOKEN_TTL_MS };
+    const token = signSession(refreshed);
+    await persistAdminSession(refreshed, token, request);
     await recordSecurityEvent({
       adminUserId: session.sub,
       eventType: "AUTH_SESSION_REFRESH",
@@ -90,7 +110,28 @@ export async function authRoutes(app: FastifyInstance) {
       request,
       metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
     });
-    return { token: signSession(refreshed), user: refreshed };
+    setAuthCookie(reply, token, refreshed.exp);
+    return { token, user: refreshed };
+  });
+
+  app.post("/api/auth/logout", async (request, reply) => {
+    const token = tokenFromRequest(request);
+    const session = verifyAdminSession(request);
+    if (token) {
+      revokeToken(token);
+      await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE token_hash = $1", [tokenHash(token)]).catch(() => undefined);
+    }
+    if (session) {
+      await recordSecurityEvent({
+        adminUserId: session.sub,
+        eventType: "AUTH_LOGOUT",
+        email: session.email,
+        request,
+        metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
+      });
+    }
+    clearAuthCookie(reply);
+    return { status: "ok" };
   });
 
   app.get("/api/auth/me", async (request, reply) => {
@@ -283,6 +324,13 @@ export async function writeAudit(adminUserId: string | null, action: string, res
 }
 
 async function ensureDefaultAdmin() {
+  const policyError = productionCredentialError(config.adminPassword);
+  if (policyError) {
+    throw new Error(`ADMIN_PASSWORD is not production safe: ${policyError}`);
+  }
+  if (config.nodeEnv === "production" && config.adminSessionSecret.length < 32) {
+    throw new Error("ADMIN_SESSION_SECRET must be at least 32 characters in production.");
+  }
   const existing = await query("SELECT id FROM admin_users WHERE lower(email) = lower($1) LIMIT 1", [config.adminEmail]);
   if (existing.rows.length > 0) return;
 
@@ -321,6 +369,16 @@ export async function hashPassword(password: string) {
   return `scrypt:${salt}:${derived.toString("hex")}`;
 }
 
+export function validateStrongPassword(password: string) {
+  if (password.length < 12) return "Password must be at least 12 characters.";
+  if (!/[a-z]/.test(password)) return "Password must include a lowercase letter.";
+  if (!/[A-Z]/.test(password)) return "Password must include an uppercase letter.";
+  if (!/[0-9]/.test(password)) return "Password must include a number.";
+  if (!/[^A-Za-z0-9]/.test(password)) return "Password must include a symbol.";
+  if (/change-this|password|admin|1234/i.test(password)) return "Password contains a blocked weak phrase.";
+  return null;
+}
+
 async function verifyPassword(password: string, stored: string) {
   const [scheme, salt, hash] = stored.split(":");
   if (scheme !== "scrypt" || !salt || !hash) return false;
@@ -336,9 +394,8 @@ function signSession(session: AdminSession) {
 }
 
 function verifyAdminSession(request: FastifyRequest): AdminSession | null {
-  const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return null;
-  const token = header.slice("Bearer ".length);
+  const token = tokenFromRequest(request);
+  if (!token || isTokenRevoked(token)) return null;
   const [payload, signature] = token.split(".");
   if (!payload || !signature) return null;
 
@@ -351,10 +408,89 @@ function verifyAdminSession(request: FastifyRequest): AdminSession | null {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as AdminSession;
     if (session.exp < Date.now()) return null;
     if (session.role !== "ADMIN") return null;
+    touchAdminSession(session, token);
     return session;
   } catch {
     return null;
   }
+}
+
+function tokenFromRequest(request: FastifyRequest) {
+  const header = request.headers.authorization;
+  if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length);
+  const cookieHeader = String(request.headers.cookie ?? "");
+  for (const part of cookieHeader.split(";")) {
+    const [rawName, ...rawValue] = part.trim().split("=");
+    if (rawName === AUTH_COOKIE_NAME) return decodeURIComponent(rawValue.join("="));
+  }
+  return null;
+}
+
+function setAuthCookie(reply: any, token: string, exp: number) {
+  const maxAgeSeconds = Math.max(Math.floor((exp - Date.now()) / 1000), 0);
+  const secure = config.nodeEnv === "production" ? "; Secure" : "";
+  reply.header(
+    "Set-Cookie",
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; SameSite=Lax${secure}`
+  );
+}
+
+function clearAuthCookie(reply: any) {
+  const secure = config.nodeEnv === "production" ? "; Secure" : "";
+  reply.header("Set-Cookie", `${AUTH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secure}`);
+}
+
+function tokenHash(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function revokeToken(token: string) {
+  const signature = token.split(".")[1];
+  if (!signature) return;
+  revokedTokenSignatures.set(signature, Date.now() + TOKEN_TTL_MS);
+  cleanupRevokedTokens();
+}
+
+function isTokenRevoked(token: string) {
+  cleanupRevokedTokens();
+  const signature = token.split(".")[1];
+  return Boolean(signature && revokedTokenSignatures.has(signature));
+}
+
+function cleanupRevokedTokens() {
+  const now = Date.now();
+  for (const [signature, expiresAt] of revokedTokenSignatures) {
+    if (expiresAt <= now) revokedTokenSignatures.delete(signature);
+  }
+}
+
+async function persistAdminSession(session: AdminSession, token: string, request: FastifyRequest) {
+  await query(
+    `INSERT INTO admin_sessions (id, admin_user_id, token_hash, ip_address, user_agent, expires_at, last_seen_at)
+     VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0), now())
+     ON CONFLICT (token_hash) DO UPDATE SET last_seen_at = now(), expires_at = EXCLUDED.expires_at`,
+    [
+      session.sid ?? randomUUID(),
+      session.sub,
+      tokenHash(token),
+      request.ip ?? null,
+      String(request.headers["user-agent"] ?? ""),
+      session.exp
+    ]
+  ).catch(() => undefined);
+}
+
+function touchAdminSession(session: AdminSession, token: string) {
+  query("UPDATE admin_sessions SET last_seen_at = now() WHERE admin_user_id = $1 AND token_hash = $2 AND revoked_at IS NULL", [session.sub, tokenHash(token)]).catch(() => undefined);
+}
+
+function adminUsesBootstrapEmail(email: string) {
+  return email.toLowerCase() === config.adminEmail.toLowerCase();
+}
+
+function productionCredentialError(password: string) {
+  if (config.nodeEnv !== "production") return null;
+  return validateStrongPassword(password);
 }
 
 function loginRateKey(request: FastifyRequest, email: string) {
