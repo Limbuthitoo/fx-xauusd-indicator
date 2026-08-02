@@ -1587,6 +1587,34 @@ function PlatformOverviewPanel({ platform, tenants, modules, usage, automationRo
           {recentInvoices.length === 0 ? <p className="reason">No invoices recorded yet.</p> : null}
         </div>
       </div>
+
+      <div className="overview-card overview-wide">
+        <h2><Layers size={18} />Strategy Modules</h2>
+        <div className="overview-list">
+          {modules.map((module) => (
+            <div key={module.code}>
+              <strong>{module.name}</strong>
+              <span>{module.description}</span>
+              <em>{module.status} · {module.assigned_tenants ?? 0} subscribers · {module.target_win_rate ?? "Research pending"}</em>
+            </div>
+          ))}
+          {modules.length === 0 ? <p className="reason">No strategy modules are configured yet.</p> : null}
+        </div>
+      </div>
+
+      <div className="overview-card overview-wide">
+        <h2><KeyRound size={18} />Subscription Plans</h2>
+        <div className="overview-list">
+          {plans.map((plan: any) => (
+            <div key={plan.code}>
+              <strong>{plan.name} · {formatCurrency(plan.price_usd)}/{String(plan.billing_period ?? "MONTHLY").toLowerCase()}</strong>
+              <span>{plan.description}</span>
+              <em>{(plan.modules ?? []).map((module: any) => module.name).join(", ") || "No modules assigned"}</em>
+            </div>
+          ))}
+          {plans.length === 0 ? <p className="reason">No subscription plans are configured yet.</p> : null}
+        </div>
+      </div>
     </section>
   );
 }

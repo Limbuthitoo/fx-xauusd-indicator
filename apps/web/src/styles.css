@@ -2117,6 +2117,10 @@ aside {
   align-items: center;
 }
 
+.overview-wide {
+  grid-column: 1 / -1;
+}
+
 .overview-card h2 {
   display: flex;
   align-items: center;
