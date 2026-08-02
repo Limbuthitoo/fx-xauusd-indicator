@@ -97,6 +97,13 @@ Set the APK API URL per build with `EXPO_PUBLIC_API_BASE_URL`. The `preview-apk`
 
 Replace it with your Mac/server IP before building, or override it from EAS environment variables.
 
+After the VPS is live, build an installable APK pointed at the production domain:
+
+```bash
+cd apps/mobile
+npx eas-cli build -p android --profile production-apk
+```
+
 After installing the APK:
 
 1. Log in with the tenant account.
@@ -119,7 +126,7 @@ For a physical phone, the API URL cannot be `localhost` unless the API is runnin
 
 - Signals: assigned modules, live XAUUSD chart, current signal, entry, SL, TP, paper-trade status, and checklist.
 - Alerts: latest NY pre-session, valid setup, paper trade, and closeout notifications.
-- Account: tenant plan, subscription status, API URL, websocket status, push status, and assigned modules.
+- More: tenant profile, push settings, assigned modules, support, API URL, websocket status, and app details.
 
 ## Runtime Notes
 
