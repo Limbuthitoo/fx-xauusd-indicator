@@ -787,6 +787,12 @@ function App() {
     await refresh();
   }
 
+  async function deleteTenant(tenantId: string) {
+    await api<any>(`/api/platform/tenants/${tenantId}`, { method: "DELETE" });
+    setMessage("Subscriber deleted. Related access records were removed and historical trading records were preserved where configured.");
+    await refresh();
+  }
+
   async function resetSubscriberPassword(tenantId: string, password: string) {
     await api<any>(`/api/platform/tenants/${tenantId}/owner-password`, {
       method: "PUT",
@@ -868,6 +874,7 @@ function App() {
         updateTenantAutomation={updateTenantAutomation}
         updateTenantSubscription={updateTenantSubscription}
         updateTenantStatus={updateTenantStatus}
+        deleteTenant={deleteTenant}
         resetSubscriberPassword={resetSubscriberPassword}
         updateManualInvoiceStatus={updateManualInvoiceStatus}
         updatePlatformBusinessSettings={updatePlatformBusinessSettings}
@@ -1360,6 +1367,7 @@ function PlatformAdminApp({
   updateTenantAutomation,
   updateTenantSubscription,
   updateTenantStatus,
+  deleteTenant,
   resetSubscriberPassword,
   updateManualInvoiceStatus,
   updatePlatformBusinessSettings,
@@ -1378,6 +1386,7 @@ function PlatformAdminApp({
   updateTenantAutomation: (tenantId: string, enabled: boolean) => Promise<void>;
   updateTenantSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
   updateTenantStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
+  deleteTenant: (tenantId: string) => Promise<void>;
   resetSubscriberPassword: (tenantId: string, password: string) => Promise<void>;
   updateManualInvoiceStatus: (invoiceId: string, status: "PAID" | "PAST_DUE" | "CANCELED") => Promise<void>;
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
@@ -1483,6 +1492,7 @@ function PlatformAdminApp({
               onUpdate={updateTenantModules}
               onUpdateSubscription={updateTenantSubscription}
               onUpdateStatus={updateTenantStatus}
+              onDelete={deleteTenant}
               onResetPassword={resetSubscriberPassword}
             />
           ) : null}
@@ -2239,6 +2249,7 @@ function PlatformSubscribersPanel({
   onUpdate,
   onUpdateSubscription,
   onUpdateStatus,
+  onDelete,
   onResetPassword
 }: {
   tenants: any[];
@@ -2252,6 +2263,7 @@ function PlatformSubscribersPanel({
   onUpdate: (tenantId: string, planCode: string, moduleCodes: string[]) => Promise<void>;
   onUpdateSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
   onUpdateStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
+  onDelete: (tenantId: string) => Promise<void>;
   onResetPassword: (tenantId: string, password: string) => Promise<void>;
 }) {
   const selectedTenant = tenants.find((tenant) => tenant.id === selectedTenantId);
@@ -2265,6 +2277,10 @@ function PlatformSubscribersPanel({
         onUpdate={onUpdate}
         onUpdateSubscription={onUpdateSubscription}
         onUpdateStatus={onUpdateStatus}
+        onDelete={async (tenantId) => {
+          await onDelete(tenantId);
+          onSelectTenant(null);
+        }}
         onResetPassword={onResetPassword}
       />
     );
@@ -2316,6 +2332,7 @@ function SubscriberDetailPanel({
   onUpdate,
   onUpdateSubscription,
   onUpdateStatus,
+  onDelete,
   onResetPassword
 }: {
   tenant: any;
@@ -2325,6 +2342,7 @@ function SubscriberDetailPanel({
   onUpdate: (tenantId: string, planCode: string, moduleCodes: string[]) => Promise<void>;
   onUpdateSubscription: (tenantId: string, status: string, renewsAt: string | null) => Promise<void>;
   onUpdateStatus: (tenantId: string, status: "ACTIVE" | "PAUSED" | "REMOVED") => Promise<void>;
+  onDelete: (tenantId: string) => Promise<void>;
   onResetPassword: (tenantId: string, password: string) => Promise<void>;
 }) {
   const [planCode, setPlanCode] = useState(tenant.plan_code ?? "starter_orb");
@@ -2385,16 +2403,16 @@ function SubscriberDetailPanel({
   }
 
   function removeSubscriber() {
-    if (!window.confirm(`Remove ${tenant.name}? This is a soft removal: login and automation will be disabled and the latest subscription will be canceled. Historical trades, journals, invoices, and reports are kept.`)) return;
-    if (!window.confirm(`Confirm removal of ${tenant.name}. This action affects subscriber access immediately.`)) return;
-    onUpdateStatus(tenant.id, "REMOVED").catch(() => undefined);
+    if (!window.confirm(`Delete ${tenant.name}? This will permanently remove the subscriber account, login, subscription, module assignments, support tickets, invoices, push devices, and automation state.`)) return;
+    if (!window.confirm(`Confirm permanent deletion of ${tenant.name}. This cannot be undone from the dashboard.`)) return;
+    onDelete(tenant.id).catch(() => undefined);
   }
 
   return (
     <section className="platform-panel platform-wide subscriber-detail">
       <div className="panel-title-row">
         <div>
-          <button className="ghost-button" onClick={onBack}>Back to Subscribers</button>
+          <button className="back-button" onClick={onBack}>Back to Subscribers</button>
           <h2><Users size={18} />{tenant.name}</h2>
           <p className="reason">{tenant.primary_login_email ?? tenant.owner_email ?? "No email"} · {tenant.slug}</p>
         </div>
@@ -2402,7 +2420,7 @@ function SubscriberDetailPanel({
           <span className={`pill ${tenant.status === "ACTIVE" && ["TRIAL", "ACTIVE"].includes(tenant.subscription_status) ? "good" : tenant.status === "PAUSED" ? "warn" : "bad"}`}>{tenant.status ?? "ACTIVE"} · {tenant.subscription_status ?? "--"}</span>
           {tenant.status === "PAUSED" ? <button onClick={resumeSubscriber}>Resume</button> : null}
           {tenant.status === "ACTIVE" ? <button onClick={pauseSubscriber}>Pause</button> : null}
-          {tenant.status !== "REMOVED" ? <button className="danger-button" onClick={removeSubscriber}>Remove</button> : null}
+          <button className="danger-button" onClick={removeSubscriber}>Delete</button>
         </div>
       </div>
 

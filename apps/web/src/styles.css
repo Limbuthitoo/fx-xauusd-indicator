@@ -2387,6 +2387,21 @@ aside {
   padding-left: 0;
 }
 
+.back-button {
+  justify-content: flex-start;
+  width: fit-content;
+  min-height: 34px;
+  border-color: #2d5542;
+  background: #132019;
+  color: #dcebe1;
+}
+
+.back-button::before {
+  content: "<";
+  color: #22c55e;
+  font-weight: 800;
+}
+
 .danger-button {
   border-color: #553032;
   background: #261213;

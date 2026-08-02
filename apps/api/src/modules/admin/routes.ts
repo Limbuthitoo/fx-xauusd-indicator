@@ -309,6 +309,34 @@ export async function adminRoutes(app: FastifyInstance) {
     return rows[0];
   });
 
+  app.delete("/api/platform/tenants/:id", async (request) => {
+    const session = requirePlatformSuperAdmin(request);
+    const { id } = request.params as { id: string };
+    const before = await query("SELECT * FROM platform_tenants WHERE id = $1 LIMIT 1", [id]);
+    if (!before.rows[0]) {
+      const error = new Error("Subscriber not found.") as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+    const loginUsers = await query("SELECT id FROM admin_users WHERE tenant_id = $1 AND platform_super_admin = false", [id]);
+    await query(
+      `UPDATE admin_sessions
+       SET revoked_at = now(), last_seen_at = now()
+       WHERE admin_user_id IN (
+         SELECT id FROM admin_users WHERE tenant_id = $1 AND platform_super_admin = false
+       )
+       AND revoked_at IS NULL`,
+      [id]
+    );
+    await query("DELETE FROM admin_users WHERE tenant_id = $1 AND platform_super_admin = false", [id]);
+    const deleted = await query("DELETE FROM platform_tenants WHERE id = $1 RETURNING *", [id]);
+    await writeAudit(session.sub, "SUBSCRIBER_DELETE", "platform_tenant", id, before.rows[0], {
+      deleted: deleted.rows[0] ?? null,
+      loginUsersDeleted: loginUsers.rows.length
+    });
+    return { deleted: true, tenant: deleted.rows[0], loginUsersDeleted: loginUsers.rows.length };
+  });
+
   app.put("/api/platform/tenants/:id/subscription", async (request) => {
     const session = requirePlatformSuperAdmin(request);
     const { id } = request.params as { id: string };
