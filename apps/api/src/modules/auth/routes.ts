@@ -301,17 +301,10 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.get("/api/tenant/context", async (request) => {
     const session = requireAdmin(request);
-    if (!session.tenantId) {
-      return {
-        tenant: null,
-        subscription: null,
-        modules: [],
-        availableModules: [],
-        usage: null,
-        invoices: [],
-        latestCheckoutSession: null,
-        platformSuperAdmin: session.platformSuperAdmin
-      };
+    if (session.platformSuperAdmin || !session.tenantId) {
+      const error = new Error("Subscriber account context required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
     }
     const tenant = await query("SELECT * FROM platform_tenants WHERE id = $1", [session.tenantId]);
     const subscription = await query(
@@ -441,7 +434,11 @@ export function requirePermission(request: FastifyRequest, permission: string) {
 
 export async function requireTenantModule(request: FastifyRequest, moduleCode: string) {
   const session = requireAdmin(request);
-  if (session.platformSuperAdmin) return session;
+  if (session.platformSuperAdmin) {
+    const error = new Error("Platform admins cannot access subscriber module dashboards.") as Error & { statusCode?: number };
+    error.statusCode = 403;
+    throw error;
+  }
   if (!session.tenantId) {
     const error = new Error("User account context required.") as Error & { statusCode?: number };
     error.statusCode = 403;

@@ -116,6 +116,12 @@ function App() {
   const [user, setUser] = useState<AdminUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
+  function routeAccountError(nextUser: AdminUser) {
+    if (nextUser.platformSuperAdmin && !isPlatformAdminRoute) return "Platform admin accounts must use the platform console.";
+    if (!nextUser.platformSuperAdmin && isPlatformAdminRoute) return "Subscriber accounts cannot access platform admin.";
+    return null;
+  }
+
   function setActiveModuleCode(moduleCode: string) {
     activeModuleCodeRef.current = moduleCode;
     window.localStorage.setItem("orb_active_module_code", moduleCode);
@@ -217,6 +223,14 @@ function App() {
       setAuthChecked(true);
       const result = await api<{ user: AdminUser }>("/api/auth/me").catch(() => undefined);
       if (result?.user) {
+        const routeError = routeAccountError(result.user);
+        if (routeError) {
+          clearAuthToken();
+          setUser(null);
+          setMessage(routeError);
+          setAuthChecked(true);
+          return;
+        }
         setUser(result.user);
         refresh().catch(() => setMessage("API offline. Start PostgreSQL and the API server."));
         return;
@@ -239,6 +253,13 @@ function App() {
     const timer = window.setInterval(() => {
       api<{ token: string; user: AdminUser }>("/api/auth/refresh", { method: "POST", body: JSON.stringify({}) })
         .then((result) => {
+          const routeError = routeAccountError(result.user);
+          if (routeError) {
+            clearAuthToken();
+            setUser(null);
+            setMessage(routeError);
+            return;
+          }
           clearAuthToken();
           setUser(result.user);
         })
@@ -319,6 +340,11 @@ function App() {
       method: "POST",
       body: JSON.stringify({ email, password, otp })
     });
+    const routeError = routeAccountError(result.user);
+    if (routeError) {
+      clearAuthToken();
+      throw new Error(routeError);
+    }
     clearAuthToken();
     setUser(result.user);
     setMessage("Admin dashboard unlocked.");
@@ -1269,7 +1295,8 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
     try {
       await onLogin(email, password, otp);
     } catch (error) {
-      setError((error as Error).message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : "Invalid admin email or password.");
+      const message = (error as Error).message;
+      setError(message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : message.includes("Platform admin") || message.includes("Subscriber account") ? message : "Invalid admin email or password.");
     } finally {
       setLoading(false);
     }
