@@ -1,0 +1,13 @@
+[Unit]
+Description=XAUUSD Signal PostgreSQL backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/xauusd-signal
+EnvironmentFile=/opt/xauusd-signal/.env.production
+ExecStart=/usr/bin/npm run db:backup
+ExecStartPost=/usr/bin/npm run db:backup:retention
+User=xauusd
+Group=xauusd

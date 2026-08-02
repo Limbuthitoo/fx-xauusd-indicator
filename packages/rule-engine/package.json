@@ -1,0 +1,14 @@
+{
+  "name": "@orb-guide/rule-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@orb-guide/shared-types": "0.1.0"
+  }
+}

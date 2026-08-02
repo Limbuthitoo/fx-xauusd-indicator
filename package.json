@@ -1,0 +1,50 @@
+{
+  "name": "personal-xauusd-orb-guide",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first XAUUSD New York ORB trading guide system with PostgreSQL.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @orb-guide/api & npm run dev -w @orb-guide/web",
+    "dev:api": "npm run dev -w @orb-guide/api",
+    "dev:api:no-worker": "npm run dev:no-worker -w @orb-guide/api",
+    "dev:worker": "npm run dev:worker -w @orb-guide/api",
+    "dev:mobile": "npm run start -w @orb-guide/mobile",
+    "dev:web": "npm run dev -w @orb-guide/web",
+    "dev:quant": "uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir apps/quant",
+    "build:packages": "npm run build -w @orb-guide/shared-types && npm run build -w @orb-guide/rule-engine && npm run build -w @orb-guide/risk-engine && npm run build -w @orb-guide/strategy-engine && npm run build -w @orb-guide/liquidity-sweep-engine",
+    "build:api": "npm run build:packages && npm run build -w @orb-guide/api",
+    "build:web": "npm run build -w @orb-guide/web",
+    "build": "npm run build:api && npm run build:web",
+    "db:migrate": "npm run db:migrate -w @orb-guide/api",
+    "db:seed": "npm run db:seed -w @orb-guide/api",
+    "db:backup": "bash scripts/db-backup.sh",
+    "db:restore": "bash scripts/db-restore.sh",
+    "db:backup:retention": "bash scripts/db-backup-retention.sh",
+    "deploy:verify": "node scripts/deploy-verify.mjs",
+    "deploy:vps-preflight": "node scripts/vps-preflight.mjs",
+    "release:validate-production": "node scripts/validate-production-env.mjs .env.production",
+    "qa:final": "node scripts/final-production-qa.mjs",
+    "pm2:start": "mkdir -p logs && npx pm2 start ecosystem.config.cjs",
+    "pm2:restart": "npx pm2 restart ecosystem.config.cjs --update-env",
+    "pm2:status": "npx pm2 status",
+    "pm2:logs": "npx pm2 logs",
+    "release:validate-env": "node scripts/validate-production-env.mjs .env.production.example --allow-placeholders",
+    "release:check-sensitive": "node scripts/check-sensitive-files.mjs",
+    "release:check": "npm run release:check-sensitive && npm run release:validate-env && npm run typecheck && npm run build",
+    "learn:orb": "python3 -m apps.quant.app.learning.orb_learning",
+    "launch:validate": "tsx scripts/launch-validate.ts",
+    "verify:orb": "tsx scripts/verify-orb-scenarios.ts",
+    "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "pm2": "^7.0.3"
+  }
+}

@@ -1,0 +1,113 @@
+services:
+  postgres:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+  redis:
+    restart: unless-stopped
+
+  api:
+    profiles: ["prod"]
+    restart: unless-stopped
+    command: ["npm", "run", "start"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+      REDIS_REQUIRED: "true"
+      API_PORT: 7070
+      LOCAL_PIN: ${LOCAL_PIN:?LOCAL_PIN is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?ADMIN_SESSION_SECRET is required}
+      ADMIN_TOKEN_TTL_MINUTES: ${ADMIN_TOKEN_TTL_MINUTES:-720}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:?PUBLIC_API_BASE_URL is required}
+      PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      EMBEDDED_MARKET_DATA_WORKER: "false"
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:?TWELVE_DATA_API_KEY is required}
+      TWELVE_DATA_SYMBOL: ${TWELVE_DATA_SYMBOL:-XAU/USD}
+      TWELVE_DATA_INTERVAL: ${TWELVE_DATA_INTERVAL:-5min}
+      TWELVE_DATA_POLL_SECONDS: ${TWELVE_DATA_POLL_SECONDS:-60}
+      TWELVE_DATA_DAILY_CREDIT_LIMIT: ${TWELVE_DATA_DAILY_CREDIT_LIMIT:-800}
+      TWELVE_DATA_MINUTE_CREDIT_LIMIT: ${TWELVE_DATA_MINUTE_CREDIT_LIMIT:-8}
+      TWELVE_DATA_WARN_CREDITS: ${TWELVE_DATA_WARN_CREDITS:-650}
+      TWELVE_DATA_DANGER_CREDITS: ${TWELVE_DATA_DANGER_CREDITS:-720}
+      TWELVE_DATA_STOP_CREDITS: ${TWELVE_DATA_STOP_CREDITS:-760}
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-auto}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL:-}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY:-}
+      FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH:-}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
+      BACKUP_DIR: ${BACKUP_DIR:-backups/postgres}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
+      MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
+
+  worker:
+    profiles: ["prod"]
+    restart: unless-stopped
+    command: ["npm", "run", "start:worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+      REDIS_REQUIRED: "true"
+      EMBEDDED_MARKET_DATA_WORKER: "false"
+      LOCAL_PIN: ${LOCAL_PIN:?LOCAL_PIN is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?ADMIN_SESSION_SECRET is required}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:?PUBLIC_API_BASE_URL is required}
+      PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:?TWELVE_DATA_API_KEY is required}
+      TWELVE_DATA_SYMBOL: ${TWELVE_DATA_SYMBOL:-XAU/USD}
+      TWELVE_DATA_INTERVAL: ${TWELVE_DATA_INTERVAL:-5min}
+      TWELVE_DATA_POLL_SECONDS: ${TWELVE_DATA_POLL_SECONDS:-60}
+      TWELVE_DATA_DAILY_CREDIT_LIMIT: ${TWELVE_DATA_DAILY_CREDIT_LIMIT:-800}
+      TWELVE_DATA_MINUTE_CREDIT_LIMIT: ${TWELVE_DATA_MINUTE_CREDIT_LIMIT:-8}
+      TWELVE_DATA_WARN_CREDITS: ${TWELVE_DATA_WARN_CREDITS:-650}
+      TWELVE_DATA_DANGER_CREDITS: ${TWELVE_DATA_DANGER_CREDITS:-720}
+      TWELVE_DATA_STOP_CREDITS: ${TWELVE_DATA_STOP_CREDITS:-760}
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-auto}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL:-}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY:-}
+      FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH:-}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
+      BACKUP_DIR: ${BACKUP_DIR:-backups/postgres}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
+      MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
+
+  web:
+    profiles: ["prod"]
+    restart: unless-stopped
+    command: ["npm", "run", "preview"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_API_BASE_URL:?PUBLIC_API_BASE_URL is required}
+    environment:
+      NODE_ENV: production
+      VITE_API_BASE_URL: ${PUBLIC_API_BASE_URL:?PUBLIC_API_BASE_URL is required}
+      EXPO_PUBLIC_API_BASE_URL: ${EXPO_PUBLIC_API_BASE_URL:-}
+      EXPO_PUBLIC_EAS_PROJECT_ID: ${EXPO_PUBLIC_EAS_PROJECT_ID:-}
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: ["prod-tools"]
+    command: ["npm", "run", "db:migrate"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy

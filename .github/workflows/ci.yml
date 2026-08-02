@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Guard Sensitive Files
+        run: npm run release:check-sensitive
+
+      - name: Validate Production Environment Template
+        run: npm run release:validate-env
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate Docker Compose
+        run: docker compose --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml --profile prod config --quiet
+
+      - name: Verify Production Artifacts
+        run: |
+          test -f apps/api/dist/server.js
+          test -f apps/api/dist/market-data-worker.js
+          test -f apps/web/dist/index.html

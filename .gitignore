@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.production
+*.log
+.expo/
+backups/postgres/*.dump
+firebase-service-account*.json
+service-account*.json

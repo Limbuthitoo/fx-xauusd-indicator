@@ -1,0 +1,142 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orb-guide-postgres
+    environment:
+      POSTGRES_DB: orb_guide
+      POSTGRES_USER: orb_user
+      POSTGRES_PASSWORD: orb_password
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orb_user -d orb_guide"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: orb-guide-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgres://orb_user:orb_password@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+      REDIS_REQUIRED: ${REDIS_REQUIRED:-false}
+      API_PORT: 7070
+      LOCAL_PIN: 1234
+      EMBEDDED_MARKET_DATA_WORKER: "false"
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
+      TWELVE_DATA_SYMBOL: ${TWELVE_DATA_SYMBOL:-XAU/USD}
+      TWELVE_DATA_INTERVAL: ${TWELVE_DATA_INTERVAL:-5min}
+      TWELVE_DATA_POLL_SECONDS: ${TWELVE_DATA_POLL_SECONDS:-60}
+      TWELVE_DATA_DAILY_CREDIT_LIMIT: ${TWELVE_DATA_DAILY_CREDIT_LIMIT:-800}
+      TWELVE_DATA_MINUTE_CREDIT_LIMIT: ${TWELVE_DATA_MINUTE_CREDIT_LIMIT:-8}
+      TWELVE_DATA_WARN_CREDITS: ${TWELVE_DATA_WARN_CREDITS:-650}
+      TWELVE_DATA_DANGER_CREDITS: ${TWELVE_DATA_DANGER_CREDITS:-720}
+      TWELVE_DATA_STOP_CREDITS: ${TWELVE_DATA_STOP_CREDITS:-760}
+    ports:
+      - "7070:7070"
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:7070/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: ["app"]
+    command: ["npm", "run", "dev:worker"]
+    environment:
+      DATABASE_URL: postgres://orb_user:orb_password@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+      REDIS_REQUIRED: ${REDIS_REQUIRED:-false}
+      API_PORT: 7070
+      LOCAL_PIN: 1234
+      EMBEDDED_MARKET_DATA_WORKER: "false"
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
+      TWELVE_DATA_SYMBOL: ${TWELVE_DATA_SYMBOL:-XAU/USD}
+      TWELVE_DATA_INTERVAL: ${TWELVE_DATA_INTERVAL:-5min}
+      TWELVE_DATA_POLL_SECONDS: ${TWELVE_DATA_POLL_SECONDS:-60}
+      TWELVE_DATA_DAILY_CREDIT_LIMIT: ${TWELVE_DATA_DAILY_CREDIT_LIMIT:-800}
+      TWELVE_DATA_MINUTE_CREDIT_LIMIT: ${TWELVE_DATA_MINUTE_CREDIT_LIMIT:-8}
+      TWELVE_DATA_WARN_CREDITS: ${TWELVE_DATA_WARN_CREDITS:-650}
+      TWELVE_DATA_DANGER_CREDITS: ${TWELVE_DATA_DANGER_CREDITS:-720}
+      TWELVE_DATA_STOP_CREDITS: ${TWELVE_DATA_STOP_CREDITS:-760}
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "const pg=require('pg'); const c=new pg.Client({connectionString:process.env.DATABASE_URL}); c.connect().then(()=>c.query(\"SELECT heartbeat_at FROM worker_heartbeats WHERE worker_name='market-data-worker' AND heartbeat_at > now() - interval '2 minutes' LIMIT 1\")).then(r=>{c.end();process.exit(r.rowCount?0:1)}).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:7070}
+    profiles: ["app"]
+    environment:
+      VITE_API_BASE_URL: http://localhost:7070
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      api:
+        condition: service_healthy
+
+  quant:
+    build: ./apps/quant
+    profiles: ["app"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

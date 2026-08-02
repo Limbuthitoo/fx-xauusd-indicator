@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "XAUUSD Signal",
+    "slug": "xauusd-signal",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "xauusdsignal",
+    "assetBundlePatterns": ["**/*"],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#050706"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.orbguide.xauusdsignal"
+    },
+    "android": {
+      "package": "com.orbguide.xauusdsignal",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#050706"
+      }
+    },
+    "extra": {
+      "apiBaseUrl": "http://localhost:7073"
+    }
+  }
+}
