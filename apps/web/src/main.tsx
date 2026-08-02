@@ -96,7 +96,7 @@ type AdminUser = {
 
 function App() {
   const currentPath = window.location.pathname;
-  const isPlatformAdminRoute = currentPath === "/platform" || currentPath.startsWith("/platform/") || currentPath.startsWith("/platform-admin");
+  const isPlatformAdminRoute = currentPath === "/platform" || currentPath.startsWith("/platform/") || currentPath === "/platform-admin" || currentPath.startsWith("/platform-admin/");
   const [state, setState] = useState<PanelState>({ strategies: [] });
   const [message, setMessage] = useState("Automatic paper trading is ready.");
   const [activeSection, setActiveSection] = useState<ActiveSection>("live");
@@ -1371,9 +1371,13 @@ function PlatformAdminApp({
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
   sendPlatformPushTest: () => Promise<void>;
 }) {
-  const [platformSection, setPlatformSection] = useState<PlatformSection>("overview");
+  const [platformSection, setPlatformSectionState] = useState<PlatformSection>(() => platformSectionFromPath(window.location.pathname));
   const [selectedSubscriberId, setSelectedSubscriberId] = useState<string | null>(null);
   const [showSubscriberCreate, setShowSubscriberCreate] = useState(false);
+  function setPlatformSection(section: PlatformSection) {
+    setPlatformSectionState(section);
+    window.history.replaceState(null, "", section === "overview" ? "/platform-admin" : `/platform-admin/${section}`);
+  }
   if (!can("platform.manage")) {
     return (
       <main className="login-screen">
@@ -1438,6 +1442,8 @@ function PlatformAdminApp({
           <div className="platform-actions">
             <button onClick={() => runAutomationNow().catch(() => undefined)}><LineChart size={16} />Run Automation Now</button>
             <button onClick={() => refresh().catch(() => undefined)}><Database size={16} />Refresh</button>
+            <button onClick={() => setPlatformSection("modules")}><Layers size={16} />Modules</button>
+            <button onClick={() => setPlatformSection("plans")}><KeyRound size={16} />Plans</button>
             <button onClick={() => { window.location.href = "/dashboard"; }}><LineChart size={16} />User Dashboard</button>
           </div>
         </header>
@@ -6133,6 +6139,23 @@ function platformSectionTitle(section: PlatformSection) {
     settings: "Platform Settings"
   };
   return titles[section];
+}
+
+function platformSectionFromPath(pathname: string): PlatformSection {
+  const section = pathname.split("/").filter(Boolean)[1];
+  if (
+    section === "subscribers" ||
+    section === "modules" ||
+    section === "plans" ||
+    section === "billing" ||
+    section === "automation" ||
+    section === "usage" ||
+    section === "system" ||
+    section === "settings"
+  ) {
+    return section;
+  }
+  return "overview";
 }
 
 function platformSectionSubtitle(section: PlatformSection) {
