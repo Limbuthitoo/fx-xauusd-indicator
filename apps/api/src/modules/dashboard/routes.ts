@@ -173,7 +173,10 @@ async function injectJson(app: FastifyInstance, request: FastifyRequest, method:
   const response = await app.inject({
     method,
     url,
-    headers: { authorization: request.headers.authorization ?? "" },
+    headers: {
+      authorization: request.headers.authorization ?? "",
+      cookie: request.headers.cookie ?? ""
+    },
     payload: payload as InjectPayload | undefined
   } as any);
   if (response.statusCode >= 400) return fallback;
