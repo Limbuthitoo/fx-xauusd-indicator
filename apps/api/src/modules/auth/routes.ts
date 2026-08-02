@@ -27,10 +27,13 @@ type AdminSession = {
   exp: number;
 };
 
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
 export async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/login", async (request, reply) => {
     await ensureDefaultAdmin();
     const body = request.body as { email?: string; password?: string; pin?: string };
+    const otp = String((body as any).otp ?? "").replace(/\s/g, "");
     const email = (body.email || config.adminEmail).toLowerCase().trim();
     const password = body.password || body.pin || "";
     const passwordPolicyError = productionCredentialError(password);
@@ -64,6 +67,20 @@ export async function authRoutes(app: FastifyInstance) {
         metadata: { attempts: failed.attempts, lockedUntil: failed.lockedUntil ? new Date(failed.lockedUntil).toISOString() : null }
       });
       return reply.code(401).send({ message: "Invalid admin credentials." });
+    }
+    if (admin.mfa_enabled === true) {
+      const mfaValid = verifyTotp(String(admin.mfa_secret_encrypted ?? ""), otp);
+      if (!mfaValid) {
+        await registerFailedLogin(request, email);
+        await recordSecurityEvent({
+          adminUserId: admin.id,
+          eventType: otp ? "AUTH_MFA_FAILED" : "AUTH_MFA_REQUIRED",
+          email: admin.email,
+          request,
+          metadata: { tenantId: admin.tenant_id ?? null, platformSuperAdmin: admin.platform_super_admin === true }
+        });
+        return reply.code(401).send({ message: "Two-factor code required.", mfaRequired: true });
+      }
     }
 
     await resetLoginRate(request, email);
@@ -131,6 +148,148 @@ export async function authRoutes(app: FastifyInstance) {
       });
     }
     clearAuthCookie(reply);
+    return { status: "ok" };
+  });
+
+  app.get("/api/auth/sessions", async (request) => {
+    const session = requireAdmin(request);
+    const { rows } = await query(
+      `SELECT id, ip_address, user_agent, expires_at, revoked_at, created_at, last_seen_at
+       FROM admin_sessions
+       WHERE admin_user_id = $1
+       ORDER BY last_seen_at DESC
+       LIMIT 25`,
+      [session.sub]
+    );
+    return { sessions: rows };
+  });
+
+  app.post("/api/auth/logout-all", async (request) => {
+    const session = requireAdmin(request);
+    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND revoked_at IS NULL", [session.sub]);
+    await recordSecurityEvent({
+      adminUserId: session.sub,
+      eventType: "AUTH_LOGOUT_ALL",
+      email: session.email,
+      request,
+      metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
+    });
+    return { status: "ok" };
+  });
+
+  app.post("/api/auth/mfa/setup", async (request) => {
+    const session = requireAdmin(request);
+    const secret = randomBase32Secret();
+    await query("UPDATE admin_users SET mfa_secret_encrypted = $2, updated_at = now() WHERE id = $1", [session.sub, secret]);
+    await recordSecurityEvent({
+      adminUserId: session.sub,
+      eventType: "AUTH_MFA_SETUP_STARTED",
+      email: session.email,
+      request,
+      metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
+    });
+    const issuer = "XAUUSD Indicator";
+    const label = `${issuer}:${session.email}`;
+    return {
+      secret,
+      otpAuthUrl: `otpauth://totp/${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`
+    };
+  });
+
+  app.post("/api/auth/mfa/enable", async (request, reply) => {
+    const session = requireAdmin(request);
+    const body = request.body as { otp?: string };
+    const { rows } = await query("SELECT mfa_secret_encrypted FROM admin_users WHERE id = $1", [session.sub]);
+    const secret = String(rows[0]?.mfa_secret_encrypted ?? "");
+    if (!verifyTotp(secret, String(body.otp ?? "").replace(/\s/g, ""))) {
+      return reply.code(400).send({ message: "Invalid two-factor code." });
+    }
+    await query("UPDATE admin_users SET mfa_enabled = true, updated_at = now() WHERE id = $1", [session.sub]);
+    await recordSecurityEvent({
+      adminUserId: session.sub,
+      eventType: "AUTH_MFA_ENABLED",
+      email: session.email,
+      request,
+      metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
+    });
+    return { status: "enabled" };
+  });
+
+  app.post("/api/auth/mfa/disable", async (request, reply) => {
+    const session = requireAdmin(request);
+    const body = request.body as { otp?: string };
+    const { rows } = await query("SELECT mfa_secret_encrypted FROM admin_users WHERE id = $1", [session.sub]);
+    const secret = String(rows[0]?.mfa_secret_encrypted ?? "");
+    if (!verifyTotp(secret, String(body.otp ?? "").replace(/\s/g, ""))) {
+      return reply.code(400).send({ message: "Invalid two-factor code." });
+    }
+    await query("UPDATE admin_users SET mfa_enabled = false, mfa_secret_encrypted = NULL, updated_at = now() WHERE id = $1", [session.sub]);
+    await recordSecurityEvent({
+      adminUserId: session.sub,
+      eventType: "AUTH_MFA_DISABLED",
+      email: session.email,
+      request,
+      metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
+    });
+    return { status: "disabled" };
+  });
+
+  app.post("/api/auth/password-reset/request", async (request) => {
+    const body = request.body as { email?: string };
+    const email = String(body.email ?? "").toLowerCase().trim();
+    const { rows } = await query("SELECT id, email FROM admin_users WHERE lower(email) = $1 AND status = 'ACTIVE' LIMIT 1", [email]);
+    let resetToken: string | null = null;
+    if (rows[0]) {
+      resetToken = randomBytes(32).toString("base64url");
+      await query(
+        `INSERT INTO admin_password_reset_tokens (admin_user_id, token_hash, expires_at, requested_ip_address, requested_user_agent)
+         VALUES ($1, $2, now() + interval '30 minutes', $3, $4)`,
+        [rows[0].id, tokenHash(resetToken), request.ip ?? null, String(request.headers["user-agent"] ?? "")]
+      );
+      await recordSecurityEvent({
+        adminUserId: rows[0].id,
+        eventType: "AUTH_PASSWORD_RESET_REQUESTED",
+        email: rows[0].email,
+        request,
+        metadata: { delivery: config.nodeEnv === "production" ? "external_mail_required" : "response_token" }
+      });
+    }
+    return {
+      status: "ok",
+      message: "If the email exists, a password reset has been created.",
+      resetToken: config.nodeEnv === "production" ? undefined : resetToken
+    };
+  });
+
+  app.post("/api/auth/password-reset/confirm", async (request, reply) => {
+    const body = request.body as { token?: string; password?: string };
+    const password = String(body.password ?? "");
+    const passwordError = validateStrongPassword(password);
+    if (passwordError) return reply.code(400).send({ message: passwordError });
+    const digest = tokenHash(String(body.token ?? ""));
+    const { rows } = await query(
+      `SELECT rt.*, u.email
+       FROM admin_password_reset_tokens rt
+       JOIN admin_users u ON u.id = rt.admin_user_id
+       WHERE rt.token_hash = $1
+         AND rt.used_at IS NULL
+         AND rt.expires_at > now()
+       LIMIT 1`,
+      [digest]
+    );
+    const reset = rows[0];
+    if (!reset) return reply.code(400).send({ message: "Invalid or expired password reset token." });
+    const passwordHash = await hashPassword(password);
+    await query("UPDATE admin_users SET password_hash = $2, password_changed_at = now(), updated_at = now() WHERE id = $1", [reset.admin_user_id, passwordHash]);
+    await query("UPDATE admin_password_reset_tokens SET used_at = now() WHERE id = $1", [reset.id]);
+    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND revoked_at IS NULL", [reset.admin_user_id]);
+    await recordSecurityEvent({
+      adminUserId: reset.admin_user_id,
+      eventType: "AUTH_PASSWORD_RESET_COMPLETED",
+      email: reset.email,
+      request,
+      metadata: { sessionsRevoked: true }
+    });
     return { status: "ok" };
   });
 
@@ -514,6 +673,57 @@ function adminUsesBootstrapEmail(email: string) {
 function productionCredentialError(password: string) {
   if (config.nodeEnv !== "production") return null;
   return validateStrongPassword(password);
+}
+
+function randomBase32Secret(length = 32) {
+  const bytes = randomBytes(length);
+  let secret = "";
+  for (const byte of bytes) secret += BASE32_ALPHABET[byte % BASE32_ALPHABET.length];
+  return secret;
+}
+
+function verifyTotp(secret: string, otp: string) {
+  if (!secret || !/^\d{6}$/.test(otp)) return false;
+  const currentStep = Math.floor(Date.now() / 30_000);
+  for (const offset of [-1, 0, 1]) {
+    const expected = totpCode(secret, currentStep + offset);
+    if (safeStringEqual(expected, otp)) return true;
+  }
+  return false;
+}
+
+function totpCode(secret: string, counter: number) {
+  const key = base32Decode(secret);
+  const buffer = Buffer.alloc(8);
+  buffer.writeBigUInt64BE(BigInt(counter));
+  const hmac = createHmac("sha1", key).update(buffer).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary = ((hmac[offset] & 0x7f) << 24)
+    | ((hmac[offset + 1] & 0xff) << 16)
+    | ((hmac[offset + 2] & 0xff) << 8)
+    | (hmac[offset + 3] & 0xff);
+  return String(binary % 1_000_000).padStart(6, "0");
+}
+
+function base32Decode(value: string) {
+  const clean = value.replace(/=+$/g, "").replace(/\s/g, "").toUpperCase();
+  let bits = "";
+  for (const char of clean) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index < 0) continue;
+    bits += index.toString(2).padStart(5, "0");
+  }
+  const bytes = [];
+  for (let index = 0; index + 8 <= bits.length; index += 8) {
+    bytes.push(parseInt(bits.slice(index, index + 8), 2));
+  }
+  return Buffer.from(bytes);
+}
+
+function safeStringEqual(a: string, b: string) {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function loginRateKey(request: FastifyRequest, email: string) {

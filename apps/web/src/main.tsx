@@ -313,10 +313,10 @@ function App() {
     }
   }, [user, enabledModuleCodes, activeModuleCode]);
 
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, otp?: string) {
     const result = await api<{ token: string; user: AdminUser }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ email, password, otp })
     });
     clearAuthToken();
     setUser(result.user);
@@ -1254,9 +1254,10 @@ function App() {
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
+function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, otp?: string) => Promise<void> }) {
   const [email, setEmail] = useState("admin@orb.local");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -1265,9 +1266,9 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
     setError("");
     setLoading(true);
     try {
-      await onLogin(email, password);
-    } catch {
-      setError("Invalid admin email or password.");
+      await onLogin(email, password, otp);
+    } catch (error) {
+      setError((error as Error).message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : "Invalid admin email or password.");
     } finally {
       setLoading(false);
     }
@@ -1286,6 +1287,10 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
         <label>
           Password
           <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
+        </label>
+        <label>
+          Two-factor code
+          <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="Optional unless enabled" />
         </label>
         {error ? <p className="form-error">{error}</p> : null}
         <button className="wide" disabled={loading}>{loading ? "Signing in..." : "Sign In"}</button>
@@ -1939,6 +1944,8 @@ function PlatformSystemPanel({ user, message, health, audit, operational, backup
   const apiService = services.find((service: any) => service.name === "API")?.detail ?? {};
   const securityEvents = audit?.security ?? [];
   const actionEvents = audit?.actions ?? [];
+  const activeSessions = (audit?.sessions ?? []).filter((session: any) => !session.revoked_at);
+  const mfa = audit?.mfa ?? {};
   const operationalEvents = operational?.events ?? [];
   return (
     <section className="platform-panel platform-wide">
@@ -2032,8 +2039,34 @@ function PlatformSystemPanel({ user, message, health, audit, operational, backup
         </div>
         <div className="platform-row">
           <div>
+            <strong>Authentication Posture</strong>
+            <span>{mfa.platform_super_admins_with_mfa ?? 0}/{mfa.platform_super_admins ?? 0} platform super admin(s) have 2FA enabled.</span>
+            <em>{mfa.mfa_enabled ?? 0}/{mfa.total_admins ?? 0} active admin account(s) protected by 2FA.</em>
+          </div>
+          <span className={`pill ${Number(mfa.platform_super_admins ?? 0) > 0 && Number(mfa.platform_super_admins_with_mfa ?? 0) < Number(mfa.platform_super_admins ?? 0) ? "warn" : "good"}`}>2FA</span>
+        </div>
+        <div className="platform-row">
+          <div>
+            <strong>Active Admin Sessions</strong>
+            <span>{activeSessions.length} active session(s) across platform and subscriber users.</span>
+            <em>Revoked and expired sessions are blocked through PostgreSQL before protected routes run.</em>
+          </div>
+          <span className="pill good">ENFORCED</span>
+        </div>
+        {activeSessions.slice(0, 5).map((session: any) => (
+          <div className="platform-row" key={session.id}>
+            <div>
+              <strong>{session.email ?? "Admin session"}</strong>
+              <span>{session.ip_address ?? "unknown IP"} · {session.platform_super_admin ? "Platform super admin" : "Subscriber user"}</span>
+              <em>Last seen {formatNepalTime(session.last_seen_at)} · expires {formatNepalTime(session.expires_at)}</em>
+            </div>
+            <span className="pill good">ACTIVE</span>
+          </div>
+        ))}
+        <div className="platform-row">
+          <div>
             <strong>Recent Security Events</strong>
-            <span>Login success, failed attempts, lockouts, and session refreshes.</span>
+            <span>Login success, failed attempts, lockouts, session refreshes, 2FA, and password resets.</span>
             <em>{securityEvents.length} event(s) loaded from the platform security trail.</em>
           </div>
           <span className={`pill ${securityEvents.some((event: any) => String(event.event_type).includes("FAILED") || String(event.event_type).includes("LOCKED") || String(event.event_type).includes("RATE")) ? "warn" : "good"}`}>

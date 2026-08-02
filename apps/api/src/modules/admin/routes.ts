@@ -1,3 +1,4 @@
+import { randomBytes, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -643,7 +644,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get("/api/platform/security-audit", async (request) => {
     requirePlatformSuperAdmin(request);
-    const [security, actions] = await Promise.all([
+    const [security, actions, sessions, mfa] = await Promise.all([
       query(
         `SELECT se.*, u.email AS admin_email, u.display_name
          FROM security_events se
@@ -662,9 +663,56 @@ export async function adminRoutes(app: FastifyInstance) {
             OR l.action = 'AUTH_LOGIN'
          ORDER BY l.created_at DESC
          LIMIT 100`
+      ),
+      query(
+        `SELECT
+           s.id,
+           s.admin_user_id,
+           u.email,
+           u.display_name,
+           u.platform_super_admin,
+           s.ip_address,
+           s.user_agent,
+           s.expires_at,
+           s.revoked_at,
+           s.created_at,
+           s.last_seen_at
+         FROM admin_sessions s
+         JOIN admin_users u ON u.id = s.admin_user_id
+         ORDER BY s.last_seen_at DESC
+         LIMIT 100`
+      ),
+      query(
+        `SELECT
+           count(*)::int AS total_admins,
+           count(*) FILTER (WHERE mfa_enabled = true)::int AS mfa_enabled,
+           count(*) FILTER (WHERE platform_super_admin = true)::int AS platform_super_admins,
+           count(*) FILTER (WHERE platform_super_admin = true AND mfa_enabled = true)::int AS platform_super_admins_with_mfa
+         FROM admin_users
+         WHERE status = 'ACTIVE'`
       )
     ]);
-    return { security: security.rows, actions: actions.rows };
+    return { security: security.rows, actions: actions.rows, sessions: sessions.rows, mfa: mfa.rows[0] ?? {} };
+  });
+
+  app.post("/api/platform/admin-users/:id/password-reset-token", async (request) => {
+    const session = requirePlatformSuperAdmin(request);
+    const params = request.params as { id: string };
+    const { rows } = await query("SELECT id, email FROM admin_users WHERE id = $1 AND status = 'ACTIVE' LIMIT 1", [params.id]);
+    const admin = rows[0];
+    if (!admin) {
+      const error = new Error("Admin user not found.") as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+    const resetToken = randomBytes(32).toString("base64url");
+    await query(
+      `INSERT INTO admin_password_reset_tokens (admin_user_id, token_hash, expires_at, requested_ip_address, requested_user_agent)
+       VALUES ($1, $2, now() + interval '30 minutes', $3, $4)`,
+      [admin.id, createHash("sha256").update(resetToken).digest("hex"), request.ip ?? null, String(request.headers["user-agent"] ?? "")]
+    );
+    await writeAudit(session.sub, "ADMIN_PASSWORD_RESET_TOKEN_CREATED", "admin_user", admin.id, null, { email: admin.email });
+    return { adminUserId: admin.id, email: admin.email, resetToken, expiresInMinutes: 30 };
   });
 
   app.get("/api/platform/operational-events", async (request) => {

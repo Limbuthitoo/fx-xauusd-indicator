@@ -22,6 +22,9 @@
 - Confirm `ADMIN_PASSWORD` passes the strong password policy and `ADMIN_SESSION_SECRET` is at least 32 characters.
 - Confirm browser auth uses the HttpOnly `xauusd_admin_session` cookie after login.
 - Confirm logout clears the auth cookie and records an `AUTH_LOGOUT` security event.
+- Confirm platform super admin 2FA is enabled and visible in Platform Admin > System.
+- Confirm password reset tokens expire after 30 minutes and reset completion revokes active sessions.
+- Confirm active/revoked admin sessions are visible in the platform security audit.
 - Confirm Cloudflare DNS has `fx.bijaysubbalimbu.com.np` as a proxied `A` record to the VPS IP.
 - Confirm Cloudflare SSL/TLS is `Full strict` after Certbot installs the origin certificate.
 - Confirm Cloudflare WebSockets are enabled and API cache is bypassed.
