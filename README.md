@@ -184,7 +184,7 @@ npm run deploy:vps-preflight
 Start from:
 
 ```bash
-cp .env.production.example .env.production
+npm run env:production:init
 ```
 
 Required external values:
@@ -237,10 +237,10 @@ Primary deployment target:
 Create or update `.env.production`:
 
 ```bash
-cp .env.production.example .env.production
+npm run env:production:init
 ```
 
-Fill the real values:
+This generates strong local secrets for PostgreSQL, `LOCAL_PIN`, admin password, and admin sessions. Fill the real account/provider values:
 
 ```env
 TWELVE_DATA_API_KEY=...
@@ -248,7 +248,7 @@ EXPO_PUBLIC_EAS_PROJECT_ID=...
 FIREBASE_PROJECT_ID=...
 FIREBASE_CLIENT_EMAIL=...
 FIREBASE_PRIVATE_KEY=...
-ADMIN_PASSWORD=strong-password-with-symbol
+ADMIN_EMAIL=...
 ```
 
 Then run:
@@ -429,6 +429,7 @@ Runbook:
 ```bash
 npm run db:migrate
 npm run db:seed
+npm run env:production:init
 npm run release:local-readiness
 npm run release:validate-production
 npm run deploy:vps-preflight
