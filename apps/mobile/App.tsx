@@ -86,6 +86,30 @@ type PushPreferences = {
   systemDiagnostics: boolean;
 };
 
+type NotificationDetail = {
+  id?: string | number | null;
+  title: string;
+  body: string;
+  eventType?: string | null;
+  priority?: string | null;
+  createdAt?: string | null;
+  moduleCode?: string | null;
+  moduleName?: string | null;
+  scenario?: string | null;
+  direction?: string | null;
+  action?: string | null;
+  entry?: string | number | null;
+  stopLoss?: string | number | null;
+  takeProfit?: string | number | null;
+  rewardToRisk?: string | number | null;
+  grade?: string | number | null;
+  confidence?: string | number | null;
+  setupCandidateId?: string | number | null;
+  tradeId?: string | number | null;
+  symbol?: string | null;
+  source: "push" | "history";
+};
+
 type MoreView = "menu" | "profile" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "about";
 
 const defaultPushPreferences: PushPreferences = {
@@ -208,6 +232,7 @@ function AppContent() {
   const [moreView, setMoreView] = useState<MoreView>("menu");
   const [socketStatus, setSocketStatus] = useState("Socket offline");
   const [activeTab, setActiveTab] = useState<MobileTab>("home");
+  const [selectedNotificationDetail, setSelectedNotificationDetail] = useState<NotificationDetail | null>(null);
   const selectedModule = useMemo(
     () => dashboard?.modules.find((module) => module.code === selectedModuleCode) ?? dashboard?.modules[0],
     [dashboard?.modules, selectedModuleCode]
@@ -215,6 +240,25 @@ function AppContent() {
 
   useEffect(() => {
     restoreSession();
+  }, []);
+
+  useEffect(() => {
+    let handledInitialResponse = false;
+    const openFromResponse = (response: any) => {
+      const content = response?.notification?.request?.content ?? {};
+      const detail = notificationDetailFromPush(content.title, content.body, content.data);
+      setSelectedNotificationDetail(detail);
+      setActiveTab("alerts");
+      setMoreView("menu");
+      handledInitialResponse = true;
+    };
+    const subscription = Notifications.addNotificationResponseReceivedListener(openFromResponse);
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (response && !handledInitialResponse) openFromResponse(response);
+      })
+      .catch(() => undefined);
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
@@ -519,6 +563,14 @@ function AppContent() {
     await loadPushDiagnostics(token);
   }
 
+  async function acknowledgeNotification(id?: string | number | null) {
+    if (!token || id == null) return;
+    fetch(`${apiBaseUrl}/api/notifications/${encodeURIComponent(String(id))}/ack`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` }
+    }).catch(() => undefined);
+  }
+
   if (loading && !dashboard && token) {
     return (
       <SafeAreaView style={styles.screen}>
@@ -537,6 +589,22 @@ function AppContent() {
 
   const activeSignals = dashboard?.modules.filter((module) => signalLabel(module).label !== "WAIT").length ?? 0;
   const latestAlert = dashboard?.notifications?.[0];
+  if (selectedNotificationDetail) {
+    return (
+      <NotificationDetailScreen
+        detail={selectedNotificationDetail}
+        dashboard={dashboard}
+        onBack={() => setSelectedNotificationDetail(null)}
+        onOpenChart={(moduleCode) => {
+          setSelectedNotificationDetail(null);
+          setActiveTab("chart");
+          setSelectedModuleCode(moduleCode);
+          loadChart(moduleCode).catch((error) => Alert.alert("Chart failed", error.message));
+        }}
+      />
+    );
+  }
+
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar style="light" />
@@ -594,7 +662,15 @@ function AppContent() {
 
         {activeTab === "journal" ? <JournalScreen dashboard={dashboard} /> : null}
 
-        {activeTab === "alerts" ? <AlertsScreen notifications={dashboard?.notifications ?? []} /> : null}
+        {activeTab === "alerts" ? (
+          <AlertsScreen
+            notifications={dashboard?.notifications ?? []}
+            onOpenNotification={(item) => {
+              setSelectedNotificationDetail(notificationDetailFromHistory(item, dashboard));
+              acknowledgeNotification(item.id);
+            }}
+          />
+        ) : null}
 
         {activeTab === "more" ? (
           <MoreScreen
@@ -611,6 +687,10 @@ function AppContent() {
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
             onSavePushPreferences={(preferences) => savePushPreferences(preferences).catch((error) => Alert.alert("Save failed", error.message))}
             onCreateTicket={(input) => submitSupportTicket(input).then(() => Alert.alert("Ticket submitted", "Platform support will review your request.")).catch((error) => Alert.alert("Ticket failed", error.message))}
+            onOpenNotification={(item) => {
+              setSelectedNotificationDetail(notificationDetailFromHistory(item, dashboard));
+              acknowledgeNotification(item.id);
+            }}
           />
         ) : null}
 
@@ -881,24 +961,107 @@ function JournalScreen({ dashboard }: { dashboard: Dashboard | null }) {
   );
 }
 
-function AlertsScreen({ notifications }: { notifications: any[] }) {
+function AlertsScreen({
+  notifications,
+  onOpenNotification
+}: {
+  notifications: any[];
+  onOpenNotification: (notification: any) => void;
+}) {
   return (
     <>
       <SectionTitle title="Signal Alerts" />
       <View style={styles.card}>
         {notifications.slice(0, 20).map((item) => (
-          <View key={item.id} style={styles.noticeRow}>
+          <Pressable key={item.id} style={styles.noticeRow} onPress={() => onOpenNotification(item)}>
             <View style={styles.noticePriority} />
             <View style={styles.noticeContent}>
               <Text style={styles.noticeTitle}>{item.title}</Text>
               <Text style={styles.noticeBody}>{item.body}</Text>
               <Text style={styles.noticeTime}>{formatTime(item.created_at)} · {item.priority}</Text>
             </View>
-          </View>
+            <Text style={styles.noticeChevron}>›</Text>
+          </Pressable>
         ))}
         {notifications.length === 0 ? <Text style={styles.muted}>No alerts yet.</Text> : null}
       </View>
     </>
+  );
+}
+
+function NotificationDetailScreen({
+  detail,
+  dashboard,
+  onBack,
+  onOpenChart
+}: {
+  detail: NotificationDetail;
+  dashboard: Dashboard | null;
+  onBack: () => void;
+  onOpenChart: (moduleCode: string) => void;
+}) {
+  const moduleCode = detail.moduleCode ?? moduleCodeFromText(`${detail.eventType ?? ""} ${detail.title} ${detail.body}`);
+  const module = dashboard?.modules.find((item) => item.code === moduleCode) ?? null;
+  const trade = module?.currentTrade ?? {};
+  const direction = detail.direction ?? trade.direction ?? "--";
+  const action = detail.action ?? (direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "--");
+  const entry = detail.entry ?? trade.actual_entry ?? trade.entry_price ?? "--";
+  const stopLoss = detail.stopLoss ?? trade.actual_stop ?? trade.stop_price ?? "--";
+  const takeProfit = detail.takeProfit ?? trade.actual_target ?? trade.target_price ?? "--";
+  const rr = detail.rewardToRisk ?? trade.reward_to_risk ?? "--";
+  const symbol = detail.symbol ?? trade.symbol ?? "XAUUSD";
+  const isTradeAlert = hasTradeDetails(detail) || entry !== "--" || stopLoss !== "--" || takeProfit !== "--";
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar style="light" />
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <View style={styles.detailTopBar}>
+          <Pressable style={styles.backButton} onPress={onBack}>
+            <Text style={styles.backButtonText}>‹ Back</Text>
+          </Pressable>
+          <Text style={styles.detailPill}>{String(detail.priority ?? "ALERT").toUpperCase()}</Text>
+        </View>
+
+        <View style={styles.detailHero}>
+          <Text style={styles.eyebrow}>{String(detail.eventType ?? "SIGNAL ALERT").replaceAll("_", " ")}</Text>
+          <Text style={styles.detailTitle}>{detail.title}</Text>
+          <Text style={styles.detailBody}>{detail.body}</Text>
+          <Text style={styles.noticeTime}>{detail.createdAt ? formatTime(detail.createdAt) : detail.source === "push" ? "Opened from push notification" : "--"}</Text>
+        </View>
+
+        <View style={styles.moreDiagnosticsCard}>
+          <Text style={styles.sectionMini}>Trade Details</Text>
+          <View style={styles.tradeBadgeRow}>
+            <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
+            <Text style={styles.tradeSymbol}>{symbol}</Text>
+            <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? moduleDisplayName(moduleCode)}</Text>
+          </View>
+          <View style={styles.metricsGrid}>
+            <Metric label="Entry" value={formatDetailValue(entry)} />
+            <Metric label="Stop Loss" value={formatDetailValue(stopLoss)} />
+            <Metric label="Take Profit" value={formatDetailValue(takeProfit)} />
+            <Metric label="Direction" value={String(direction)} />
+            <Metric label="RR" value={formatDetailValue(rr)} />
+            <Metric label="Grade" value={formatDetailValue(detail.grade)} />
+          </View>
+          {!isTradeAlert ? <Text style={styles.reason}>This notification does not include a full paper-trade plan. Valid entry alerts will show entry, SL, TP, direction, RR, and module context here.</Text> : null}
+        </View>
+
+        <View style={styles.moreDiagnosticsCard}>
+          <Text style={styles.sectionMini}>Setup Context</Text>
+          <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
+          <Metric label="Confidence" value={detail.confidence == null ? "--" : `${detail.confidence}%`} />
+          <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
+          <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+          {moduleCode ? (
+            <Pressable style={styles.fullButton} onPress={() => onOpenChart(moduleCode)}>
+              <Text style={styles.fullButtonText}>Open Module Chart</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -915,7 +1078,8 @@ function MoreScreen({
   onTestPush,
   onDisablePushDevice,
   onSavePushPreferences,
-  onCreateTicket
+  onCreateTicket,
+  onOpenNotification
 }: {
   dashboard: Dashboard | null;
   apiBaseUrl: string;
@@ -930,6 +1094,7 @@ function MoreScreen({
   onDisablePushDevice: (deviceId: string) => void;
   onSavePushPreferences: (preferences: PushPreferences) => void;
   onCreateTicket: (input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) => void;
+  onOpenNotification: (notification: any) => void;
 }) {
   const modules = dashboard?.modules ?? [];
   const supportInfo = dashboard?.supportInfo ?? {};
@@ -1027,7 +1192,7 @@ function MoreScreen({
         <MoreHeader title="Notification History" onBack={() => setView("menu")} />
         <View style={styles.moreMenuGroup}>
           {(dashboard?.notifications ?? []).slice(0, 12).map((item: any) => (
-            <MoreMenuRow key={item.id} icon="alerts" title={item.title} subtitle={item.body} value={item.priority} />
+            <MoreMenuRow key={item.id} icon="alerts" title={item.title} subtitle={item.body} value={item.priority} onPress={() => onOpenNotification(item)} />
           ))}
           {(dashboard?.notifications ?? []).length === 0 ? <Text style={styles.muted}>No notifications yet.</Text> : null}
         </View>
@@ -1582,6 +1747,117 @@ function moduleTimingLabel(module: ModuleRow) {
   return `${module.timeframeMinutes}M execution`;
 }
 
+function notificationDetailFromPush(title: unknown, body: unknown, data: any): NotificationDetail {
+  const payload = data ?? {};
+  return {
+    title: stringOrNull(title) ?? "Trading notification",
+    body: stringOrNull(body) ?? "",
+    eventType: stringOrNull(payload.eventType ?? payload.event_type),
+    priority: stringOrNull(payload.priority),
+    moduleCode: stringOrNull(payload.moduleCode ?? payload.module_code),
+    moduleName: stringOrNull(payload.moduleName ?? payload.module_name),
+    scenario: stringOrNull(payload.scenario),
+    direction: stringOrNull(payload.direction),
+    action: stringOrNull(payload.action),
+    entry: payload.entry ?? payload.entryPrice ?? payload.entry_price ?? null,
+    stopLoss: payload.stopLoss ?? payload.stop_loss ?? payload.sl ?? null,
+    takeProfit: payload.takeProfit ?? payload.take_profit ?? payload.tp ?? null,
+    rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? null,
+    grade: payload.grade ?? null,
+    confidence: payload.confidence ?? null,
+    setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? null,
+    tradeId: payload.tradeId ?? payload.trade_id ?? null,
+    symbol: stringOrNull(payload.symbol) ?? "XAUUSD",
+    source: "push"
+  };
+}
+
+function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): NotificationDetail {
+  const title = String(item?.title ?? "Trading notification");
+  const body = String(item?.body ?? "");
+  const moduleCode = stringOrNull(item?.module_code) ?? moduleCodeFromText(`${item?.event_type ?? ""} ${title} ${body}`);
+  const module = dashboard?.modules.find((row) => row.code === moduleCode) ?? null;
+  const trade = module?.currentTrade ?? {};
+  return {
+    id: item?.id ?? null,
+    title,
+    body,
+    eventType: stringOrNull(item?.event_type),
+    priority: stringOrNull(item?.priority),
+    createdAt: stringOrNull(item?.created_at),
+    moduleCode,
+    moduleName: module?.shortName ?? moduleDisplayName(moduleCode),
+    scenario: extractScenario(body) ?? stringOrNull(module?.currentSetup?.scenario),
+    direction: extractDirection(body) ?? stringOrNull(trade.direction),
+    action: extractAction(body) ?? (trade.direction === "SHORT" ? "SELL" : trade.direction === "LONG" ? "BUY" : null),
+    entry: extractBodyField(body, "entry") ?? trade.actual_entry ?? trade.entry_price ?? null,
+    stopLoss: extractBodyField(body, "sl") ?? extractBodyField(body, "stop") ?? trade.actual_stop ?? trade.stop_price ?? null,
+    takeProfit: extractBodyField(body, "tp") ?? extractBodyField(body, "target") ?? trade.actual_target ?? trade.target_price ?? null,
+    rewardToRisk: extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
+    grade: extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
+    confidence: extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
+    setupCandidateId: item?.setup_candidate_id ?? module?.currentSetup?.id ?? null,
+    tradeId: item?.trade_id ?? trade.id ?? null,
+    symbol: "XAUUSD",
+    source: "history"
+  };
+}
+
+function moduleCodeFromText(text: string) {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("orb") || normalized.includes("max option")) return "orb_max_options";
+  if (normalized.includes("liquidity") || normalized.includes("sweep") || normalized.includes("bos")) return "high_probability_strategy_2";
+  if (normalized.includes("vwap") || normalized.includes("opening drive")) return "strategy_lab_3";
+  return null;
+}
+
+function moduleDisplayName(moduleCode?: string | null) {
+  if (moduleCode === "orb_max_options") return "Module 1 ORB";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
+  if (moduleCode === "strategy_lab_3") return "Module 3 VWAP Drive";
+  return "Strategy module";
+}
+
+function extractBodyField(body: string, label: string) {
+  const pattern = new RegExp(`${label}\\s*[:=]\\s*([A-Z+\\-]?\\d+(?:\\.\\d+)?%?|[A-Z][A-Z0-9+\\-]*)`, "i");
+  return stringOrNull(body.match(pattern)?.[1]);
+}
+
+function extractScenario(body: string) {
+  return extractBodyField(body, "scenario");
+}
+
+function extractDirection(body: string) {
+  const upper = body.toUpperCase();
+  if (upper.includes("SHORT") || upper.includes("SELL")) return "SHORT";
+  if (upper.includes("LONG") || upper.includes("BUY")) return "LONG";
+  return null;
+}
+
+function extractAction(body: string) {
+  const upper = body.toUpperCase();
+  if (upper.includes("SELL")) return "SELL";
+  if (upper.includes("BUY")) return "BUY";
+  return null;
+}
+
+function stringOrNull(value: unknown) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text.length > 0 ? text : null;
+}
+
+function hasTradeDetails(detail: NotificationDetail) {
+  return detail.entry != null || detail.stopLoss != null || detail.takeProfit != null || detail.direction != null || detail.action != null;
+}
+
+function formatDetailValue(value: unknown) {
+  if (value == null || value === "") return "--";
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && String(value).length < 16) return numeric.toFixed(2);
+  return String(value);
+}
+
 function formatPrice(value: unknown) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(2) : "--";
@@ -1936,6 +2212,73 @@ const styles = StyleSheet.create({
   noticeTitle: { color: "#edf5f0", fontWeight: "900" },
   noticeBody: { color: "#a8b4ad", marginTop: 4, lineHeight: 19 },
   noticeTime: { color: "#747e78", marginTop: 6, fontSize: 11, fontWeight: "700" },
+  noticeChevron: { color: "#a8b4ad", fontSize: 24, fontWeight: "900", alignSelf: "center" },
+  detailTopBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingTop: 8, marginBottom: 14 },
+  backButton: {
+    minHeight: 42,
+    borderRadius: 21,
+    backgroundColor: "#171a18",
+    borderWidth: 1,
+    borderColor: "#2b302d",
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  backButtonText: { color: "#f4f7f4", fontSize: 15, fontWeight: "900" },
+  detailPill: {
+    color: "#2fe6a8",
+    fontSize: 11,
+    fontWeight: "900",
+    backgroundColor: "#13211b",
+    borderWidth: 1,
+    borderColor: "#254f40",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  detailHero: {
+    borderRadius: 24,
+    backgroundColor: "#141816",
+    borderWidth: 1,
+    borderColor: "#2a302d",
+    padding: 20,
+    marginBottom: 14
+  },
+  detailTitle: { color: "#f4f7f4", fontSize: 28, fontWeight: "900", marginTop: 10, lineHeight: 34 },
+  detailBody: { color: "#b9c3bd", fontSize: 15, lineHeight: 23, marginTop: 12 },
+  tradeBadgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 4, marginBottom: 2 },
+  tradeDirectionBadge: {
+    overflow: "hidden",
+    color: "#04100b",
+    backgroundColor: "#2fe6a8",
+    borderRadius: 18,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    fontWeight: "900",
+    fontSize: 12
+  },
+  tradeDirectionSell: { backgroundColor: "#ff6767" },
+  tradeSymbol: {
+    overflow: "hidden",
+    color: "#f4f7f4",
+    backgroundColor: "#202522",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontWeight: "900",
+    fontSize: 12
+  },
+  tradeModule: {
+    flexShrink: 1,
+    overflow: "hidden",
+    color: "#aeb8b2",
+    backgroundColor: "#171a18",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontWeight: "800",
+    fontSize: 12
+  },
   journalRow: {
     flexDirection: "row",
     alignItems: "center",
