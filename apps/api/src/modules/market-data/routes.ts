@@ -14,37 +14,6 @@ import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
 
-type Mt5CandlesResponse = {
-  connected: boolean;
-  error?: string;
-  symbol: string;
-  timeframeMinutes: number;
-  candles: Array<{
-    timestamp: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume?: number | null;
-    spread?: number | null;
-    source?: string;
-  }>;
-};
-
-type Mt5SymbolInfo = {
-  connected?: boolean;
-  error?: string;
-  symbol: string;
-  digits?: number | null;
-  tick_size?: number | null;
-  tick_value?: number | null;
-  contract_size?: number | null;
-  minimum_lot?: number | null;
-  maximum_lot?: number | null;
-  lot_step?: number | null;
-  source?: string;
-};
-
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
   code?: number;
@@ -64,22 +33,6 @@ type TwelveDataTimeSeriesResponse = {
     close: string;
     volume?: string;
   }>;
-};
-
-type LiveWorkerState = {
-  running: boolean;
-  provider: "MT5" | null;
-  symbol: string;
-  timeframeMinutes: number;
-  intervalSeconds: number;
-  count: number;
-  startedAt: string | null;
-  stoppedAt: string | null;
-  lastSyncAt: string | null;
-  lastImported: number;
-  lastError: string | null;
-  lastEvaluationAt: string | null;
-  cycles: number;
 };
 
 type TwelveDataWorkerState = {
@@ -173,23 +126,6 @@ type LiveCandle = {
 const liveCandleCache = new Map<string, LiveCandle[]>();
 const chartSyncThrottle = new Map<string, { requestedAt: number; promise?: Promise<any> }>();
 
-let liveTimer: NodeJS.Timeout | null = null;
-const liveState: LiveWorkerState = {
-  running: false,
-  provider: null,
-  symbol: "XAUUSD",
-  timeframeMinutes: 15,
-  intervalSeconds: 10,
-  count: 300,
-  startedAt: null,
-  stoppedAt: null,
-  lastSyncAt: null,
-  lastImported: 0,
-  lastError: null,
-  lastEvaluationAt: null,
-  cycles: 0
-};
-
 let twelveDataTimer: NodeJS.Timeout | null = null;
 const twelveDataState: TwelveDataWorkerState = {
   running: false,
@@ -255,23 +191,6 @@ export async function marketDataRoutes(app: FastifyInstance) {
           : "Poll during the New York ORB window. Raw candles stay in memory; only ORB events are persisted."
       },
       {
-      code: "MT5_BRIDGE",
-      name: "Optional MT5 local bridge",
-      cost: "Free with local MT5 script/EA",
-      writesToPostgres: true,
-      statusEndpoint: "/api/market-data/live/status",
-      recommended: false
-    },
-    {
-      code: "MT5",
-      name: "Optional Python MT5 adapter",
-      cost: "Optional local terminal adapter",
-      writesToPostgres: true,
-      statusEndpoint: "/api/market-data/mt5/status",
-      recommended: false,
-      note: "Usually Windows-only. On macOS use MT5_BRIDGE."
-    },
-    {
       code: "CSV",
       name: "CSV import",
       cost: "Free",
@@ -767,220 +686,39 @@ export async function marketDataRoutes(app: FastifyInstance) {
     return twelveDataUsageSummary();
   });
 
-  app.get("/api/market-data/mt5/status", async () => {
-    return fetchJson(`${config.quantBaseUrl}/market-data/mt5/status`);
-  });
-
-  app.post("/api/market-data/mt5/sync", async (request) => {
-    const body = request.body as { symbol?: string; timeframeMinutes?: number; count?: number };
-    return syncMt5Candles({
-      symbol: body.symbol ?? "XAUUSD",
-      timeframeMinutes: body.timeframeMinutes ?? 15,
-      count: body.count ?? 300,
-      syncInstrumentSpecs: false,
-      autoEvaluate: true
-    });
-  });
-
-  app.post("/api/market-data/mt5/live/start", async (request) => {
-    const body = request.body as { symbol?: string; timeframeMinutes?: number; intervalSeconds?: number; count?: number };
-    liveState.running = true;
-    liveState.provider = "MT5";
-    liveState.symbol = body.symbol ?? "XAUUSD";
-    liveState.timeframeMinutes = body.timeframeMinutes ?? 15;
-    liveState.intervalSeconds = Math.max(body.intervalSeconds ?? 10, 5);
-    liveState.count = Math.min(body.count ?? 300, 2000);
-    liveState.startedAt = new Date().toISOString();
-    liveState.stoppedAt = null;
-    liveState.lastError = null;
-    if (liveTimer) clearInterval(liveTimer);
-
-    await runLiveCycle();
-    liveTimer = setInterval(() => {
-      runLiveCycle().catch((error) => {
-        liveState.lastError = (error as Error).message;
-      });
-    }, liveState.intervalSeconds * 1000);
-
-    await notifyOnce(
-      `mt5-live-started-${liveState.symbol}`,
-      "MT5_LIVE_STARTED",
-      "MT5 live ingestion started",
-      `${liveState.symbol} ${liveState.timeframeMinutes}-minute candles will sync into PostgreSQL every ${liveState.intervalSeconds} seconds.`
-    );
-
-    return liveState;
-  });
-
-  app.post("/api/market-data/mt5/live/stop", async () => {
-    if (liveTimer) clearInterval(liveTimer);
-    liveTimer = null;
-    liveState.running = false;
-    liveState.stoppedAt = new Date().toISOString();
-    await notifyOnce(`mt5-live-stopped-${liveState.symbol}-${liveState.stoppedAt}`, "MT5_LIVE_STOPPED", "MT5 live ingestion stopped", `${liveState.symbol} ingestion is no longer running.`);
-    return liveState;
-  });
-
-  app.get("/api/market-data/mt5/live/status", async () => liveState);
-
-  app.post("/api/market-data/bridge/candles", async (request) => {
-    const body = request.body as {
-      symbol?: string;
-      timeframeMinutes?: number;
-      source?: string;
-      candles: Array<{
-        timestamp?: string;
-        timestampUtc?: string;
-        open: number;
-        high: number;
-        low: number;
-        close: number;
-        volume?: number | null;
-        spread?: number | null;
-      }>;
-      autoEvaluate?: boolean;
-    };
-    const symbol = body.symbol ?? "XAUUSD";
-    const timeframe = body.timeframeMinutes ?? 15;
-    let imported = 0;
-    const savedCandles = [];
-    for (const candle of body.candles ?? []) {
-      const savedCandle = await upsertCandle(symbol, timeframe, {
-        timestamp: candle.timestamp ?? candle.timestampUtc ?? new Date().toISOString(),
-        open: candle.open,
-        high: candle.high,
-        low: candle.low,
-        close: candle.close,
-        volume: candle.volume,
-        spread: candle.spread,
-        source: body.source ?? "MT5_BRIDGE"
-      });
-      savedCandles.push(savedCandle);
-      imported += 1;
-    }
-    const automation = body.autoEvaluate ?? true ? await processLiveSession(symbol, timeframe) : null;
-    for (const candle of savedCandles) {
-      broadcastLiveEvent({
-        type: "candle",
-        provider: "MT5_BRIDGE",
-        symbol,
-        timeframeMinutes: timeframe,
-        candle,
-        automation
-      });
-    }
-    return {
-      connected: true,
-      provider: "MT5_BRIDGE",
-      symbol,
-      timeframeMinutes: timeframe,
-      imported,
-      automation
-    };
-  });
-
-  app.get("/api/market-data/bridge/status", async (request) => {
-    const search = request.query as { symbol?: string; timeframeMinutes?: string };
-    const symbol = search.symbol ?? "XAUUSD";
-    const timeframe = Number(search.timeframeMinutes ?? 15);
-    const { rows } = await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = $2
-         AND source LIKE 'MT5_BRIDGE%'
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [symbol, timeframe]
-    );
-    const latest = rows[0];
-    return {
-      connected: Boolean(latest),
-      provider: "MT5_BRIDGE",
-      symbol,
-      timeframeMinutes: timeframe,
-      latestCandle: latest
-        ? {
-            timestampUtc: latest.timestamp_utc,
-            open: Number(latest.open),
-            high: Number(latest.high),
-            low: Number(latest.low),
-            close: Number(latest.close),
-            volume: latest.volume == null ? null : Number(latest.volume),
-            spread: latest.spread == null ? null : Number(latest.spread),
-            source: latest.source,
-            receivedAt: latest.created_at
-          }
-        : null
-    };
-  });
-
   app.get("/api/market-data/live/status", async (request) => {
     const settings = await refreshRuntimeSettings();
     const search = request.query as { symbol?: string; timeframeMinutes?: string; staleAfterSeconds?: string };
     const symbol = search.symbol ?? settings.symbol;
     const timeframe = Number(search.timeframeMinutes ?? settings.timeframeMinutes);
     const staleAfterSeconds = Number(search.staleAfterSeconds ?? timeframe * 60 * 2);
-    const latestAnyResult = await query(
+    const latestTwelveResult = await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
        FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND source = 'TWELVE_DATA'
        ORDER BY timestamp_utc DESC
        LIMIT 1`,
       [symbol, timeframe]
     );
-    const latestBridgeResult = await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = $2
-         AND ((source LIKE 'MT5_BRIDGE%' AND source NOT LIKE '%TEST%') OR source = 'MT5' OR source = 'TWELVE_DATA')
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [symbol, timeframe]
-    );
-    const latestBridgeTestResult = await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = $2
-         AND source LIKE 'MT5_BRIDGE%TEST%'
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [symbol, timeframe]
-    );
-    const latestBridge = latestBridgeResult.rows[0] as any | undefined;
-    const latestBridgeTest = latestBridgeTestResult.rows[0] as any | undefined;
-    const latestAny = latestAnyResult.rows[0] as any | undefined;
     const cachedLatest = getCachedCandles(symbol, timeframe).at(-1);
     const latestTwelve = cachedLatest ? liveCandleToRow(cachedLatest) : undefined;
-    const bridgeReceivedAt = latestBridge?.created_at ? new Date(latestBridge.created_at) : null;
-    const cachedReceivedAt = latestTwelve?.created_at ? new Date(latestTwelve.created_at) : null;
-    const bridgeAgeSeconds = cachedReceivedAt
-      ? Math.max(0, Math.round((Date.now() - cachedReceivedAt.getTime()) / 1000))
-      : bridgeReceivedAt
-        ? Math.max(0, Math.round((Date.now() - bridgeReceivedAt.getTime()) / 1000))
-        : null;
-    const live = bridgeAgeSeconds != null && bridgeAgeSeconds <= staleAfterSeconds;
-    const testReceivedAt = latestBridgeTest?.created_at ? new Date(latestBridgeTest.created_at) : null;
-    const testAgeSeconds = testReceivedAt ? Math.max(0, Math.round((Date.now() - testReceivedAt.getTime()) / 1000)) : null;
-    const testMode = !live && testAgeSeconds != null && testAgeSeconds <= staleAfterSeconds;
-    const latest = live ? latestTwelve ?? latestBridge : latestTwelve ?? latestBridge ?? latestBridgeTest ?? latestAny;
+    const latest = latestTwelve ?? latestTwelveResult.rows[0] as any | undefined;
     const receivedAt = latest?.created_at ? new Date(latest.created_at) : null;
     const ageSeconds = receivedAt ? Math.max(0, Math.round((Date.now() - receivedAt.getTime()) / 1000)) : null;
+    const live = ageSeconds != null && ageSeconds <= staleAfterSeconds;
     return {
       symbol,
       timeframeMinutes: timeframe,
-      provider: testMode ? "MT5_BRIDGE_TEST" : latest?.source?.startsWith("MT5_BRIDGE") ? "MT5_BRIDGE" : latest?.source === "MT5" ? "MT5_PYTHON" : latest?.source === "TWELVE_DATA" ? "TWELVE_DATA" : latest?.source ?? "NONE",
+      provider: latest?.source === "TWELVE_DATA" ? "TWELVE_DATA" : "NONE",
       live,
       stale: !live,
-      testMode,
+      testMode: false,
       staleAfterSeconds,
       ageSeconds,
-      bridgeAgeSeconds,
-      testAgeSeconds,
-      persistRawCandles: latest?.source === "TWELVE_DATA" ? settings.feed.rawCandleStorage : true,
-      liveCacheDays: latest?.source === "TWELVE_DATA" ? settings.feed.cacheDays : null,
+      persistRawCandles: settings.feed.rawCandleStorage,
+      liveCacheDays: settings.feed.cacheDays,
       cachedCandles: getCachedCandles(symbol, timeframe).length,
       connectedSocketClients: liveClientCount(),
       latestCandle: latest
@@ -2092,27 +1830,6 @@ async function syncTwelveDataChartCandles(options: {
   return promise;
 }
 
-async function runLiveCycle() {
-  if (!liveState.running) return;
-  try {
-    const result = await syncMt5Candles({
-      symbol: liveState.symbol,
-      timeframeMinutes: liveState.timeframeMinutes,
-      count: liveState.count,
-      syncInstrumentSpecs: false,
-      autoEvaluate: true
-    });
-    liveState.lastSyncAt = new Date().toISOString();
-    liveState.lastImported = result.imported;
-    liveState.lastError = result.connected ? null : result.error ?? "MT5 is not connected.";
-    liveState.lastEvaluationAt = new Date().toISOString();
-    liveState.cycles += 1;
-  } catch (error) {
-    liveState.lastError = (error as Error).message;
-    liveState.cycles += 1;
-  }
-}
-
 async function syncTwelveDataCandles(options: {
   symbol: string;
   providerSymbol: string;
@@ -2279,51 +1996,6 @@ async function syncTwelveDataCandlesLocked(options: {
     timeframeMinutes: options.timeframeMinutes,
     interval,
     imported,
-    automation
-  };
-}
-
-async function syncMt5Candles(options: { symbol: string; timeframeMinutes: number; count: number; syncInstrumentSpecs: boolean; autoEvaluate: boolean }) {
-  const symbol = options.symbol;
-  const timeframe = options.timeframeMinutes;
-  const count = Math.min(options.count, 2000);
-  const mt5 = await fetchJson<Mt5CandlesResponse>(
-    `${config.quantBaseUrl}/market-data/mt5/candles/${encodeURIComponent(symbol)}?timeframe_minutes=${timeframe}&count=${count}`
-  );
-  if (!mt5.connected) {
-    return { connected: false, imported: 0, error: mt5.error ?? "MT5 is not connected." };
-  }
-
-  let imported = 0;
-  for (const candle of mt5.candles) {
-      const savedCandle = await upsertCandle(symbol, timeframe, candle);
-      broadcastLiveEvent({
-        type: "candle",
-        provider: "MT5_PYTHON",
-        symbol,
-        timeframeMinutes: timeframe,
-        candle: savedCandle
-      });
-      imported += 1;
-    }
-
-  let instrumentSpecs = null;
-  if (options.syncInstrumentSpecs) {
-    instrumentSpecs = await syncInstrumentSpecs(symbol);
-  }
-
-  let automation = null;
-  if (options.autoEvaluate) {
-    automation = await processLiveSession(symbol, timeframe);
-  }
-
-  return {
-    connected: true,
-    provider: "MT5",
-    symbol,
-    timeframeMinutes: timeframe,
-    imported,
-    instrumentSpecs,
     automation
   };
 }
@@ -2523,7 +2195,7 @@ async function upsertCandle(
        source = EXCLUDED.source,
        created_at = now()
      RETURNING timestamp_utc, open, high, low, close, volume, spread, source, created_at`,
-    [symbol, timeframe, timestamp, candle.open, candle.high, candle.low, candle.close, candle.volume ?? null, candle.spread ?? null, candle.source ?? "MT5"]
+    [symbol, timeframe, timestamp, candle.open, candle.high, candle.low, candle.close, candle.volume ?? null, candle.spread ?? null, candle.source ?? "TWELVE_DATA"]
   );
   const saved = rows[0] as any;
   return {
@@ -4640,10 +4312,6 @@ function numericParam(value: unknown, decimals: number) {
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Number(number.toFixed(decimals));
-}
-
-async function syncInstrumentSpecs(symbol: string) {
-  return { synced: false, symbol, skipped: true, reason: "Paper trading uses internal XAUUSD instrument defaults." };
 }
 
 async function notifyOnce(eventKey: string, eventType: string, title: string, body: string) {

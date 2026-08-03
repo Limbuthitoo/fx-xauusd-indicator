@@ -33,7 +33,6 @@ export const config = {
   backupDir: process.env.BACKUP_DIR ?? "backups/postgres",
   backupRetentionDays: Number(process.env.BACKUP_RETENTION_DAYS ?? 14),
   nodeEnv: process.env.NODE_ENV ?? "development",
-  quantBaseUrl: process.env.QUANT_BASE_URL ?? "http://localhost:8000",
   twelveDataApiKey: process.env.TWELVE_DATA_API_KEY ?? "",
   twelveDataSymbol: process.env.TWELVE_DATA_SYMBOL ?? "XAU/USD",
   twelveDataInterval: process.env.TWELVE_DATA_INTERVAL ?? "5min",

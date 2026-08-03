@@ -7,7 +7,7 @@ import { getRuntimeSettings } from "../admin/settings.js";
 import { requireTenantModule } from "../auth/routes.js";
 
 const readinessItems = [
-  ["MT5_LIVE_RUNNING", "MT5 live ingestion is running"],
+  ["TWELVE_DATA_LIVE_RUNNING", "Twelve Data live feed is running"],
   ["ACCOUNT_UPDATED", "Account balance and equity are updated"],
   ["NEWS_REVIEWED", "Manual USD news events reviewed"],
   ["SPREAD_CHECKED", "Current spread is acceptable"],

@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from typing import List, Optional
 from .backtesting.orb_backtest import run_orb_backtest
 from .importers.csv_importer import validate_candles
-from .market_data.mt5_provider import MT5Provider, MT5UnavailableError
 
 app = FastAPI(title="XAUUSD ORB Quant Service", version="0.1.0")
 
@@ -39,47 +38,3 @@ def validate_csv(candles: List[Candle]):
 @app.post("/backtest/orb")
 def backtest_orb(payload: BacktestRequest):
     return run_orb_backtest(payload.model_dump())
-
-
-@app.get("/market-data/mt5/status")
-def mt5_status():
-    try:
-        provider = MT5Provider()
-        return provider.connect()
-    except MT5UnavailableError as error:
-        return {"connected": False, "error": str(error)}
-
-
-@app.get("/market-data/mt5/price/{symbol}")
-def mt5_price(symbol: str):
-    try:
-        provider = MT5Provider()
-        provider.connect()
-        return provider.get_current_price(symbol)
-    except MT5UnavailableError as error:
-        return {"connected": False, "error": str(error)}
-
-
-@app.get("/market-data/mt5/candles/{symbol}")
-def mt5_candles(symbol: str, timeframe_minutes: int = 5, count: int = 300):
-    try:
-        provider = MT5Provider()
-        provider.connect()
-        return {
-            "connected": True,
-            "symbol": symbol,
-            "timeframeMinutes": timeframe_minutes,
-            "candles": provider.get_candles(symbol, timeframe_minutes, count),
-        }
-    except MT5UnavailableError as error:
-        return {"connected": False, "error": str(error), "candles": []}
-
-
-@app.get("/market-data/mt5/symbol-info/{symbol}")
-def mt5_symbol_info(symbol: str):
-    try:
-        provider = MT5Provider()
-        provider.connect()
-        return provider.get_symbol_info(symbol)
-    except MT5UnavailableError as error:
-        return {"connected": False, "error": str(error)}

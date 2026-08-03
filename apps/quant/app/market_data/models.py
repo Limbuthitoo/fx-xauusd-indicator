@@ -19,7 +19,7 @@ class Candle(BaseModel):
     close: float
     volume: Optional[float] = None
     spread: Optional[float] = None
-    source: str = "MT5"
+    source: str = "TWELVE_DATA"
 
 
 class SymbolInfo(BaseModel):

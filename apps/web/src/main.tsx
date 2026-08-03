@@ -7100,9 +7100,6 @@ function dateInputValue(value?: string | null) {
 
 function feedProviderLabel(provider?: string) {
   if (provider === "TWELVE_DATA") return "Twelve Data";
-  if (provider === "MT5_BRIDGE") return "MT5 bridge";
-  if (provider === "MT5_BRIDGE_TEST") return "Bridge test";
-  if (provider === "MT5_PYTHON") return "MT5 poller";
   if (provider && provider !== "NONE") return provider;
   return "Waiting";
 }
@@ -7118,7 +7115,7 @@ function formatAge(seconds: unknown) {
 
 function toneFor(value?: string) {
   if (!value) return "neutral";
-  if (["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "ACTIVE", "WIN", "PERMITTED", "MT5 LIVE", "RUNNING", "CLEAR", "WAITING_FOR_SETUP", "OPENING_RANGE_LOCKED"].includes(value)) return "good";
+  if (["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "ACTIVE", "WIN", "PERMITTED", "TWELVE DATA LIVE", "RUNNING", "CLEAR", "WAITING_FOR_SETUP", "OPENING_RANGE_LOCKED"].includes(value)) return "good";
   if (["BLOCKED", "NO_TRADE", "SESSION_EXPIRED", "BLOCKED_BEFORE_EVENT", "BLOCKED_AFTER_EVENT", "LOSS"].includes(value)) return "bad";
   if (["WAIT", "PRE_SESSION", "OPENING_RANGE_FORMING", "WAITING_FOR_DATA", "UPCOMING_WARNING", "WAIT FOR RETEST"].includes(value)) return "warn";
   return "neutral";

@@ -189,7 +189,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   async function checkBridge() {
     const status = await api<FeedStatus>(`/api/market-data/live/status?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`);
     setFeedStatus(status);
-    onMessage(status.live ? `${feedProviderName(status.provider)} is updating the chart.` : "Chart feed is stale. Start Twelve Data or attach the MT5 bridge EA.");
+    onMessage(status.live ? `${feedProviderName(status.provider)} is updating the chart.` : "Chart feed is stale. Start Twelve Data.");
   }
 
   useEffect(() => {
@@ -512,9 +512,6 @@ export function LiveChart(props: TwelveDataChartProps) {
 
 function feedProviderName(provider?: string) {
   if (provider === "TWELVE_DATA") return "Twelve Data";
-  if (provider === "MT5_BRIDGE") return "Optional MT5 local bridge";
-  if (provider === "MT5_BRIDGE_TEST") return "Bridge test";
-  if (provider === "MT5_PYTHON") return "MT5 local terminal";
   if (provider && provider !== "NONE") return provider;
   return "Waiting";
 }
