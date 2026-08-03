@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantModuleStrategyConfiguration, updateTenantModuleSetting } from "../admin/settings.js";
-import { runModule2LearningPython } from "../admin/learning.js";
+import { runModule2LearningPython, runStrategyModuleLearningPython } from "../admin/learning.js";
 import { requireTenantModule } from "../auth/routes.js";
 import { evaluateVwapOpeningDrive, getCachedCandles } from "../market-data/routes.js";
 
@@ -192,6 +192,20 @@ export async function backtestRoutes(app: FastifyInstance) {
     if (!auth.tenantId) return { error: "Tenant account is required for Module 2 learning." };
     await runModule2LearningPython(auth.tenantId);
     return latestModule2Learning(auth.tenantId);
+  });
+
+  app.get("/api/modules/:moduleCode/learning/latest", async (request) => {
+    const { moduleCode } = request.params as { moduleCode: string };
+    const auth = await requireTenantModule(request, moduleCode);
+    return latestModuleLearningSnapshot(auth.tenantId, moduleCode);
+  });
+
+  app.post("/api/modules/:moduleCode/learning/run", async (request) => {
+    const { moduleCode } = request.params as { moduleCode: string };
+    const auth = await requireTenantModule(request, moduleCode);
+    if (!auth.tenantId) return { error: "Tenant account is required for module learning." };
+    await runStrategyModuleLearningPython(auth.tenantId, moduleCode);
+    return latestModuleLearningSnapshot(auth.tenantId, moduleCode);
   });
 
   app.get("/api/module2/learning/reviews", async (request) => {
@@ -1236,6 +1250,36 @@ async function latestModule2Learning(tenantId: string | null) {
   if (!row) {
     return {
       moduleCode: "high_probability_strategy_2",
+      status: "NOT_RUN",
+      sample_size: 0,
+      summary: {},
+      recommendations: []
+    };
+  }
+  const recommendations = await query(
+    `SELECT *
+     FROM module_learning_recommendations
+     WHERE learning_run_id = $1
+     ORDER BY created_at DESC
+     LIMIT 20`,
+    [row.id]
+  );
+  return { ...row, recommendations: recommendations.rows };
+}
+
+async function latestModuleLearningSnapshot(tenantId: string | null, moduleCode: string) {
+  const run = await query(
+    `SELECT *
+     FROM module_learning_runs
+     WHERE tenant_id = $1 AND module_code = $2
+     ORDER BY started_at DESC
+     LIMIT 1`,
+    [tenantId, moduleCode]
+  );
+  const row = run.rows[0];
+  if (!row) {
+    return {
+      moduleCode,
       status: "NOT_RUN",
       sample_size: 0,
       summary: {},

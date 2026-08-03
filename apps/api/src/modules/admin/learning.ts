@@ -35,3 +35,34 @@ export async function runModule3LearningPython(tenantId: string) {
   );
   return JSON.parse(stdout);
 }
+
+export async function runGenericModuleLearningPython(tenantId: string, moduleCode: string) {
+  const { stdout } = await execFileAsync(
+    "python3",
+    [
+      "-m",
+      "apps.quant.app.learning.generic_module_learning",
+      "--database-url",
+      config.databaseUrl,
+      "--tenant-id",
+      tenantId,
+      "--module-code",
+      moduleCode
+    ],
+    {
+      cwd: process.cwd().replace(/\/apps\/api$/, ""),
+      timeout: 120_000
+    }
+  );
+  return JSON.parse(stdout);
+}
+
+export async function runStrategyModuleLearningPython(tenantId: string, moduleCode: string) {
+  if (moduleCode === "high_probability_strategy_2") {
+    return runModule2LearningPython(tenantId);
+  }
+  if (moduleCode === "strategy_lab_3") {
+    return runModule3LearningPython(tenantId);
+  }
+  return runGenericModuleLearningPython(tenantId, moduleCode);
+}

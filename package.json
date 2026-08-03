@@ -40,6 +40,7 @@
     "release:check-sensitive": "node scripts/check-sensitive-files.mjs",
     "release:check": "npm run release:check-sensitive && npm run release:validate-env && npm run typecheck && npm run build",
     "learn:orb": "python3 -m apps.quant.app.learning.orb_learning",
+    "learn:module": "python3 -m apps.quant.app.learning.generic_module_learning",
     "launch:validate": "tsx scripts/launch-validate.ts",
     "verify:orb": "tsx scripts/verify-orb-scenarios.ts",
     "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"
