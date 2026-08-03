@@ -385,6 +385,118 @@ h2 {
   line-height: 1.35;
 }
 
+.module2-live-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(92px, 0.75fr);
+  gap: 1px;
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid #253027;
+  border-radius: 8px;
+  background: #253027;
+}
+
+.module2-live-hero div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  background: #111612;
+}
+
+.module2-live-hero span,
+.module2-trade-plan span,
+.module2-trade-plan em,
+.module2-step span {
+  color: #8f9d94;
+  font-size: 12px;
+}
+
+.module2-live-hero strong {
+  color: #edf4ef;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.module2-live-hero.good {
+  border-color: #178f64;
+}
+
+.module2-live-hero.warn {
+  border-color: #9d7419;
+}
+
+.module2-live-hero.bad {
+  border-color: #9f3e43;
+}
+
+.module2-live-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #253027;
+}
+
+.module2-live-metrics .metric {
+  border: 0;
+  border-radius: 0;
+}
+
+.module2-trade-plan {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.module2-trade-plan strong {
+  color: #edf4ef;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.module2-sequence {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.module2-step {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.8fr) minmax(0, 1.2fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #26372f;
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.module2-step.good {
+  border-left-color: #23c483;
+}
+
+.module2-step.warn {
+  border-left-color: #f0b429;
+}
+
+.module2-step strong {
+  overflow: hidden;
+  color: #edf4ef;
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-strip div {
   padding: 9px 14px;
   background: #111612;

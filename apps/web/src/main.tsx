@@ -1120,20 +1120,26 @@ function App() {
             </section>
 
             <aside className="auto-sidebar">
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2ProductionCockpit state={state} setup={currentModuleSetup} trade={currentModuleTrade} onRunRehearsal={runModule2LaunchRehearsal} /> : null}
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2OperatorModePanel operator={state.module2Operator} onRun={runModule2LaunchRehearsal} /> : null}
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2LaunchChecklistPanel operator={state.module2Operator} /> : null}
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2ReadinessPanel readiness={state.module2Readiness} dryRun={module2DryRun} onDryRun={runModule2DryRun} /> : null}
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2HealthPanel health={state.module2Health} onRun={runModule2HealthMonitor} /> : null}
-              <AutoEnginePanel state={state} setup={currentModuleSetup} activeVersion={activeVersion} feedHealth={feedHealth} message={message} />
-              <PaperTradePanel trade={currentModuleTrade} tradePlan={currentModuleTradePlan} setup={currentModuleSetup} />
-              <ScenarioPanel setup={currentModuleSetup} scenarioMatrix={scenarioMatrix} />
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2EvidenceInspector setup={currentModuleSetup} /> : null}
-              {selectedModuleCode === "high_probability_strategy_2" ? <Module2RuleAuditPanel setup={currentModuleSetup} /> : null}
-              {selectedModuleCode === "strategy_lab_3" ? <Module3StrategyValidationPanel setup={currentModuleSetup} evaluations={ruleEvaluations} session={state.session} /> : null}
-              <Panel icon={<CheckCircle2 />} title="Rule Checklist">
-                <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
-              </Panel>
+              {selectedModuleCode === "high_probability_strategy_2" ? (
+                <>
+                  <Module2LiveControlPanel state={state} setup={currentModuleSetup} trade={currentModuleTrade} tradePlan={currentModuleTradePlan} feedHealth={feedHealth} />
+                  <PaperTradePanel trade={currentModuleTrade} tradePlan={currentModuleTradePlan} setup={currentModuleSetup} />
+                  <Module2LiveEvidencePanel setup={currentModuleSetup} />
+                  <Panel icon={<CheckCircle2 />} title="Rule Checklist">
+                    <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
+                  </Panel>
+                </>
+              ) : (
+                <>
+                  <AutoEnginePanel state={state} setup={currentModuleSetup} activeVersion={activeVersion} feedHealth={feedHealth} message={message} />
+                  <PaperTradePanel trade={currentModuleTrade} tradePlan={currentModuleTradePlan} setup={currentModuleSetup} />
+                  <ScenarioPanel setup={currentModuleSetup} scenarioMatrix={scenarioMatrix} />
+                  {selectedModuleCode === "strategy_lab_3" ? <Module3StrategyValidationPanel setup={currentModuleSetup} evaluations={ruleEvaluations} session={state.session} /> : null}
+                  <Panel icon={<CheckCircle2 />} title="Rule Checklist">
+                    <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
+                  </Panel>
+                </>
+              )}
             </aside>
           </section>
         ) : null}
@@ -3085,6 +3091,102 @@ function ScenarioPanel({ setup, scenarioMatrix }: { setup?: any; scenarioMatrix:
       <Metric label="Favorability" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100 ${setup.favorability_grade ?? ""}`} />
       <div className="tag-row">
         {(scenarioMatrix.tags ?? []).length > 0 ? scenarioMatrix.tags.map((tag: string) => <span key={tag}>{tag}</span>) : <span>Waiting for scenario evidence</span>}
+      </div>
+    </Panel>
+  );
+}
+
+function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }: { state: PanelState; setup?: any; trade?: any; tradePlan?: any; feedHealth: string }) {
+  const cockpit = module2CockpitState(state, setup, trade);
+  const signal = getSignal(setup, trade);
+  const rows = liquiditySweepChecklistRows(setup?.evaluations ?? [], setup);
+  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"].includes(row.rule_code ?? row.ruleCode));
+  const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
+  const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
+  const passed = (items: any[]) => items.filter((row: any) => row.status === "PASS").length;
+  const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
+  const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
+  const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  return (
+    <Panel icon={<ShieldCheck />} title="Module 2 Live Control">
+      <div className={`module2-live-hero ${signal.tone}`}>
+        <div>
+          <span>Signal</span>
+          <strong>{signal.label}</strong>
+        </div>
+        <div>
+          <span>Trust</span>
+          <strong>{cockpit.trustScore}/100</strong>
+        </div>
+      </div>
+      <div className="module2-live-metrics">
+        <Metric label="Feed" value={feedHealth} />
+        <Metric label="NY phase" value={cockpit.phase} />
+        <Metric label="Mandatory" value={`${passed(mandatory)}/${mandatory.length}`} />
+        <Metric label="Confirmations" value={`${passed(confirmations)}/${confirmations.length}`} />
+        <Metric label="Quality" value={`${passed(quality)}/${quality.length}`} />
+        <Metric label="Paper" value={trade?.id ? `${trade.direction ?? "--"} ${trade.outcome ?? "ACTIVE"}` : "READY"} />
+      </div>
+      <div className="module2-trade-plan">
+        <span>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for sweep + BOS setup"}</span>
+        <strong>{setup?.direction ?? trade?.direction ?? "--"}</strong>
+        <em>Entry {formatPriceValue(entry)} · SL {formatPriceValue(stop)} · TP {formatPriceValue(target)}</em>
+      </div>
+      <p className="reason">{setup?.final_reason ?? signal.reason}</p>
+    </Panel>
+  );
+}
+
+function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
+  const flags = setup?.scenario_flags ?? {};
+  const sweep = flags.sweep ?? {};
+  const displacement = flags.displacement ?? {};
+  const bos = flags.bos ?? {};
+  const zone = flags.entryZone ?? {};
+  const confirmationLayer = flags.confirmationLayer ?? {};
+  const qualityLayer = flags.qualityLayer ?? {};
+  const steps = [
+    {
+      label: "Liquidity",
+      status: sweep?.level?.price != null ? "PASS" : "WAIT",
+      value: sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`
+    },
+    {
+      label: "Sweep",
+      status: sweep?.closedBackAt || sweep?.sweptAt ? "PASS" : "WAIT",
+      value: formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt ?? sweep?.candle?.timestampUtc)
+    },
+    {
+      label: "Displacement",
+      status: displacement?.candle ? "PASS" : "WAIT",
+      value: displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`
+    },
+    {
+      label: "BOS / CHoCH",
+      status: bos?.candle ? "PASS" : "WAIT",
+      value: bos?.level == null ? "--" : Number(bos.level).toFixed(2)
+    },
+    {
+      label: "Entry Zone",
+      status: zone?.low != null && zone?.high != null ? "PASS" : "WAIT",
+      value: zone?.low == null ? "--" : `${zone.kind ?? "Zone"} ${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`
+    }
+  ];
+  return (
+    <Panel icon={<Database />} title="Module 2 Setup Evidence">
+      <div className="module2-sequence">
+        {steps.map((step) => (
+          <div className={`module2-step ${step.status === "PASS" ? "good" : "warn"}`} key={step.label}>
+            <span>{step.label}</span>
+            <strong>{step.value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="module2-live-metrics">
+        <Metric label="Confirm layer" value={confirmationLayer?.count == null ? "--" : `${confirmationLayer.count}/${confirmationLayer.required ?? 5}`} />
+        <Metric label="Quality layer" value={qualityLayer?.count == null ? "--" : `${qualityLayer.count}/${qualityLayer.required ?? 3}`} />
+        <Metric label="Setup tier" value={flags.setupTier ?? "--"} />
+        <Metric label="Score" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
       </div>
     </Panel>
   );
