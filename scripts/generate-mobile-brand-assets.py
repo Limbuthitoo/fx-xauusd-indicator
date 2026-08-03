@@ -12,6 +12,8 @@ PANEL = (14, 18, 15, 255)
 PANEL_2 = (18, 25, 20, 255)
 GREEN = (47, 230, 168, 255)
 GREEN_DARK = (24, 117, 87, 255)
+RED = (255, 88, 92, 255)
+RED_DARK = (130, 38, 42, 255)
 GOLD = (245, 201, 74, 255)
 WHITE = (238, 246, 241, 255)
 MUTED = (128, 144, 136, 255)
@@ -48,31 +50,32 @@ def make_mark(size: int, transparent: bool = False) -> Image.Image:
 
     glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse((s(210), s(190), s(814), s(794)), fill=(47, 230, 168, 48))
-    glow_draw.ellipse((s(300), s(270), s(724), s(694)), fill=(245, 201, 74, 35))
+    glow_draw.ellipse((s(210), s(190), s(814), s(794)), fill=(47, 230, 168, 42))
+    glow_draw.ellipse((s(300), s(270), s(724), s(694)), fill=(255, 88, 92, 30))
     image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(s(36))))
 
     draw = ImageDraw.Draw(image)
     draw.ellipse((s(232), s(210), s(792), s(770)), fill=(8, 42, 31, 255), outline=(31, 105, 75, 255), width=s(10))
     draw.ellipse((s(304), s(282), s(720), s(698)), fill=(22, 33, 26, 255), outline=(45, 62, 52, 255), width=s(5))
 
-    # Candlestick base, clean and non-bird-like.
-    draw.line((s(352), s(648), s(672), s(648)), fill=(224, 232, 226, 255), width=s(18))
-    draw.line((s(392), s(356), s(392), s(690)), fill=GREEN, width=s(34))
-    rounded_rect(draw, (s(330), s(462), s(454), s(584)), s(28), fill=GREEN)
-    draw.line((s(624), s(300), s(624), s(640)), fill=GOLD, width=s(34))
-    rounded_rect(draw, (s(562), s(422), s(686), s(544)), s(28), fill=GOLD)
+    # Candlestick badge, clean and non-bird-like.
+    draw.line((s(320), s(650), s(704), s(650)), fill=(224, 232, 226, 255), width=s(16))
+    draw.line((s(382), s(352), s(382), s(672)), fill=GREEN, width=s(32))
+    rounded_rect(draw, (s(326), s(438), s(438), s(578)), s(26), fill=GREEN)
+    draw.line((s(512), s(292), s(512), s(618)), fill=WHITE, width=s(28))
+    rounded_rect(draw, (s(456), s(388), s(568), s(524)), s(26), fill=WHITE)
+    draw.line((s(642), s(330), s(642), s(690)), fill=RED, width=s(32))
+    rounded_rect(draw, (s(586), s(486), s(698), s(610)), s(26), fill=RED)
 
-    # FX monogram: strong X with a compact upward price stroke.
-    draw.line((s(270), s(276), s(754), s(748)), fill=(7, 9, 8, 255), width=s(70))
-    draw.line((s(754), s(276), s(270), s(748)), fill=(7, 9, 8, 255), width=s(70))
-    draw.line((s(286), s(292), s(738), s(732)), fill=GOLD, width=s(38))
-    draw.line((s(738), s(292), s(286), s(732)), fill=GREEN, width=s(38))
-    draw.line((s(590), s(406), s(702), s(328), s(744), s(362)), fill=WHITE, width=s(16), joint="curve")
+    # Market movement line: green recovery after a red dip.
+    draw.line((s(270), s(396), s(360), s(456), s(466), s(410)), fill=RED, width=s(24), joint="curve")
+    draw.line((s(466), s(410), s(580), s(350), s(730), s(404)), fill=GREEN, width=s(24), joint="curve")
+    draw.ellipse((s(448), s(392), s(484), s(428)), fill=WHITE)
+    draw.ellipse((s(712), s(386), s(748), s(422)), fill=GREEN)
 
-    # Small gold badge suggests XAU without text clutter in launcher.
-    rounded_rect(draw, (s(416), s(734), s(608), s(798)), s(32), fill=(245, 201, 74, 255))
-    draw.text((s(512), s(766)), "XAU", fill=(6, 11, 8, 255), font=font(s(34), True), anchor="mm")
+    # Compact XAU label under the candle group.
+    rounded_rect(draw, (s(406), s(738), s(618), s(804)), s(33), fill=(20, 26, 22, 255), outline=(52, 72, 61, 255), width=s(4))
+    draw.text((s(512), s(771)), "XAU", fill=WHITE, font=font(s(38), True), anchor="mm")
 
     return image
 
@@ -85,7 +88,8 @@ def make_logo() -> Image.Image:
     draw.text((260, 72), "XAUUSD", fill=WHITE, font=font(68, True), anchor="la")
     draw.text((260, 142), "SIGNAL", fill=GREEN, font=font(42, True), anchor="la")
     draw.line((260, 200, 705, 200), fill=(48, 66, 56, 255), width=3)
-    draw.line((260, 200, 470, 200), fill=GOLD, width=5)
+    draw.line((260, 200, 365, 200), fill=GREEN, width=5)
+    draw.line((368, 200, 470, 200), fill=RED, width=5)
     draw.text((260, 222), "NY SESSION INDICATORS", fill=MUTED, font=font(22, True), anchor="la")
     return image
 
@@ -94,8 +98,8 @@ def make_splash() -> Image.Image:
     image = Image.new("RGBA", (1242, 2436), BG)
     glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse((170, 570, 1072, 1472), fill=(47, 230, 168, 40))
-    glow_draw.ellipse((335, 730, 907, 1302), fill=(245, 201, 74, 26))
+    glow_draw.ellipse((170, 570, 1072, 1472), fill=(47, 230, 168, 36))
+    glow_draw.ellipse((335, 730, 907, 1302), fill=(255, 88, 92, 24))
     image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70)))
     mark = make_mark(520, transparent=True)
     image.alpha_composite(mark, ((1242 - 520) // 2, 740))
