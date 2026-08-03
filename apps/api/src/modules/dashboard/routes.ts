@@ -21,10 +21,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const needsNotifications = section === "notifications";
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
+    const needsLive = section === "live";
     const needsModuleOps = needsCommand || needsStrategy || needsReports || needsLearning || needsData;
     const isModule1 = moduleCode === "orb_max_options";
     const isModule2 = moduleCode === "high_probability_strategy_2";
     const isModule3 = moduleCode === "strategy_lab_3";
+    const needsModule2LiveOps = isModule2 && needsLive;
 
     const [
       clocks,
@@ -98,13 +100,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule1 ? injectJson(app, request, "GET", "/api/sessions/current/orb-range-audit", undefined) : null,
       isModule1 && needsModuleOps ? injectJson(app, request, "GET", "/api/module1/launch-rehearsals", undefined, []) : [],
       isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/journal/trades?limit=25", undefined, []) : [],
-      isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/production-audit", undefined) : null,
-      isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/readiness", undefined) : null,
+      isModule2 && (needsModuleOps || needsModule2LiveOps) ? injectJson(app, request, "GET", "/api/module2/production-audit", undefined) : null,
+      isModule2 && (needsModuleOps || needsModule2LiveOps) ? injectJson(app, request, "GET", "/api/module2/readiness", undefined) : null,
       isModule2 && needsLearning ? injectJson(app, request, "GET", "/api/backtests/module2/tuning-promotions", undefined, []) : [],
-      isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/health", undefined) : null,
+      isModule2 && (needsModuleOps || needsModule2LiveOps) ? injectJson(app, request, "GET", "/api/module2/health", undefined) : null,
       isModule2 && needsData ? injectJson(app, request, "GET", "/api/module2/data-readiness", undefined) : null,
-      isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/operator", undefined) : null,
-      isModule2 && needsModuleOps ? injectJson(app, request, "GET", "/api/module2/launch-rehearsals", undefined, []) : [],
+      isModule2 && (needsModuleOps || needsModule2LiveOps) ? injectJson(app, request, "GET", "/api/module2/operator", undefined) : null,
+      isModule2 && (needsModuleOps || needsModule2LiveOps) ? injectJson(app, request, "GET", "/api/module2/launch-rehearsals", undefined, []) : [],
       isModule2 && needsLearning ? injectJson(app, request, "GET", "/api/module2/learning/latest", undefined) : null,
       isModule2 && needsLearning ? injectJson(app, request, "GET", "/api/module2/learning/reviews", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/session-reports", undefined, []) : [],
