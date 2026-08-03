@@ -142,6 +142,15 @@ type AppUpdateState = {
   latest: any | null;
 };
 
+type ModuleLearningSnapshot = {
+  moduleCode: string;
+  status: string;
+  sample_size?: number;
+  sampleSize?: number;
+  summary?: any;
+  recommendations?: any[];
+};
+
 type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "app-updates" | "about";
 
 const defaultPushPreferences: PushPreferences = {
@@ -272,6 +281,8 @@ function AppContent() {
   const [socketStatus, setSocketStatus] = useState("Socket offline");
   const [activeTab, setActiveTab] = useState<MobileTab>("home");
   const [selectedNotificationDetail, setSelectedNotificationDetail] = useState<NotificationDetail | null>(null);
+  const [learningByModule, setLearningByModule] = useState<Record<string, ModuleLearningSnapshot>>({});
+  const [learningLoadingModule, setLearningLoadingModule] = useState<string | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     checkedAt: null,
     checking: false,
@@ -320,6 +331,7 @@ function AppContent() {
     loadChart(selectedModuleCode, token).catch((error) => {
       setPushStatus((error as Error).message || "Chart sync failed");
     });
+    loadModuleLearning(selectedModuleCode, token).catch(() => undefined);
   }, [token, apiBaseUrl, selectedModuleCode, authUser?.passwordChangeRequired]);
 
   useEffect(() => {
@@ -561,6 +573,7 @@ function AppContent() {
     setDashboard(data);
     const nextModuleCode = selectedModuleCode ?? data.modules[0]?.code ?? null;
     if (!selectedModuleCode && nextModuleCode) setSelectedModuleCode(nextModuleCode);
+    loadAssignedModuleLearning(data.modules, authToken).catch(() => undefined);
     if (syncChart && nextModuleCode) await loadChart(nextModuleCode, authToken);
     checkAppUpdate(false).catch(() => undefined);
     setLoading(false);
@@ -613,6 +626,58 @@ function AppContent() {
     const data = await response.json() as ChartPayload;
     setChart(data);
     setSelectedCandle(data.candles[data.candles.length - 1] ?? null);
+  }
+
+  async function loadModuleLearning(moduleCode: string, authToken = token) {
+    if (!authToken) return;
+    const response = await fetch(`${apiBaseUrl}/api/modules/${encodeURIComponent(moduleCode)}/learning/latest`, {
+      headers: { authorization: `Bearer ${authToken}` }
+    });
+    if (!response.ok) return;
+    const data = await response.json() as ModuleLearningSnapshot;
+    setLearningByModule((previous) => ({ ...previous, [moduleCode]: data }));
+  }
+
+  async function loadAssignedModuleLearning(modules: ModuleRow[], authToken = token) {
+    if (!authToken || modules.length === 0) return;
+    const entries = await Promise.all(
+      modules.map(async (module) => {
+        const response = await fetch(`${apiBaseUrl}/api/modules/${encodeURIComponent(module.code)}/learning/latest`, {
+          headers: { authorization: `Bearer ${authToken}` }
+        });
+        if (!response.ok) return null;
+        const data = await response.json() as ModuleLearningSnapshot;
+        return [module.code, data] as const;
+      })
+    );
+    setLearningByModule((previous) => {
+      const next = { ...previous };
+      for (const entry of entries) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      return next;
+    });
+  }
+
+  async function runModuleLearning(moduleCode: string) {
+    if (!token) return;
+    setLearningLoadingModule(moduleCode);
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/modules/${encodeURIComponent(moduleCode)}/learning/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) throw new Error(cleanErrorMessage(await response.text()));
+      const data = await response.json() as ModuleLearningSnapshot;
+      setLearningByModule((previous) => ({ ...previous, [moduleCode]: data }));
+      Alert.alert("Learning complete", `${moduleDisplayName(moduleCode)} reviewed ${data.sample_size ?? data.sampleSize ?? 0} result(s).`);
+    } finally {
+      setLearningLoadingModule(null);
+    }
   }
 
   async function refresh() {
@@ -843,6 +908,9 @@ function AppContent() {
         {activeTab === "signals" ? (
           <SignalsScreen
             dashboard={dashboard}
+            learningByModule={learningByModule}
+            learningLoadingModule={learningLoadingModule}
+            onRunLearning={(moduleCode) => runModuleLearning(moduleCode).catch((error) => Alert.alert("Learning failed", error.message))}
             onSelectModule={(moduleCode) => {
               setSelectedModuleCode(moduleCode);
               loadChart(moduleCode).catch((error) => Alert.alert("Chart failed", error.message));
@@ -854,9 +922,12 @@ function AppContent() {
           <ChartScreen
             dashboard={dashboard}
             selectedModule={selectedModule}
+            learning={selectedModule ? learningByModule[selectedModule.code] : undefined}
+            learningBusy={selectedModule ? learningLoadingModule === selectedModule.code : false}
             chart={chart?.moduleCode === selectedModule?.code ? chart : null}
             selectedCandle={selectedCandle}
             setSelectedCandle={setSelectedCandle}
+            onRunLearning={(moduleCode) => runModuleLearning(moduleCode).catch((error) => Alert.alert("Learning failed", error.message))}
             onSelectModule={(moduleCode) => {
               setSelectedModuleCode(moduleCode);
               loadChart(moduleCode).catch((error) => Alert.alert("Chart failed", error.message));
@@ -1166,9 +1237,15 @@ function HomeScreen({
 
 function SignalsScreen({
   dashboard,
+  learningByModule,
+  learningLoadingModule,
+  onRunLearning,
   onSelectModule
 }: {
   dashboard: Dashboard | null;
+  learningByModule: Record<string, ModuleLearningSnapshot>;
+  learningLoadingModule: string | null;
+  onRunLearning: (moduleCode: string) => void;
   onSelectModule: (moduleCode: string) => void;
 }) {
   const modules = dashboard?.modules ?? [];
@@ -1182,7 +1259,12 @@ function SignalsScreen({
       <SectionTitle title="Strategy Signals" />
       {modules.map((module) => (
         <Pressable key={module.code} onPress={() => onSelectModule(module.code)}>
-          <ModuleDetail module={module} />
+          <ModuleDetail
+            module={module}
+            learning={learningByModule[module.code]}
+            learningBusy={learningLoadingModule === module.code}
+            onRunLearning={onRunLearning}
+          />
         </Pressable>
       ))}
       {modules.length === 0 ? <EmptyCard text="No strategy modules are assigned to this tenant account." /> : null}
@@ -1193,16 +1275,22 @@ function SignalsScreen({
 function ChartScreen({
   dashboard,
   selectedModule,
+  learning,
+  learningBusy,
   chart,
   selectedCandle,
   setSelectedCandle,
+  onRunLearning,
   onSelectModule
 }: {
   dashboard: Dashboard | null;
   selectedModule?: ModuleRow;
+  learning?: ModuleLearningSnapshot;
+  learningBusy: boolean;
   chart: ChartPayload | null;
   selectedCandle: ChartCandle | null;
   setSelectedCandle: (candle: ChartCandle) => void;
+  onRunLearning: (moduleCode: string) => void;
   onSelectModule: (moduleCode: string) => void;
 }) {
   return (
@@ -1224,7 +1312,7 @@ function ChartScreen({
       ) : (
         <EmptyCard text="No strategy module is selected." />
       )}
-      {selectedModule ? <ModuleDetail module={selectedModule} /> : null}
+      {selectedModule ? <ModuleDetail module={selectedModule} learning={learning} learningBusy={learningBusy} onRunLearning={onRunLearning} /> : null}
     </>
   );
 }
@@ -1916,11 +2004,24 @@ function MobileCandlestickChart({
   );
 }
 
-function ModuleDetail({ module }: { module: ModuleRow }) {
+function ModuleDetail({
+  module,
+  learning,
+  learningBusy,
+  onRunLearning
+}: {
+  module: ModuleRow;
+  learning?: ModuleLearningSnapshot;
+  learningBusy?: boolean;
+  onRunLearning?: (moduleCode: string) => void;
+}) {
   const signal = signalLabel(module);
   const setup = module.currentSetup ?? {};
   const trade = module.currentTrade ?? {};
   const evaluations = setup.evaluations ?? [];
+  const learningSummary = learning?.summary ?? {};
+  const recommendations = learning?.recommendations ?? [];
+  const topRecommendation = recommendations[0];
   return (
     <View style={styles.card}>
       <View style={styles.moduleHeader}>
@@ -1955,6 +2056,40 @@ function ModuleDetail({ module }: { module: ModuleRow }) {
         </View>
       ))}
       {evaluations.length === 0 ? <Text style={styles.muted}>Waiting for this module to evaluate a completed NY candle.</Text> : null}
+
+      <Text style={styles.sectionMini}>Learning Automation</Text>
+      <View style={styles.learningPanel}>
+        <View style={styles.learningHeader}>
+          <View>
+            <Text style={styles.ruleTitle}>{learning?.status === "COMPLETED" ? "Learning ready" : learning?.status === "FAILED" ? "Learning failed" : "Not trained yet"}</Text>
+            <Text style={styles.ruleExplanation}>{learningStatusLabel(learning)}</Text>
+          </View>
+          <Pressable
+            style={[styles.learningButton, learningBusy && styles.disabledButton]}
+            disabled={learningBusy}
+            onPress={(event) => {
+              event.stopPropagation?.();
+              onRunLearning?.(module.code);
+            }}
+          >
+            <Text style={styles.learningButtonText}>{learningBusy ? "Running..." : "Run"}</Text>
+          </Pressable>
+        </View>
+        <View style={styles.learningMetricRow}>
+          <Metric label="Samples" value={learning?.sample_size ?? learning?.sampleSize ?? 0} />
+          <Metric label="Mandatory" value={learningSummary.bySetupTier?.MANDATORY?.trades ?? 0} />
+          <Metric label="Full" value={learningSummary.bySetupTier?.FULL?.trades ?? 0} />
+        </View>
+        {topRecommendation ? (
+          <View style={styles.learningRecommendation}>
+            <Text style={styles.learningRecommendationType}>{String(topRecommendation.recommendation_type ?? topRecommendation.recommendationType ?? "RECOMMENDATION").replaceAll("_", " ")}</Text>
+            <Text style={styles.ruleTitle}>{topRecommendation.title ?? "Learning recommendation"}</Text>
+            <Text style={styles.ruleExplanation}>{topRecommendation.rationale ?? "Review this module's latest learning output."}</Text>
+          </View>
+        ) : (
+          <Text style={styles.muted}>Learning will separate mandatory-only and full-checklist paper trades for this module.</Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -2117,6 +2252,15 @@ function moduleTimingLabel(module: ModuleRow) {
   if (module.code === "high_probability_strategy_2") return "5M sweep / 15M bias";
   if (module.code === "strategy_lab_3") return "5M VWAP / 15M bias";
   return `${module.timeframeMinutes}M execution`;
+}
+
+function learningStatusLabel(learning?: ModuleLearningSnapshot) {
+  if (!learning || learning.status === "NOT_RUN") return "No learning run yet for this module.";
+  const samples = learning.sample_size ?? learning.sampleSize ?? 0;
+  const recommendations = learning.recommendations?.length ?? learning.summary?.recommendations ?? 0;
+  if (learning.status === "COMPLETED") return `${samples} result(s), ${recommendations} recommendation(s).`;
+  if (learning.status === "FAILED") return "Latest learning run failed. Check backend logs.";
+  return `${String(learning.status).replaceAll("_", " ")} · ${samples} result(s).`;
 }
 
 function notificationDetailFromPush(title: unknown, body: unknown, data: any): NotificationDetail {
@@ -2601,6 +2745,13 @@ const styles = StyleSheet.create({
   ruleBody: { flex: 1 },
   ruleTitle: { color: "#edf5f0", fontWeight: "900" },
   ruleExplanation: { color: "#929c96", fontSize: 12, marginTop: 4, lineHeight: 17 },
+  learningPanel: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 15, padding: 13 },
+  learningHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  learningButton: { minWidth: 72, height: 36, borderRadius: 18, backgroundColor: "#2fe6a8", alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
+  learningButtonText: { color: "#050706", fontWeight: "900", fontSize: 12 },
+  learningMetricRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  learningRecommendation: { marginTop: 12, borderTopWidth: 1, borderTopColor: "#26302a", paddingTop: 12 },
+  learningRecommendationType: { color: "#2fe6a8", fontSize: 10, fontWeight: "900", marginBottom: 4 },
   goodText: { color: "#2fe6a8" },
   badText: { color: "#ff8c8c" },
   warnText: { color: "#f0c94a" },
