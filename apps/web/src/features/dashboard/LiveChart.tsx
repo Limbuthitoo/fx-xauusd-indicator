@@ -150,9 +150,13 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [feedStatus, setFeedStatus] = useState<FeedStatus | null>(null);
   const [socketStatus, setSocketStatus] = useState("CONNECTING");
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
-  const effectiveOpeningRange = useMemo(
-    () => moduleCode === "orb_max_options" ? openingRangeWithCandleFallback(openingRange, candles, session) : openingRange,
+  const orbRangeState = useMemo(
+    () => moduleCode === "orb_max_options" ? module1OrbRangeState(openingRange, candles, session) : null,
     [moduleCode, openingRange, candles, session]
+  );
+  const effectiveOpeningRange = useMemo(
+    () => moduleCode === "orb_max_options" ? orbRangeState?.range ?? openingRange : openingRange,
+    [moduleCode, orbRangeState, openingRange]
   );
 
   async function loadChartData() {
@@ -377,7 +381,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [effectiveOpeningRange, activeSetup, priceLines]);
+  }, [effectiveOpeningRange, activeSetup, priceLines, moduleCode]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -475,6 +479,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
           <>
             <span>Signal logic</span>
             <strong>15M range / 5M trigger</strong>
+            <span>ORB range</span>
+            <strong className={orbRangeState?.range ? "good" : "warn"}>{orbRangeState?.label ?? "MISSING"}</strong>
+            <span>ORB values</span>
+            <strong>{orbRangeState?.range ? `${format(numberValue(orbRangeState.range.high))} / ${format(numberValue(orbRangeState.range.midpoint))} / ${format(numberValue(orbRangeState.range.low))}` : `${orbRangeState?.candleCount ?? 0}/3 candles`}</strong>
           </>
         ) : null}
       </div>
@@ -563,30 +571,90 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function openingRangeWithCandleFallback(
+function module1OrbRangeState(
   openingRange: TwelveDataChartProps["openingRange"],
   candles: TwelveDataCandle[],
   session: TwelveDataChartProps["session"]
 ) {
-  if (numberValue(openingRange?.high) != null && numberValue(openingRange?.low) != null) return openingRange;
-  if (!session?.session_start_at || !session.opening_range_end_at) return openingRange;
-  const start = new Date(session.session_start_at).getTime();
-  const end = new Date(session.opening_range_end_at).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return openingRange;
-  const rangeCandles = normalizeCandles(candles)
-    .filter((candle) => {
-      const time = new Date(candle.timestampUtc).getTime();
-      return time >= start && time < end;
-    })
-    .slice(0, 3);
-  if (rangeCandles.length < 3) return openingRange;
+  if (numberValue(openingRange?.high) != null && numberValue(openingRange?.low) != null) {
+    return { source: "backend", label: "BACKEND", range: openingRange, candleCount: 3 };
+  }
+  const cleanCandles = normalizeCandles(candles);
+  const sessionWindow = session?.session_start_at && session.opening_range_end_at
+    ? { start: session.session_start_at, end: session.opening_range_end_at, source: "session" }
+    : null;
+  const directWindow = module1OrbWindowFromCandles(cleanCandles);
+  const window = sessionWindow ?? directWindow;
+  if (!window) return { source: "missing", label: "NO WINDOW", range: openingRange, candleCount: 0 };
+  const start = new Date(window.start).getTime();
+  const end = new Date(window.end).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return { source: "invalid", label: "BAD WINDOW", range: openingRange, candleCount: 0 };
+  }
+  const rangeCandles = cleanCandles.filter((candle) => {
+    const time = new Date(candle.timestampUtc).getTime();
+    return time >= start && time < end;
+  }).slice(0, 3);
+  if (rangeCandles.length < 3) {
+    return {
+      source: window.source,
+      label: `${window.source.toUpperCase()} ${rangeCandles.length}/3`,
+      range: openingRange,
+      candleCount: rangeCandles.length
+    };
+  }
   const high = Math.max(...rangeCandles.map((candle) => candle.high));
   const low = Math.min(...rangeCandles.map((candle) => candle.low));
   return {
-    high,
-    low,
-    midpoint: (high + low) / 2
+    source: window.source,
+    label: window.source === "session" ? "CHART FALLBACK" : "NY 09:15 FALLBACK",
+    candleCount: rangeCandles.length,
+    range: {
+      high,
+      low,
+      midpoint: (high + low) / 2
+    }
   };
+}
+
+function module1OrbWindowFromCandles(candles: TwelveDataCandle[]) {
+  const latest = candles.at(-1);
+  if (!latest) return null;
+  const sessionDate = newYorkDateForTimestamp(latest.timestampUtc);
+  const start = zonedDateTimeToUtc(sessionDate, "09:15", "America/New_York");
+  const end = zonedDateTimeToUtc(sessionDate, "09:30", "America/New_York");
+  return { start, end, source: "ny0915" };
+}
+
+function newYorkDateForTimestamp(timestampUtc: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(timestampUtc));
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+}
+
+function zonedDateTimeToUtc(date: string, hhmm: string, timeZone: string) {
+  const [hour, minute] = hhmm.split(":").map(Number);
+  const utcGuess = new Date(`${date}T${hhmm}:00.000Z`);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).formatToParts(utcGuess);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const zonedAsUtc = Date.UTC(Number(lookup.year), Number(lookup.month) - 1, Number(lookup.day), Number(lookup.hour), Number(lookup.minute), Number(lookup.second));
+  const [year, month, day] = date.split("-").map(Number);
+  const wantedAsUtc = Date.UTC(year, month - 1, day, hour, minute, 0);
+  return new Date(utcGuess.getTime() + (wantedAsUtc - zonedAsUtc)).toISOString();
 }
 
 function format(value: number | null | undefined) {
