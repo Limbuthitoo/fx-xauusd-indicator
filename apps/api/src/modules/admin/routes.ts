@@ -196,10 +196,10 @@ export async function adminRoutes(app: FastifyInstance) {
     const packageName = String(body.packageName ?? detected.packageName ?? "").trim() || null;
     const platform = String(body.platform ?? "android").toLowerCase() === "android" ? "android" : "android";
     const sha256 = createHash("sha256").update(buffer).digest("hex");
-    const previousActive = await query(
+    const previousReleases = await query(
       `SELECT id, storage_path
        FROM mobile_app_releases
-       WHERE platform = $1 AND status = 'ACTIVE'`,
+       WHERE platform = $1`,
       [platform]
     );
     const releasesDir = resolve(process.cwd(), "../../data/mobile-releases");
@@ -237,7 +237,13 @@ export async function adminRoutes(app: FastifyInstance) {
          AND id <> $2`,
       [platform, result.rows[0].id]
     );
-    await removeSupersededApkFiles(previousActive.rows.map((row: any) => row.storage_path), storagePath);
+    await removeSupersededApkFiles(previousReleases.rows.map((row: any) => row.storage_path), storagePath);
+    await query(
+      `DELETE FROM mobile_app_releases
+       WHERE platform = $1
+         AND id <> $2`,
+      [platform, result.rows[0].id]
+    );
     await redisClient()?.del("platform:bundle:v1").catch(() => undefined);
     await writeAudit(session.sub, "MOBILE_APP_RELEASE_UPLOADED", "mobile_app_release", result.rows[0].id, null, {
       versionName,

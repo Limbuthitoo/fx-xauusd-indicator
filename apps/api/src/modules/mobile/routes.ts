@@ -13,7 +13,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       `SELECT id, platform, version_name, version_code, file_name, download_path, file_size_bytes, sha256, changelog, created_at
        FROM mobile_app_releases
        WHERE platform = $1 AND status = 'ACTIVE'
-       ORDER BY version_code DESC NULLS LAST, created_at DESC
+       ORDER BY created_at DESC
        LIMIT 1`,
       [platform]
     );
@@ -22,6 +22,10 @@ export async function mobileRoutes(app: FastifyInstance) {
     const updateAvailable = isNewerRelease(latest.version_name, latest.version_code, search.currentVersion, search.currentCode);
     return {
       updateAvailable,
+      current: {
+        version: search.currentVersion ?? null,
+        code: search.currentCode ?? null
+      },
       latest: {
         ...latest,
         downloadUrl: absoluteApiUrl(latest.download_path, request)
