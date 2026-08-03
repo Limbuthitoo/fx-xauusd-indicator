@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { readFileSync } from "node:fs";
@@ -70,6 +71,12 @@ await app.register(cors, {
   }
 });
 await app.register(websocket);
+await app.register(multipart, {
+  limits: {
+    files: 1,
+    fileSize: 220 * 1024 * 1024
+  }
+});
 app.addHook("preHandler", enforceSessionRevocation);
 await app.register(authRoutes);
 await app.register(adminRoutes);

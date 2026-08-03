@@ -167,7 +167,8 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/api/platform/mobile-app/releases", { bodyLimit: 220 * 1024 * 1024 }, async (request) => {
     const session = requirePlatformSuperAdmin(request);
-    const body = request.body as {
+    const upload = await parseMobileAppReleaseUpload(request);
+    const body = upload.fields as {
       fileName?: string;
       contentBase64?: string;
       changelog?: string;
@@ -176,13 +177,13 @@ export async function adminRoutes(app: FastifyInstance) {
       packageName?: string;
       platform?: string;
     };
-    const fileName = safeApkFileName(body.fileName);
-    if (!fileName || !body.contentBase64) {
+    const fileName = safeApkFileName(upload.fileName ?? body.fileName);
+    if (!fileName || !upload.buffer.length) {
       const error = new Error("APK file is required.") as Error & { statusCode?: number };
       error.statusCode = 400;
       throw error;
     }
-    const buffer = Buffer.from(body.contentBase64, "base64");
+    const buffer = upload.buffer;
     if (!buffer.length || buffer.subarray(0, 2).toString("utf8") !== "PK") {
       const error = new Error("Uploaded file must be a valid APK archive.") as Error & { statusCode?: number };
       error.statusCode = 400;
@@ -1089,6 +1090,36 @@ function inferVersionCodeFromName(versionName: string) {
 async function removeSupersededApkFiles(paths: string[], currentPath: string) {
   const uniquePaths = [...new Set(paths.filter((path) => path && path !== currentPath))];
   await Promise.all(uniquePaths.map((path) => unlink(path).catch(() => undefined)));
+}
+
+async function parseMobileAppReleaseUpload(request: any): Promise<{ fileName?: string; buffer: Buffer; fields: Record<string, any> }> {
+  const fields: Record<string, any> = {};
+  if (typeof request.isMultipart === "function" && request.isMultipart()) {
+    let fileName = "";
+    let buffer = Buffer.alloc(0);
+    const parts = request.parts({
+      limits: {
+        files: 1,
+        fileSize: 220 * 1024 * 1024
+      }
+    });
+    for await (const part of parts) {
+      if (part.type === "file") {
+        fileName = part.filename ?? "";
+        buffer = await part.toBuffer();
+      } else {
+        fields[part.fieldname] = part.value;
+      }
+    }
+    return { fileName, buffer, fields };
+  }
+
+  const body = (request.body ?? {}) as { fileName?: string; contentBase64?: string };
+  return {
+    fileName: body.fileName,
+    buffer: body.contentBase64 ? Buffer.from(body.contentBase64, "base64") : Buffer.alloc(0),
+    fields: body as Record<string, any>
+  };
 }
 
 function requirePlatformSuperAdmin(request: Parameters<typeof requirePermission>[0]) {

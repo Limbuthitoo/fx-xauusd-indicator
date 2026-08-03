@@ -26,13 +26,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const controller = new AbortController();
   const timeoutMs = path.includes("/mobile-app/releases") && options.method === "POST" ? 120_000 : 10_000;
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const body = options.body;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       credentials: "include",
       signal: options.signal ?? controller.signal,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...options.headers
       }

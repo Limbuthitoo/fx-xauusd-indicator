@@ -902,19 +902,18 @@ function App() {
   }
 
   async function uploadMobileAppRelease(input: { file: File; changelog: string; versionName?: string; versionCode?: string }) {
-    const contentBase64 = await fileToBase64(input.file);
+    const form = new FormData();
+    form.append("apk", input.file);
+    form.append("changelog", input.changelog);
+    if (input.versionName) form.append("versionName", input.versionName);
+    if (input.versionCode) form.append("versionCode", input.versionCode);
     const result = await api<any>("/api/platform/mobile-app/releases", {
       method: "POST",
-      body: JSON.stringify({
-        fileName: input.file.name,
-        contentBase64,
-        changelog: input.changelog,
-        versionName: input.versionName,
-        versionCode: input.versionCode
-      })
+      body: form
     });
     setMessage(`Mobile APK ${result.version_name} uploaded. Android users will see the update prompt from the app.`);
     await refresh();
+    return result;
   }
 
   async function updateTenantPushPreferences(preferences: any) {
@@ -1629,7 +1628,7 @@ function PlatformAdminApp({
   updateSupportTicket: (ticketId: string, status: string, priority?: string) => Promise<void>;
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
   sendPlatformPushTest: () => Promise<void>;
-  uploadMobileAppRelease: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<void>;
+  uploadMobileAppRelease: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<any>;
 }) {
   const [platformSection, setPlatformSectionState] = useState<PlatformSection>(() => platformSectionFromPath(window.location.pathname));
   const [selectedSubscriberId, setSelectedSubscriberId] = useState<string | null>(null);
@@ -2117,13 +2116,14 @@ function PlatformAppUpdatesPanel({
   onUpload
 }: {
   releases: any[];
-  onUpload: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<void>;
+  onUpload: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<any>;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [changelog, setChangelog] = useState("");
   const [versionName, setVersionName] = useState("");
   const [versionCode, setVersionCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploadedRelease, setUploadedRelease] = useState<any | null>(null);
   const detectedVersion = useMemo(() => file ? detectVersionFromFileName(file.name) : "", [file]);
 
   async function submit(event: React.FormEvent) {
@@ -2138,12 +2138,13 @@ function PlatformAppUpdatesPanel({
     }
     setBusy(true);
     try {
-      await onUpload({
+      const release = await onUpload({
         file,
         changelog,
         versionName: versionName.trim() || detectedVersion || undefined,
         versionCode: versionCode.trim() || undefined
       });
+      setUploadedRelease(release);
       setFile(null);
       setChangelog("");
       setVersionName("");
@@ -2187,6 +2188,18 @@ function PlatformAppUpdatesPanel({
         </label>
         <button className="wide" disabled={busy}><UploadCloud size={16} />{busy ? "Uploading APK..." : "Upload APK Release"}</button>
       </form>
+
+      {uploadedRelease ? (
+        <div className="platform-row success-row">
+          <div>
+            <strong>Uploaded {uploadedRelease.version_name} · {formatFileSize(uploadedRelease.file_size_bytes)}</strong>
+            <span>{uploadedRelease.file_name} · versionCode {uploadedRelease.version_code ?? "--"} · {formatNepalTime(uploadedRelease.created_at)}</span>
+            <em>{uploadedRelease.changelog || "No changelog provided."}</em>
+            <em>SHA256 {String(uploadedRelease.sha256 ?? "").slice(0, 24)}...</em>
+          </div>
+          <a className="button-link" href={absoluteApiDownloadUrl(uploadedRelease.download_path)} target="_blank" rel="noreferrer"><Download size={15} />Download</a>
+        </div>
+      ) : null}
 
       <div className="platform-list">
         {releases.map((release) => (
@@ -6747,18 +6760,6 @@ function platformSectionSubtitle(section: PlatformSection) {
     settings: "Manage business contact, support, and help information shown to subscribers."
   };
   return subtitles[section];
-}
-
-function fileToBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read APK file."));
-    reader.onload = () => {
-      const value = String(reader.result ?? "");
-      resolve(value.includes(",") ? value.split(",")[1] : value);
-    };
-    reader.readAsDataURL(file);
-  });
 }
 
 function detectVersionFromFileName(fileName: string) {
