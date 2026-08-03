@@ -2124,6 +2124,7 @@ function PlatformAppUpdatesPanel({
   const [versionCode, setVersionCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploadedRelease, setUploadedRelease] = useState<any | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const detectedVersion = useMemo(() => file ? detectVersionFromFileName(file.name) : "", [file]);
 
   async function submit(event: React.FormEvent) {
@@ -2136,6 +2137,7 @@ function PlatformAppUpdatesPanel({
       window.alert("Only Android APK files are supported here.");
       return;
     }
+    setUploadError("");
     setBusy(true);
     try {
       const release = await onUpload({
@@ -2151,6 +2153,10 @@ function PlatformAppUpdatesPanel({
       setVersionCode("");
       const input = document.getElementById("platform-apk-upload") as HTMLInputElement | null;
       if (input) input.value = "";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "APK upload failed.";
+      setUploadError(message);
+      window.alert(message);
     } finally {
       setBusy(false);
     }
@@ -2172,7 +2178,15 @@ function PlatformAppUpdatesPanel({
       <form className="platform-form app-update-form" onSubmit={submit}>
         <label>
           APK file
-          <input id="platform-apk-upload" type="file" accept=".apk,application/vnd.android.package-archive" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+          <input
+            id="platform-apk-upload"
+            type="file"
+            accept=".apk,application/vnd.android.package-archive"
+            onChange={(event) => {
+              setFile(event.target.files?.[0] ?? null);
+              setUploadError("");
+            }}
+          />
         </label>
         <label>
           Version fallback
@@ -2188,6 +2202,17 @@ function PlatformAppUpdatesPanel({
         </label>
         <button className="wide" disabled={busy}><UploadCloud size={16} />{busy ? "Uploading APK..." : "Upload APK Release"}</button>
       </form>
+
+      {file ? (
+        <div className="platform-row">
+          <div>
+            <strong>Selected {file.name} · {formatFileSize(file.size)}</strong>
+            <span>{file.size > 95 * 1024 * 1024 ? "Cloudflare proxied uploads may block APKs near or above 100 MB." : "Ready to upload."}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {uploadError ? <p className="form-error">{uploadError}</p> : null}
 
       {uploadedRelease ? (
         <div className="platform-row success-row">
