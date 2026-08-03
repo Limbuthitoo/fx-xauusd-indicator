@@ -1714,6 +1714,11 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     [strategyVersion?.id ?? null]
   );
   const version = versionResult.rows[0] as any;
+  if (!version?.id) {
+    const error = new Error(`No active strategy version is available for ${moduleCode}. Run database migrations/seed before live NY monitoring.`) as Error & { statusCode?: number };
+    error.statusCode = 500;
+    throw error;
+  }
   const sessionDate = newYorkDate();
   const times = sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
   const existing = await query(
@@ -4774,13 +4779,34 @@ function moduleTimeframeMinutes(moduleCode: string, settings: RuntimeSettings) {
 
 async function activeStrategyVersionForModule(moduleCode: string) {
   const { rows } = await query(
-    `SELECT sv.*
-     FROM strategy_versions sv
-     JOIN strategies s ON s.id = sv.strategy_id
-     JOIN strategy_sources src ON src.id = s.source_id
-     WHERE sv.status = 'ACTIVE'
-       AND COALESCE(sv.configuration_json->>'moduleCode', src.metadata->>'moduleCode', 'orb_max_options') = $1
-     ORDER BY sv.activated_at DESC NULLS LAST, sv.created_at DESC
+    `WITH module_match AS (
+       SELECT sv.*, 0 AS rank
+       FROM strategy_versions sv
+       JOIN strategies s ON s.id = sv.strategy_id
+       JOIN strategy_sources src ON src.id = s.source_id
+       WHERE sv.status = 'ACTIVE'
+         AND COALESCE(sv.configuration_json->>'moduleCode', src.metadata->>'moduleCode', 'orb_max_options') = $1
+     ),
+     selected_match AS (
+       SELECT sv.*, 1 AS rank
+       FROM strategy_versions sv
+       WHERE sv.status = 'ACTIVE'
+         AND sv.id = (SELECT selected_strategy_version_id FROM user_preferences LIMIT 1)
+     ),
+     latest_match AS (
+       SELECT sv.*, 2 AS rank
+       FROM strategy_versions sv
+       WHERE sv.status = 'ACTIVE'
+     )
+     SELECT *
+     FROM (
+       SELECT * FROM module_match
+       UNION ALL
+       SELECT * FROM selected_match
+       UNION ALL
+       SELECT * FROM latest_match
+     ) candidates
+     ORDER BY rank, activated_at DESC NULLS LAST, created_at DESC
      LIMIT 1`,
     [moduleCode]
   );
