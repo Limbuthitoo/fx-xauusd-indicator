@@ -793,13 +793,15 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
   }
   if (setup.module_code !== "high_probability_strategy_2") return [];
   const sweepTime = flags.sweep?.closedBackAt ?? flags.sweep?.sweptAt;
+  const confirmedEntry = flags.mandatoryChecklistMatched === true || ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(String(setup.status));
+  const labelPrefix = confirmedEntry ? "M2" : "M2 Candidate";
   if (sweepTime) {
     markers.push({
       time: toChartTime(sweepTime),
       position: isLong ? "belowBar" : "aboveBar",
       color: "#f0b429",
       shape: "circle",
-      text: "M2 Sweep"
+      text: `${labelPrefix} Sweep`
     });
   }
   const displacementTime = flags.displacement?.candle?.timestampUtc;
@@ -809,7 +811,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       position: isLong ? "belowBar" : "aboveBar",
       color: "#38bdf8",
       shape: isLong ? "arrowUp" : "arrowDown",
-      text: "M2 Displacement"
+      text: `${labelPrefix} Displacement`
     });
   }
   const bosTime = flags.bos?.candle?.timestampUtc;
@@ -819,7 +821,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       position: isLong ? "belowBar" : "aboveBar",
       color: "#a78bfa",
       shape: "square",
-      text: "M2 BOS"
+      text: `${labelPrefix} BOS`
     });
   }
   const zoneTime = flags.entryZone?.createdAt;
@@ -829,7 +831,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       position: isLong ? "belowBar" : "aboveBar",
       color: "#7c9cff",
       shape: "circle",
-      text: flags.entryZone?.kind === "ORDER_BLOCK" ? "M2 OB" : "M2 FVG"
+      text: flags.entryZone?.kind === "ORDER_BLOCK" ? `${labelPrefix} OB` : `${labelPrefix} FVG`
     });
   }
   return markers;

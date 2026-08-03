@@ -234,6 +234,23 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.riskReward = plan.rr;
 
   if (!mandatoryEntryPassed) {
+    if (!entryConfirmation) {
+      return {
+        scenario: "WAITING_FOR_ENTRY_CONFIRMATION",
+        direction,
+        status: "WAIT",
+        state: "ENTRY_CONFIRMATION",
+        finalReason: `Entry zone was reached after sweep, displacement, and BOS/CHoCH. Waiting for a valid ${direction} confirmation candle before any paper entry. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`,
+        evaluations,
+        scenarioFlags: flags,
+        favorabilityScore: score,
+        favorabilityGrade: gradeValue,
+        favorabilityReasons: [
+          "Sweep, displacement, BOS/CHoCH, and entry zone are candidate evidence only.",
+          "No trade is valid until the confirmation candle closes in the setup direction."
+        ]
+      };
+    }
     return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: mandatory entry rules are not fully matched yet. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
   }
 
