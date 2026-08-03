@@ -6528,20 +6528,151 @@ function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" 
       : activeModuleCode === "strategy_lab_3"
         ? vwapOpeningDriveChecklistRows(evaluations, setup)
       : genericModuleChecklistRows(evaluations, setup, activeModuleCode);
+  const sections = groupedChecklistSections(activeModuleCode, rows);
   return (
     <div className="rule-list">
-      {rows.map((item: any) => (
-        <div className={`rule-row ${ruleTone(item.status)}`} key={item.id ?? item.rule_code ?? item.ruleCode}>
-          {item.status === "PASS" ? <CheckCircle2 size={16} /> : item.status === "FAIL" ? <XCircle size={16} /> : <Clock size={16} />}
-          <div>
-            <strong>{item.name}</strong>
-            <span>{item.explanation}</span>
+      {sections.map((section) => (
+        <section className="rule-section" key={section.title}>
+          <header>
+            <div>
+              <strong>{section.title}</strong>
+              <span>{section.description}</span>
+            </div>
+            <em>{section.rows.filter((item: any) => item.status === "PASS").length}/{section.rows.length}</em>
+          </header>
+          <div className="rule-section-rows">
+            {section.rows.map((item: any) => (
+              <div className={`rule-row ${ruleTone(item.status)}`} key={item.id ?? item.rule_code ?? item.ruleCode}>
+                {item.status === "PASS" ? <CheckCircle2 size={16} /> : item.status === "FAIL" ? <XCircle size={16} /> : <Clock size={16} />}
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{item.explanation}</span>
+                </div>
+                <em>{item.status}</em>
+              </div>
+            ))}
           </div>
-          <em>{item.status}</em>
-        </div>
+        </section>
       ))}
     </div>
   );
+}
+
+function groupedChecklistSections(moduleCode: string, rows: any[]) {
+  if (moduleCode === "orb_max_options") {
+    return checklistSections(rows, [
+      {
+        title: "Engine State",
+        description: "Current Module 1 ORB decision state.",
+        codes: ["SCENARIO_SELECTED"]
+      },
+      {
+        title: "Mandatory Entry Checklist",
+        description: "These rules must pass before Module 1 can produce a paper BUY/SELL.",
+        codes: ["SESSION_READY", "ORB_LOCKED", "AUTO_ELIGIBLE", "CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW"]
+      },
+      {
+        title: "Breakout Confirmation Checklist",
+        description: "Quality confirmation for a completed ORB breakout candle.",
+        codes: ["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]
+      },
+      {
+        title: "Risk & Quality Filters",
+        description: "Filters that protect the setup from poor execution conditions.",
+        codes: ["ENTRY_NOT_OVEREXTENDED", "NEWS_FILTER", "RISK_PERMISSION"]
+      },
+      {
+        title: "Final Automation Gate",
+        description: "The final strict checklist gate before automatic paper trading.",
+        codes: ["STRICT_CHECKLIST", "REPLAY_MATCH"]
+      }
+    ]);
+  }
+  if (moduleCode === "high_probability_strategy_2") {
+    return checklistSections(rows, [
+      {
+        title: "Engine State",
+        description: "Current Module 2 Liquidity Sweep + BOS sequence state.",
+        codes: ["MODULE2_STATE"]
+      },
+      {
+        title: "Mandatory Entry Checklist",
+        description: "The institutional sequence must complete in order: NY session, sweep, displacement, BOS/CHoCH, zone, retrace, entry candle.",
+        codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"]
+      },
+      {
+        title: "Confirmation Checklist",
+        description: "At least 3 of 5 confirmation rules must pass for a valid Module 2 signal.",
+        codes: ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]
+      },
+      {
+        title: "Risk & Quality Filters",
+        description: "At least 3 quality filters plus required risk controls must pass.",
+        codes: ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]
+      },
+      {
+        title: "Final Automation Gate",
+        description: "Minimum confidence required before automatic paper trading.",
+        codes: ["SIGNAL_SCORE"]
+      }
+    ]);
+  }
+  if (moduleCode === "strategy_lab_3") {
+    return checklistSections(rows, [
+      {
+        title: "Engine State",
+        description: "Current Module 3 VWAP opening-drive pullback state.",
+        codes: ["MODULE3_STATE"]
+      },
+      {
+        title: "Mandatory Entry Checklist",
+        description: "The NY opening drive, VWAP alignment, pullback zone touch, and confirmation candle must all pass.",
+        codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
+      },
+      {
+        title: "Confirmation Checklist",
+        description: "Trend continuation evidence supporting the VWAP pullback.",
+        codes: ["EMA_ALIGNMENT"]
+      },
+      {
+        title: "Risk & Quality Filters",
+        description: "Execution filters for spread, news, reward-to-risk, and stop size.",
+        codes: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]
+      },
+      {
+        title: "Final Automation Gate",
+        description: "Minimum confidence required before automatic paper trading.",
+        codes: ["SIGNAL_SCORE"]
+      }
+    ]);
+  }
+  return [{ title: "Strategy Checklist", description: "Module-specific rules.", rows }];
+}
+
+function checklistSections(rows: any[], definitions: Array<{ title: string; description: string; codes: string[] }>) {
+  const used = new Set<string>();
+  const normalized = rows.map((row) => ({ ...row, rule_code: row.rule_code ?? row.ruleCode }));
+  const sections = definitions
+    .map((definition) => {
+      const sectionRows = normalized.filter((row) => {
+        const code = row.rule_code ?? row.ruleCode;
+        if (!definition.codes.includes(code)) return false;
+        used.add(code);
+        return true;
+      });
+      return { ...definition, rows: sectionRows };
+    })
+    .filter((section) => section.rows.length > 0);
+  const remaining = normalized.filter((row) => !used.has(row.rule_code ?? row.ruleCode));
+  if (remaining.length > 0) {
+    sections.push({
+      title: "Additional Evidence",
+      description: "Extra module evidence saved with the setup.",
+      codes: [],
+      rows: remaining
+    });
+  }
+  return sections;
 }
 
 function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {

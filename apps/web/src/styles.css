@@ -1031,7 +1031,54 @@ button:hover,
 
 .rule-list {
   display: grid;
+  gap: 10px;
+}
+
+.rule-section {
+  display: grid;
   gap: 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #223027;
+  border-radius: 6px;
+  background: rgba(12, 16, 14, 0.72);
+}
+
+.rule-section header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid #202820;
+}
+
+.rule-section header strong {
+  display: block;
+  color: #edf4ef;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.rule-section header span {
+  display: block;
+  margin-top: 3px;
+  color: #8f9c94;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.rule-section header em {
+  color: #23c483;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.rule-section-rows {
+  display: grid;
+  gap: 6px;
 }
 
 .rule-row {
