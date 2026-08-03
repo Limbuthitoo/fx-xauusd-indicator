@@ -3059,9 +3059,11 @@ function AutoEnginePanel({ state, setup, activeVersion, feedHealth, message }: {
 }
 
 function PaperTradePanel({ trade, tradePlan, setup }: { trade?: any; tradePlan?: any; setup?: any }) {
+  const setupTier = setup?.scenario_flags?.setupTier === "MANDATORY" ? "Mandatory setup" : setup?.scenario_flags?.setupTier === "FULL" ? "Full checklist setup" : "--";
   return (
     <Panel icon={<LineChart />} title="Paper Trade">
       <Metric label="Status" value={trade?.id ? trade.outcome ?? "ACTIVE" : "NONE"} />
+      <Metric label="Setup tier" value={setupTier} />
       <Metric label="Direction" value={trade?.direction ?? setup?.direction ?? "--"} />
       <Metric label="Entry" value={trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price ?? "--"} />
       <Metric label="Stop" value={trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price ?? "--"} />

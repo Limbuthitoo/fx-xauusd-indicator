@@ -2384,19 +2384,21 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   if (saved?.setup?.status === "LONG SETUP READY" || saved?.setup?.status === "SHORT SETUP READY") {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails("orb_max_options", saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    await notifyTenantOnce(
-      session.tenant_id,
-      `setup-ready-${saved.setup.id}`,
-      "SETUP_READY",
-      `${alert.title} signal ready`,
-      `${alert.body} | ${settings.paperTradingEnabled ? "Paper trading will simulate this setup." : "Paper trading is disabled in Settings."}`,
-      "HIGH",
-      alert.data,
-      "validEntries"
-    );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current)
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+    if (paperTrade?.trade || !settings.paperTradingEnabled) {
+      await notifyTenantOnce(
+        session.tenant_id,
+        `setup-ready-${saved.setup.id}`,
+        "SETUP_READY",
+        `${alert.title} signal ready`,
+        `${alert.body} | ${settings.paperTradingEnabled ? "Paper trading will simulate this setup." : "Paper trading is disabled in Settings."}`,
+        "HIGH",
+        alert.data,
+        "validEntries"
+      );
+    }
   } else if (saved?.setup?.status === "NO TRADE") {
     await notifyTenantOnce(session.tenant_id, `no-trade-${saved.setup.id}`, "NO_TRADE", "No trade classification", saved.setup.final_reason);
   }
@@ -2474,7 +2476,7 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
       [symbol, timeframe, startLookback, current.timestamp_utc]
     )).rows;
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "vwapOpeningDrive.strategy", session.configuration_json);
-  const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
+  const tradesTaken = await tradesTakenForSession(session.id, moduleCode, "FULL");
   const decision = evaluateVwapOpeningDrive({
     now: current.timestamp_utc,
     symbol,
@@ -2491,19 +2493,21 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    await notifyTenantOnce(
-      session.tenant_id,
-      `module3-setup-ready-${saved.setup.id}`,
-      "MODULE3_SETUP_READY",
-      `${alert.title} signal ready`,
-      `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 3 checklist matched."}`,
-      "HIGH",
-      alert.data,
-      "validEntries"
-    );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+    if (paperTrade?.trade || !settings.paperTradingEnabled) {
+      await notifyTenantOnce(
+        session.tenant_id,
+        `module3-setup-ready-${saved.setup.id}`,
+        "MODULE3_SETUP_READY",
+        `${alert.title} signal ready`,
+        `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 3 checklist matched."}`,
+        "HIGH",
+        alert.data,
+        "validEntries"
+      );
+    }
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
   return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.scenario, paperTrade, tradeLifecycle };
@@ -2615,7 +2619,8 @@ export function evaluateVwapOpeningDrive(input: {
   push("QUALITY_STOP_SIZE", "Maximum stop size", stopOk, true, Number(stopAtr.toFixed(2)), `<= ${config.maximumStopATR} ATR`, "Stop distance must not be too large after the pullback.");
   const confirmationCount = [vwapAligned, trendAligned, pullbackTouched, confirmation, spreadOk, newsOk, rrOk, stopOk].filter(Boolean).length;
   const score = Math.min(100, Math.round(35 + (driveStrong ? 15 : 0) + confirmationCount * 7));
-  const blockingPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");
+  const mandatoryEntryPassed = module3MandatoryEntryPassed(evaluations);
+  const fullChecklistPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");
   const scoreOk = score >= config.minimumSignalScore;
   push("SIGNAL_SCORE", "Minimum signal score", scoreOk, true, score, `>= ${config.minimumSignalScore}`, "Module 3 requires a high-quality opening-drive pullback score.");
   flags.drive = drive;
@@ -2625,9 +2630,29 @@ export function evaluateVwapOpeningDrive(input: {
   flags.riskReward = rr;
   flags.confidence = score;
   flags.tradeGrade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
-  flags.state = blockingPassed && scoreOk ? "SIGNAL_ACTIVE" : "WAITING_FOR_PULLBACK_CONFIRMATION";
-  if (!blockingPassed || !scoreOk) {
+  flags.mandatoryChecklistMatched = mandatoryEntryPassed;
+  flags.fullChecklistMatched = fullChecklistPassed && scoreOk;
+  flags.setupTier = fullChecklistPassed && scoreOk ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
+  flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "WAITING_FOR_PULLBACK_CONFIRMATION";
+  if (!mandatoryEntryPassed) {
     return module3Decision("VWAP_PULLBACK_NOT_READY", direction, "WAIT", "Waiting for VWAP pullback checklist to fully match.", evaluations, flags, score);
+  }
+  if (!fullChecklistPassed || !scoreOk) {
+    return {
+      scenario: direction === "LONG" ? "MANDATORY_VWAP_OPENING_DRIVE_PULLBACK_BUY" : "MANDATORY_VWAP_OPENING_DRIVE_PULLBACK_SELL",
+      direction,
+      status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
+      state: "SIGNAL_ACTIVE",
+      entryPrice: entry,
+      stopPrice: stop,
+      targetPrice: target,
+      finalReason: `Mandatory Module 3 VWAP opening-drive checklist passed. Small paper setup created while full quality filters continue. Confidence ${score}%.`,
+      evaluations,
+      scenarioFlags: flags,
+      favorabilityScore: score,
+      favorabilityGrade: score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
+      favorabilityReasons: ["NY opening drive confirmed", "VWAP continuation aligned", "Pullback zone respected", `Risk-reward ${rr.toFixed(2)}R`]
+    };
   }
   return {
     scenario: direction === "LONG" ? "NY_VWAP_OPENING_DRIVE_PULLBACK_BUY" : "NY_VWAP_OPENING_DRIVE_PULLBACK_SELL",
@@ -2644,6 +2669,22 @@ export function evaluateVwapOpeningDrive(input: {
     favorabilityGrade: score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
     favorabilityReasons: ["NY opening drive confirmed", "VWAP continuation aligned", "Pullback zone respected", `Risk-reward ${rr.toFixed(2)}R`]
   };
+}
+
+function module3MandatoryEntryPassed(evaluations: any[]) {
+  const required = new Set([
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "OPENING_DRIVE_COMPLETE",
+    "OPENING_DRIVE_STRONG",
+    "VWAP_ALIGNMENT",
+    "PULLBACK_ZONE_READY",
+    "PULLBACK_ZONE_TOUCHED",
+    "CONFIRMATION_CANDLE"
+  ]);
+  return evaluations
+    .filter((evaluation) => required.has(evaluation.ruleCode))
+    .every((evaluation) => evaluation.status === "PASS");
 }
 
 function module3Decision(scenario: string, direction: string | null, status: string, reason: string, evaluations: any[], flags: Record<string, unknown>, score = 0) {
@@ -2777,7 +2818,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
             [symbol, current.timestamp_utc]
           )
         ).rows.reverse();
-  const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
+  const tradesTaken = await tradesTakenForSession(session.id, moduleCode, "FULL");
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "liquiditySweep.strategy", session.configuration_json);
   const configVersion = await module2ConfigSnapshot(activeTenantId);
   const decision = evaluateLiquiditySweepSetup({
@@ -2801,19 +2842,21 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    await notifyTenantOnce(
-      session.tenant_id,
-      `module2-setup-ready-${saved.setup.id}`,
-      "MODULE2_SETUP_READY",
-      `${alert.title} signal ready`,
-      `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 2 checklist matched."}`,
-      "HIGH",
-      alert.data,
-      "validEntries"
-    );
     paperTrade = settings.paperTradingEnabled
       ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+    if (paperTrade?.trade || !settings.paperTradingEnabled) {
+      await notifyTenantOnce(
+        session.tenant_id,
+        `module2-setup-ready-${saved.setup.id}`,
+        "MODULE2_SETUP_READY",
+        `${alert.title} signal ready`,
+        `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 2 checklist matched."}`,
+        "HIGH",
+        alert.data,
+        "validEntries"
+      );
+    }
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
   return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.state, paperTrade, tradeLifecycle };
@@ -2928,7 +2971,7 @@ async function runModule2DryRunFromSavedCandles(tenantId: string | null, session
   const version = session ?? (await activeStrategyVersionForModule("high_probability_strategy_2"));
   const baseConfiguration = session?.configuration_json ?? version?.configuration_json ?? {};
   const configuration = await getTenantModuleStrategyConfiguration(tenantId, "high_probability_strategy_2", "liquiditySweep.strategy", baseConfiguration);
-  const tradesTaken = session?.id ? await tradesTakenForSession(session.id, "high_probability_strategy_2") : 0;
+  const tradesTaken = session?.id ? await tradesTakenForSession(session.id, "high_probability_strategy_2", "FULL") : 0;
   const decision = evaluateLiquiditySweepSetup({
     now: rowTimestamp(current),
     symbol,
@@ -3702,8 +3745,21 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
   if (risk?.status !== "PERMITTED") return false;
+  const tier = String(setup.scenario_flags?.setupTier ?? decision?.scenarioFlags?.setupTier ?? "FULL");
+  if (tier === "MANDATORY") {
+    return moduleMandatoryEntryPassed(setup.module_code, decision?.evaluations ?? []);
+  }
   const blockingRules = decision?.evaluations?.filter((evaluation: any) => evaluation.blocking) ?? [];
   return blockingRules.length > 0 && blockingRules.every((evaluation: any) => evaluation.status === "PASS");
+}
+
+function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
+  const required =
+    moduleCode === "strategy_lab_3"
+      ? ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
+      : ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
+  const byCode = new Map(evaluations.map((evaluation: any) => [evaluation.ruleCode ?? evaluation.rule_code, evaluation.status]));
+  return required.every((code) => byCode.get(code) === "PASS");
 }
 
 async function applyModule2SetupLifecycle(setup: any, decision: any, currentRow: any) {
@@ -3866,6 +3922,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
   if (setup.scenario === "QA_TEST_SIGNAL" || setup.scenario_flags?.replay === true) {
     return { skipped: true, reason: "TEST_SIGNAL_NOT_PRODUCTION" };
   }
+  const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
 
   const existing = await query(
     `SELECT t.id, t.outcome, tp.status
@@ -3876,11 +3933,12 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
        AND sc.module_code = $2
        AND sc.scenario <> 'QA_TEST_SIGNAL'
        AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'setupTier', 'FULL') = $3
      LIMIT 1`,
-    [session.id, moduleCode]
+    [session.id, moduleCode, setupTier]
   );
   if (existing.rows[0]) {
-    return { skipped: true, reason: "ONE_TRADE_PER_SESSION", tradeId: existing.rows[0].id };
+    return { skipped: true, reason: `ONE_${setupTier}_TRADE_PER_SESSION`, tradeId: existing.rows[0].id };
   }
 
   const rewardToRisk = Number(risk?.rewardToRisk ?? 0);
@@ -3934,6 +3992,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     {
       mode: "PAPER",
       moduleCode,
+      setupTier,
       scenario: setup.scenario,
       direction: setup.direction,
       rewardToRisk,
@@ -4335,7 +4394,7 @@ async function calculateDecisionRisk(session: any, decision: any, currentRow: an
   });
 }
 
-async function tradesTakenForSession(sessionId: string, moduleCode: string) {
+async function tradesTakenForSession(sessionId: string, moduleCode: string, setupTier = "FULL") {
   const { rows } = await query(
     `SELECT count(*)::int AS count
      FROM trades t
@@ -4344,8 +4403,9 @@ async function tradesTakenForSession(sessionId: string, moduleCode: string) {
      WHERE sc.session_id = $1
        AND sc.module_code = $2
        AND sc.scenario <> 'QA_TEST_SIGNAL'
-       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'`,
-    [sessionId, moduleCode]
+       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'setupTier', 'FULL') = $3`,
+    [sessionId, moduleCode, setupTier]
   );
   return Number(rows[0]?.count ?? 0);
 }
@@ -4421,11 +4481,13 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
   const takeProfit = formatPrice(trade?.actual_target ?? setup.target_price);
   const moduleName = moduleDisplayName(moduleCode);
   const scenario = String(setup.scenario ?? "VALID_SETUP");
+  const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
   const grade = setup.favorability_grade ?? setup.scenario_flags?.tradeGrade ?? setup.scenario_flags?.grade ?? null;
   const confidence = setup.favorability_score ?? setup.scenario_flags?.confidence ?? null;
   const rr = Number.isFinite(rewardToRisk) ? rewardToRisk.toFixed(2) : "--";
-  const title = `${moduleName}: ${action} ${direction}`;
+  const title = `${moduleName}: ${setupTier === "MANDATORY" ? "Core" : "Full"} ${action} ${direction}`;
   const bodyParts = [
+    setupTier === "MANDATORY" ? "Mandatory setup" : "Full checklist setup",
     `${scenario}`,
     `Entry ${entry}`,
     `SL ${stopLoss}`,
@@ -4440,6 +4502,7 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
     data: {
       moduleCode,
       moduleName,
+      setupTier,
       scenario,
       direction,
       action,

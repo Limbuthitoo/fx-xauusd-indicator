@@ -215,7 +215,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
   const scoreOk = score >= config.minimumSignalScore;
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
-  const mandatoryPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
+  const mandatoryEntryPassed = module2MandatoryEntryPassed(evaluations);
+  const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
   flags.levels = levels;
   flags.htfBias = htfBias;
   flags.sweep = sweep;
@@ -226,15 +227,32 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
   flags.tradeGrade = gradeValue;
   flags.confidence = score;
-  flags.state = mandatoryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
+  flags.mandatoryChecklistMatched = mandatoryEntryPassed;
+  flags.fullChecklistMatched = fullChecklistPassed;
+  flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
+  flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
   flags.riskReward = plan.rr;
 
-  if (!mandatoryPassed) {
-    return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: hard rules passed, but confirmation/quality requirements failed. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
+  if (!mandatoryEntryPassed) {
+    return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: mandatory entry rules are not fully matched yet. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
   }
 
-  if (gradeValue === "B" || gradeValue === "C") {
-    return blockedDecision(`${gradeValue}_GRADE_NO_TRADE`, `NO TRADE: Trade grade ${gradeValue}. Automatic Module 2 entries require at least 3 confirmations and 3 quality filters, producing A/A+ readiness.`, evaluations, flags, direction, score);
+  if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
+    return {
+      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_BOS_BUY" : "MANDATORY_LIQUIDITY_SWEEP_BOS_SELL",
+      direction,
+      status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
+      state: "SIGNAL_ACTIVE",
+      entryPrice: plan.entry,
+      stopPrice: plan.stop,
+      targetPrice: plan.target,
+      finalReason: `Mandatory Module 2 entry checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6, confidence ${score}%.`,
+      evaluations,
+      scenarioFlags: flags,
+      favorabilityScore: score,
+      favorabilityGrade: gradeValue,
+      favorabilityReasons: reasonList(score, sweep.level, htfBias, fvg, orderBlock, plan.rr, confirmationCount, qualityCount)
+    };
   }
 
   return {
@@ -252,6 +270,23 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     favorabilityGrade: gradeValue,
     favorabilityReasons: reasonList(score, sweep.level, htfBias, fvg, orderBlock, plan.rr, confirmationCount, qualityCount)
   };
+}
+
+function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
+  const required = new Set([
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "DISPLACEMENT_CONFIRMED",
+    "BOS_CHOCH_CONFIRMED",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "CONFIRM_ENTRY_CANDLE"
+  ]);
+  return evaluations
+    .filter((evaluation) => required.has(evaluation.ruleCode))
+    .every((evaluation) => evaluation.status === "PASS");
 }
 
 function normalizeCandles(candles: Candle[]) {

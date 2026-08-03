@@ -441,6 +441,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const evaluations = evaluateMandatoryBreakoutRules(context, direction);
   const unmatchedChecklistRules = evaluations.filter((evaluation) => !["PASS", "NOT_APPLICABLE"].includes(evaluation.status));
   const ready = unmatchedChecklistRules.length === 0;
+  const mandatoryReady = orbMandatoryEntryReady(evaluations, direction);
   const width = openingRange.width ?? 0;
   const stopPrice = direction === "LONG" ? (openingRange.low ?? currentCandle.low) : (openingRange.high ?? currentCandle.high);
   const entryPrice = currentCandle.close;
@@ -464,18 +465,23 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const trendAlignedScenario =
     selection.scenario === "CLEAN_BREAKOUT_CONTINUATION" && score.flags.trendAligned ? "TREND_ALIGNED_CLEAN_BREAKOUT" : selection.scenario;
   const autoReady = ready && selection.autoEligible && !lowFavorability;
+  const mandatoryOnlyReady = !autoReady && mandatoryReady;
   const blockedStatus = lowFavorability ? "BLOCKED" : selection.status ?? "WAIT FOR RETEST";
 
   return {
-    scenario: lowFavorability ? `${trendAlignedScenario}_LOW_FAVORABILITY` : trendAlignedScenario,
+    scenario: mandatoryOnlyReady
+      ? `MANDATORY_ORB_BREAKOUT_${direction === "LONG" ? "BUY" : "SELL"}`
+      : lowFavorability ? `${trendAlignedScenario}_LOW_FAVORABILITY` : trendAlignedScenario,
     direction,
-    status: autoReady ? (direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY") : blockedStatus,
+    status: autoReady || mandatoryOnlyReady ? (direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY") : blockedStatus,
     entryPrice,
     stopPrice,
     targetPrice,
     finalReason:
       autoReady
-        ? `${selection.finalReason} Favorability ${score.score}/100 (${score.grade}) permits automatic paper entry.`
+        ? `${selection.finalReason} Full checklist matched. Favorability ${score.score}/100 (${score.grade}) permits automatic paper entry.`
+        : mandatoryOnlyReady
+          ? `Mandatory ORB entry checklist passed. Small paper setup created while confirmation/quality checks continue. Full checklist waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ") || "higher-quality scenario and favorability alignment"}.`
           : lowFavorability
             ? `Breakout passed mandatory rules, but favorability ${score.score}/100 is below the ${minimumScore}/100 paper-trade threshold.`
           : unmatchedChecklistRules.length > 0
@@ -494,6 +500,9 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
         priority: selection.priority,
         autoEligible: selection.autoEligible,
         checklistMatched: ready,
+        mandatoryChecklistMatched: mandatoryReady,
+        setupTier: autoReady ? "FULL" : mandatoryOnlyReady ? "MANDATORY" : "WATCH",
+        fullChecklistMatched: autoReady,
         unmatchedChecklistRules: unmatchedChecklistRules.map((rule) => rule.ruleCode),
         selectedScenario: trendAlignedScenario,
         tags: selection.tags,
@@ -505,4 +514,16 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
     favorabilityGrade: score.grade,
     favorabilityReasons: score.reasons
   };
+}
+
+function orbMandatoryEntryReady(evaluations: ReturnType<typeof evaluateMandatoryBreakoutRules>, direction: Direction) {
+  const required = new Set([
+    "ORB_LOCKED",
+    "INSIDE_SIGNAL_WINDOW",
+    direction === "LONG" ? "CLOSE_ABOVE_ORB_HIGH" : "CLOSE_BELOW_ORB_LOW",
+    "RISK_PERMISSION"
+  ]);
+  return evaluations
+    .filter((evaluation) => required.has(evaluation.ruleCode))
+    .every((evaluation) => evaluation.status === "PASS");
 }
