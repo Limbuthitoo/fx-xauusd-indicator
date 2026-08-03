@@ -25,10 +25,10 @@ export function calculateRisk(input: RiskInput): RiskResult {
   const rewardToRisk = maximumPossibleLoss > 0 ? targetReward / maximumPossibleLoss : 0;
 
   if (suggestedLotSize < input.minimumLot) {
-    reasons.push("Calculated lot size is below broker minimum.");
+    reasons.push("Calculated paper size is below the configured minimum.");
   }
   if (suggestedLotSize > input.maximumLot) {
-    reasons.push("Calculated lot size is above broker maximum.");
+    reasons.push("Calculated paper size is above the configured maximum.");
   }
   if (rewardToRisk < input.minimumRewardToRisk) {
     reasons.push(`Reward-to-risk is below ${input.minimumRewardToRisk}.`);

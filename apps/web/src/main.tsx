@@ -1021,7 +1021,7 @@ function App() {
           <Status label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} tone={state.feedStatus?.live ? "good" : "neutral"} />
           <Status label="Module" value={activeModule?.name ?? "No modules assigned"} tone={activeModule ? "good" : "warn"} />
           <Status label="Paper Mode" value="AUTO" tone="good" />
-          <Status label="Broker Orders" value="OFF" tone="bad" />
+          <Status label="Real Orders" value="OFF" tone="bad" />
         </section>
 
         {!accountLocked ? (
@@ -1323,7 +1323,7 @@ function App() {
               <Metric label="Signal timeframe" value={`${activeTimeframeMinutes} minutes`} />
               <Metric label="Session start NPT" value={formatNepalTime(state.automationStatus?.sessionStartAt)} />
               <Metric label="Session stop NPT" value={formatNepalTime(state.automationStatus?.apiStopAt)} />
-              <Metric label="Broker execution" value="Disabled" />
+              <Metric label="External execution" value="Disabled" />
             </Panel>
             <Panel icon={<Settings />} title="Feed Settings">
               <Metric label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} />
@@ -1354,7 +1354,7 @@ function App() {
                     <button onClick={() => triggerOrbReplay("NO_TRADE").catch(() => setMessage("Replay no-trade failed."))}>No Trade</button>
                     <button onClick={() => clearTestSignals().catch(() => setMessage("Clear replay failed."))}>Clear</button>
                   </div>
-                  <p className="reason">Replay uses fake candles through the real ORB engine. No Twelve Data call, no broker order.</p>
+                  <p className="reason">Replay uses fake candles through the real ORB engine. No Twelve Data call, no real order.</p>
                 </Panel>
                 <Panel icon={<LineChart />} title="ORB Test Signals">
                   <div className="admin-actions">
@@ -3118,7 +3118,7 @@ function CrossModuleCommandCenter({
           <Metric label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} />
           <Metric label="Enabled modules" value={rows.length} />
           <Metric label="Buy/Sell signals" value={buySellSignals} />
-          <Metric label="Broker orders" value="OFF" />
+          <Metric label="Real orders" value="OFF" />
         </div>
         <p className="reason">This screen compares modules only. Strategy logic, paper trades, journals, and checklists remain isolated per module; the shared part is the XAUUSD Twelve Data candle feed.</p>
       </Panel>
@@ -3677,7 +3677,7 @@ function OrbCompletionCenter({ state, qaSuite }: { state: PanelState; qaSuite?: 
   const rows = [
     { phase: "ORB MAX engine", status: "COMPLETE", detail: "Breakout, retest, fakeout, sweep, overextension, and no-trade scenarios are implemented." },
     { phase: "Shared XAUUSD feed", status: "COMPLETE", detail: "Module 1 uses the shared Twelve Data feed and isolated ORB setup/trade records." },
-    { phase: "Paper trading", status: "COMPLETE", detail: "Real broker execution is disabled; paper trades use ORB risk and TP/SL planning." },
+    { phase: "Paper trading", status: "COMPLETE", detail: "Real external execution is disabled; paper trades use ORB risk and TP/SL planning." },
     { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run Full ORB QA Suite from Data Admin to refresh proof." },
     { phase: "GO / NO-GO rehearsal", status: rehearsalStatus === "GO" ? "COMPLETE" : "READY", detail: rehearsalStatus === "GO" ? "End-to-end ORB replay, paper trade, close, journal, notification, and isolation proof passed." : "Run Module 1 launch rehearsal." },
     { phase: "Production audit", status: auditStatusValue === "PASS" ? "COMPLETE" : "READY", detail: auditStatusValue === "PASS" ? "Module 1 audit is clean." : "Run rehearsal and confidence audit." },
@@ -3733,7 +3733,7 @@ function OrbQAControlPanel({ onRunSuite, suite }: { onRunSuite: () => Promise<vo
             <Metric label="Suite status" value={suite.finalStatus ?? "--"} />
             <Metric label="Passed" value={`${suite.summary?.passed ?? 0}/${suite.summary?.total ?? 0}`} />
             <Metric label="API credits" value={suite.twelveDataCreditsUsed ?? 0} />
-            <Metric label="Broker orders" value={suite.brokerOrdersPlaced ?? 0} />
+            <Metric label="Real orders" value={suite.externalOrdersPlaced ?? 0} />
           </div>
           <table className="data-table">
             <thead><tr><th>Case</th><th>Expected</th><th>Actual</th><th>Tradable</th><th>Status</th></tr></thead>
@@ -3750,7 +3750,7 @@ function OrbQAControlPanel({ onRunSuite, suite }: { onRunSuite: () => Promise<vo
             </tbody>
           </table>
         </div>
-      ) : <p className="reason">Runs all Module 1 replay cases without Twelve Data credits or broker orders.</p>}
+      ) : <p className="reason">Runs all Module 1 replay cases without Twelve Data credits or real orders.</p>}
     </Panel>
   );
 }
@@ -3826,7 +3826,7 @@ function Module2CompletionCenter({ state, qaSuite }: { state: PanelState; qaSuit
   const rows = [
     { phase: "Strategy engine", status: "COMPLETE", detail: "Hard rules, confirmation scoring, quality filters, valid BUY/SELL only." },
     { phase: "Shared XAUUSD feed", status: "COMPLETE", detail: "Module 2 uses the shared Twelve Data chart/feed while keeping trades and logic isolated." },
-    { phase: "Paper trading", status: "COMPLETE", detail: "Broker execution disabled; paper trades open only after Module 2 checklist eligibility." },
+    { phase: "Paper trading", status: "COMPLETE", detail: "External execution disabled; paper trades open only after Module 2 checklist eligibility." },
     { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run Full QA Suite from Data Admin to refresh proof." },
     { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for 5-minute NY candles." },
     { phase: "Backtest confidence", status: performanceProven ? "COMPLETE" : backtestRan ? "NEEDS_DATA" : "READY", detail: latestBacktest.confidence?.recommendation ?? "Run Module 2 backtest after candles are ready." },
@@ -3860,7 +3860,7 @@ function Module2CompletionCenter({ state, qaSuite }: { state: PanelState; qaSuit
           </div>
         ))}
       </div>
-      <p className="reason">No real broker execution is enabled. Module 2 is finished as an automated indicator and paper-trading module; market performance must keep accumulating from real NY-session candles.</p>
+      <p className="reason">No real external execution is enabled. Module 2 is finished as an automated indicator and paper-trading module; market performance must keep accumulating from real NY-session candles.</p>
     </Panel>
   );
 }
@@ -4070,7 +4070,7 @@ function Module2QAControlPanel({
             <Metric label="Suite status" value={suite.finalStatus ?? "--"} />
             <Metric label="Passed" value={`${suite.summary?.passed ?? 0}/${suite.summary?.total ?? 0}`} />
             <Metric label="API credits" value={suite.twelveDataCreditsUsed ?? 0} />
-            <Metric label="Broker orders" value={suite.brokerOrdersPlaced ?? 0} />
+            <Metric label="Real orders" value={suite.externalOrdersPlaced ?? 0} />
           </div>
           <table className="data-table">
             <thead>
@@ -4099,7 +4099,7 @@ function Module2QAControlPanel({
           {suite.finalStatus !== "PASS" ? <p className="reason">{(suite.cases ?? []).find((item: any) => item.status !== "PASS")?.reason}</p> : null}
         </div>
       ) : null}
-      <p className="reason">QA replays are isolated to Module 2, use fake/saved candles, spend no Twelve Data credits, and never open broker orders.</p>
+      <p className="reason">QA replays are isolated to Module 2, use fake/saved candles, spend no Twelve Data credits, and never open real orders.</p>
     </Panel>
   );
 }
@@ -4137,7 +4137,7 @@ function Module3QAControlPanel({
         <button onClick={() => onClear().catch(() => undefined)}><Trash2 size={16} />Clear QA Signals</button>
       </div>
       {suite ? <QaSuiteTable suite={suite} /> : null}
-      <p className="reason">QA replays are isolated to Module 3, use generated replay evidence, spend no Twelve Data credits, and never open broker orders.</p>
+      <p className="reason">QA replays are isolated to Module 3, use generated replay evidence, spend no Twelve Data credits, and never open real orders.</p>
     </Panel>
   );
 }
@@ -4149,7 +4149,7 @@ function QaSuiteTable({ suite }: { suite: any }) {
         <Metric label="Suite status" value={suite.finalStatus ?? "--"} />
         <Metric label="Passed" value={`${suite.summary?.passed ?? 0}/${suite.summary?.total ?? 0}`} />
         <Metric label="API credits" value={suite.twelveDataCreditsUsed ?? 0} />
-        <Metric label="Broker orders" value={suite.brokerOrdersPlaced ?? 0} />
+        <Metric label="Real orders" value={suite.externalOrdersPlaced ?? 0} />
       </div>
       <table className="data-table">
         <thead>
@@ -4921,7 +4921,7 @@ function ModuleLaunchRehearsalPanel({ moduleName, rehearsals, onRun }: { moduleN
         <Metric label="Launch status" value={latest?.finalStatus === "NO_GO" || latest?.final_status === "NO_GO" ? "NO GO" : latest?.finalStatus ?? latest?.final_status ?? "WAIT"} />
         <Metric label="QA mode" value="YES" />
         <Metric label="Twelve credits" value={latest?.twelveDataCreditsUsed ?? health.twelveDataCreditsUsed ?? 0} />
-        <Metric label="Broker orders" value={latest?.brokerOrdersPlaced ?? health.brokerOrdersPlaced ?? 0} />
+        <Metric label="Real orders" value={latest?.externalOrdersPlaced ?? health.externalOrdersPlaced ?? 0} />
         <Metric label="Notifications" value={latest?.notificationProof?.total ?? health.notificationProof?.total ?? "--"} />
         <Metric label="Isolation" value={(latest?.isolation ?? health.isolation)?.mixedTrades === 0 ? "PASS" : "--"} />
       </div>
@@ -4943,7 +4943,7 @@ function ModuleLaunchRehearsalPanel({ moduleName, rehearsals, onRun }: { moduleN
       <div className="evidence-notes">
         <strong>Handoff</strong>
         <span>{handoff.expectedNextAction ?? "No handoff generated yet."}</span>
-        <span>{handoff.manualTraderNotes ?? "Broker execution remains disabled; this proves paper trading only."}</span>
+        <span>{handoff.manualTraderNotes ?? "External execution remains disabled; this proves paper trading only."}</span>
       </div>
       <div className="table-wrap">
         <table className="data-table">
@@ -6371,7 +6371,7 @@ function SettingControl({ setting, onUpdate }: { setting: any; onUpdate: (key: s
         {setting.key === "trading.paperTrading" ? (
           <div className="toggle-grid">
             <label><input type="checkbox" checked={Boolean(draft?.enabled)} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked, brokerExecution: false })} /> Paper trading</label>
-            <label><input type="checkbox" checked={false} disabled /> Broker execution locked off</label>
+            <label><input type="checkbox" checked={false} disabled /> External execution locked off</label>
           </div>
         ) : null}
         {setting.key === "orb.session" ? (

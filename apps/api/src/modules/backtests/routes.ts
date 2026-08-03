@@ -954,7 +954,7 @@ function module2BacktestConfidence(metrics: ReturnType<typeof buildMetrics>, fai
     return {
       grade: "STRONG_CANDIDATE",
       label: "Strong candidate",
-      recommendation: "Eligible for extended live paper monitoring. Do not use for real broker execution yet.",
+      recommendation: "Eligible for extended live paper monitoring. Do not use for real external execution yet.",
       reasons: [`${tradeCount} trades`, `${(winRate * 100).toFixed(1)}% win rate`, `${averageR.toFixed(2)}R average`, `${drawdown.toFixed(2)}R max drawdown`]
     };
   }
@@ -997,7 +997,7 @@ function orbBacktestConfidence(metrics: ReturnType<typeof buildMetrics>, trades:
     return {
       grade: "STRONG_CANDIDATE",
       label: "Strong candidate",
-      recommendation: "Eligible for extended live paper monitoring. Real broker execution remains manual only.",
+      recommendation: "Eligible for extended live paper monitoring. Real external execution remains manual only.",
       reasons: [`${tradeCount} trades`, `${(winRate * 100).toFixed(1)}% win rate`, `${averageR.toFixed(2)}R average`, `${drawdown.toFixed(2)}R max drawdown`]
     };
   }

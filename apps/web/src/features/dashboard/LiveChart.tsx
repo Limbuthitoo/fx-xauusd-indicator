@@ -512,7 +512,7 @@ export function LiveChart(props: TwelveDataChartProps) {
 
 function feedProviderName(provider?: string) {
   if (provider === "TWELVE_DATA") return "Twelve Data";
-  if (provider === "MT5_BRIDGE") return "MT5 broker bridge";
+  if (provider === "MT5_BRIDGE") return "Optional MT5 local bridge";
   if (provider === "MT5_BRIDGE_TEST") return "Bridge test";
   if (provider === "MT5_PYTHON") return "MT5 local terminal";
   if (provider && provider !== "NONE") return provider;

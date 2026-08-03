@@ -146,6 +146,15 @@ const TWELVE_DATA_LIVE_POLL_COUNT = 2;
 const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
 const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
+const XAUUSD_PAPER_SPEC = {
+  contractSize: 100,
+  tickSize: 0.01,
+  tickValue: 1,
+  minimumLot: 0.01,
+  lotStep: 0.01,
+  maximumLot: 50,
+  commissionPerLot: 0
+};
 let runtimeSettings: RuntimeSettings | null = null;
 const tenantAutomationStates = new Map<string, TenantAutoRunState>();
 
@@ -247,16 +256,16 @@ export async function marketDataRoutes(app: FastifyInstance) {
       },
       {
       code: "MT5_BRIDGE",
-      name: "MT5 broker bridge EA",
+      name: "Optional MT5 local bridge",
       cost: "Free with local MT5 script/EA",
       writesToPostgres: true,
       statusEndpoint: "/api/market-data/live/status",
-      recommended: true
+      recommended: false
     },
     {
       code: "MT5",
       name: "Optional Python MT5 adapter",
-      cost: "Free with broker/demo account",
+      cost: "Optional local terminal adapter",
       writesToPostgres: true,
       statusEndpoint: "/api/market-data/mt5/status",
       recommended: false,
@@ -763,12 +772,12 @@ export async function marketDataRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/market-data/mt5/sync", async (request) => {
-    const body = request.body as { symbol?: string; timeframeMinutes?: number; count?: number; syncBrokerSpecs?: boolean };
+    const body = request.body as { symbol?: string; timeframeMinutes?: number; count?: number };
     return syncMt5Candles({
       symbol: body.symbol ?? "XAUUSD",
       timeframeMinutes: body.timeframeMinutes ?? 15,
       count: body.count ?? 300,
-      syncBrokerSpecs: body.syncBrokerSpecs ?? true,
+      syncInstrumentSpecs: false,
       autoEvaluate: true
     });
   });
@@ -920,7 +929,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
        LIMIT 1`,
       [symbol, timeframe]
     );
-    const latestBrokerResult = await query(
+    const latestBridgeResult = await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
        FROM candles
        WHERE symbol = $1
@@ -940,23 +949,23 @@ export async function marketDataRoutes(app: FastifyInstance) {
        LIMIT 1`,
       [symbol, timeframe]
     );
-    const latestBroker = latestBrokerResult.rows[0] as any | undefined;
+    const latestBridge = latestBridgeResult.rows[0] as any | undefined;
     const latestBridgeTest = latestBridgeTestResult.rows[0] as any | undefined;
     const latestAny = latestAnyResult.rows[0] as any | undefined;
     const cachedLatest = getCachedCandles(symbol, timeframe).at(-1);
     const latestTwelve = cachedLatest ? liveCandleToRow(cachedLatest) : undefined;
-    const brokerReceivedAt = latestBroker?.created_at ? new Date(latestBroker.created_at) : null;
+    const bridgeReceivedAt = latestBridge?.created_at ? new Date(latestBridge.created_at) : null;
     const cachedReceivedAt = latestTwelve?.created_at ? new Date(latestTwelve.created_at) : null;
-    const brokerAgeSeconds = cachedReceivedAt
+    const bridgeAgeSeconds = cachedReceivedAt
       ? Math.max(0, Math.round((Date.now() - cachedReceivedAt.getTime()) / 1000))
-      : brokerReceivedAt
-        ? Math.max(0, Math.round((Date.now() - brokerReceivedAt.getTime()) / 1000))
+      : bridgeReceivedAt
+        ? Math.max(0, Math.round((Date.now() - bridgeReceivedAt.getTime()) / 1000))
         : null;
-    const live = brokerAgeSeconds != null && brokerAgeSeconds <= staleAfterSeconds;
+    const live = bridgeAgeSeconds != null && bridgeAgeSeconds <= staleAfterSeconds;
     const testReceivedAt = latestBridgeTest?.created_at ? new Date(latestBridgeTest.created_at) : null;
     const testAgeSeconds = testReceivedAt ? Math.max(0, Math.round((Date.now() - testReceivedAt.getTime()) / 1000)) : null;
     const testMode = !live && testAgeSeconds != null && testAgeSeconds <= staleAfterSeconds;
-    const latest = live ? latestTwelve ?? latestBroker : latestTwelve ?? latestBroker ?? latestBridgeTest ?? latestAny;
+    const latest = live ? latestTwelve ?? latestBridge : latestTwelve ?? latestBridge ?? latestBridgeTest ?? latestAny;
     const receivedAt = latest?.created_at ? new Date(latest.created_at) : null;
     const ageSeconds = receivedAt ? Math.max(0, Math.round((Date.now() - receivedAt.getTime()) / 1000)) : null;
     return {
@@ -968,7 +977,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
       testMode,
       staleAfterSeconds,
       ageSeconds,
-      brokerAgeSeconds,
+      bridgeAgeSeconds,
       testAgeSeconds,
       persistRawCandles: latest?.source === "TWELVE_DATA" ? settings.feed.rawCandleStorage : true,
       liveCacheDays: latest?.source === "TWELVE_DATA" ? settings.feed.cacheDays : null,
@@ -2090,7 +2099,7 @@ async function runLiveCycle() {
       symbol: liveState.symbol,
       timeframeMinutes: liveState.timeframeMinutes,
       count: liveState.count,
-      syncBrokerSpecs: liveState.cycles === 0,
+      syncInstrumentSpecs: false,
       autoEvaluate: true
     });
     liveState.lastSyncAt = new Date().toISOString();
@@ -2274,7 +2283,7 @@ async function syncTwelveDataCandlesLocked(options: {
   };
 }
 
-async function syncMt5Candles(options: { symbol: string; timeframeMinutes: number; count: number; syncBrokerSpecs: boolean; autoEvaluate: boolean }) {
+async function syncMt5Candles(options: { symbol: string; timeframeMinutes: number; count: number; syncInstrumentSpecs: boolean; autoEvaluate: boolean }) {
   const symbol = options.symbol;
   const timeframe = options.timeframeMinutes;
   const count = Math.min(options.count, 2000);
@@ -2298,9 +2307,9 @@ async function syncMt5Candles(options: { symbol: string; timeframeMinutes: numbe
       imported += 1;
     }
 
-  let brokerSpecs = null;
-  if (options.syncBrokerSpecs) {
-    brokerSpecs = await syncBrokerSpecs(symbol);
+  let instrumentSpecs = null;
+  if (options.syncInstrumentSpecs) {
+    instrumentSpecs = await syncInstrumentSpecs(symbol);
   }
 
   let automation = null;
@@ -2314,7 +2323,7 @@ async function syncMt5Candles(options: { symbol: string; timeframeMinutes: numbe
     symbol,
     timeframeMinutes: timeframe,
     imported,
-    brokerSpecs,
+    instrumentSpecs,
     automation
   };
 }
@@ -4369,14 +4378,13 @@ async function lockOpeningRangeForSession(session: any, timeframe: number, liveC
 
 async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, previousRows: any[]) {
   const profile = await query(
-    `SELECT rp.*, bs.contract_size, bs.tick_size, bs.tick_value, bs.minimum_lot, bs.lot_step, bs.maximum_lot, bs.commission_per_lot
+    `SELECT rp.*
      FROM risk_profiles rp
-     JOIN broker_specs bs ON bs.symbol = $1
      WHERE rp.is_active = true
-       AND rp.tenant_id = $2
+       AND rp.tenant_id = $1
      ORDER BY rp.created_at DESC
      LIMIT 1`,
-    [session.symbol, session.tenant_id]
+    [session.tenant_id]
   );
   const row = profile.rows[0] as any;
   const currentCandle = toCandle(currentRow);
@@ -4400,14 +4408,14 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     entry,
     stop: Number(stop),
     target,
-    contractSize: Number(row.contract_size ?? 100),
-    tickSize: Number(row.tick_size ?? 0.01),
-    tickValue: Number(row.tick_value ?? 1),
-    minimumLot: Number(row.minimum_lot ?? 0.01),
-    lotStep: Number(row.lot_step ?? 0.01),
-    maximumLot: Number(row.maximum_lot ?? 50),
+    contractSize: XAUUSD_PAPER_SPEC.contractSize,
+    tickSize: XAUUSD_PAPER_SPEC.tickSize,
+    tickValue: XAUUSD_PAPER_SPEC.tickValue,
+    minimumLot: XAUUSD_PAPER_SPEC.minimumLot,
+    lotStep: XAUUSD_PAPER_SPEC.lotStep,
+    maximumLot: XAUUSD_PAPER_SPEC.maximumLot,
     spread: Number(currentCandle.spread ?? 0),
-    commissionPerLot: Number(row.commission_per_lot ?? 0),
+    commissionPerLot: XAUUSD_PAPER_SPEC.commissionPerLot,
     minimumRewardToRisk: Number(row.minimum_reward_to_risk),
     maximumDailyLossPercent: Number(row.maximum_daily_loss_percent),
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
@@ -4553,14 +4561,13 @@ async function saveModuleDecision(session: any, moduleCode: string, decision: an
 async function calculateDecisionRisk(session: any, decision: any, currentRow: any) {
   if (decision.entryPrice == null || decision.stopPrice == null || decision.targetPrice == null) return null;
   const profile = await query(
-    `SELECT rp.*, bs.contract_size, bs.tick_size, bs.tick_value, bs.minimum_lot, bs.lot_step, bs.maximum_lot, bs.commission_per_lot
+    `SELECT rp.*
      FROM risk_profiles rp
-     JOIN broker_specs bs ON bs.symbol = $1
      WHERE rp.is_active = true
-       AND rp.tenant_id = $2
+       AND rp.tenant_id = $1
      ORDER BY rp.created_at DESC
      LIMIT 1`,
-    [session.symbol, session.tenant_id]
+    [session.tenant_id]
   );
   const row = profile.rows[0] as any;
   if (!row) return null;
@@ -4571,14 +4578,14 @@ async function calculateDecisionRisk(session: any, decision: any, currentRow: an
     entry: Number(decision.entryPrice),
     stop: Number(decision.stopPrice),
     target: Number(decision.targetPrice),
-    contractSize: Number(row.contract_size ?? 100),
-    tickSize: Number(row.tick_size ?? 0.01),
-    tickValue: Number(row.tick_value ?? 1),
-    minimumLot: Number(row.minimum_lot ?? 0.01),
-    lotStep: Number(row.lot_step ?? 0.01),
-    maximumLot: Number(row.maximum_lot ?? 50),
+    contractSize: XAUUSD_PAPER_SPEC.contractSize,
+    tickSize: XAUUSD_PAPER_SPEC.tickSize,
+    tickValue: XAUUSD_PAPER_SPEC.tickValue,
+    minimumLot: XAUUSD_PAPER_SPEC.minimumLot,
+    lotStep: XAUUSD_PAPER_SPEC.lotStep,
+    maximumLot: XAUUSD_PAPER_SPEC.maximumLot,
     spread: Number(currentRow.spread ?? 0),
-    commissionPerLot: Number(row.commission_per_lot ?? 0),
+    commissionPerLot: XAUUSD_PAPER_SPEC.commissionPerLot,
     minimumRewardToRisk: Number(row.minimum_reward_to_risk),
     maximumDailyLossPercent: Number(row.maximum_daily_loss_percent),
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
@@ -4635,23 +4642,8 @@ function numericParam(value: unknown, decimals: number) {
   return Number(number.toFixed(decimals));
 }
 
-async function syncBrokerSpecs(symbol: string) {
-  const info = await fetchJson<Mt5SymbolInfo>(`${config.quantBaseUrl}/market-data/mt5/symbol-info/${encodeURIComponent(symbol)}`);
-  if (info.connected === false || info.error) return { synced: false, error: info.error };
-  const { rows } = await query(
-    `UPDATE broker_specs SET
-      contract_size = COALESCE($2, contract_size),
-      minimum_lot = COALESCE($3, minimum_lot),
-      lot_step = COALESCE($4, lot_step),
-      maximum_lot = COALESCE($5, maximum_lot),
-      tick_size = COALESCE($6, tick_size),
-      tick_value = COALESCE($7, tick_value),
-      updated_at = now()
-     WHERE symbol = $1
-     RETURNING *`,
-    [symbol, info.contract_size ?? null, info.minimum_lot ?? null, info.lot_step ?? null, info.maximum_lot ?? null, info.tick_size ?? null, info.tick_value ?? null]
-  );
-  return { synced: rows.length > 0, specs: rows[0] ?? null };
+async function syncInstrumentSpecs(symbol: string) {
+  return { synced: false, symbol, skipped: true, reason: "Paper trading uses internal XAUUSD instrument defaults." };
 }
 
 async function notifyOnce(eventKey: string, eventType: string, title: string, body: string) {

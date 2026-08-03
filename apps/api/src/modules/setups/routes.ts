@@ -27,6 +27,16 @@ type Module3ReplayCase =
   | "INVALID_RR"
   | "NO_TRADE";
 
+const XAUUSD_PAPER_SPEC = {
+  contractSize: 100,
+  tickSize: 0.01,
+  tickValue: 1,
+  minimumLot: 0.01,
+  lotStep: 0.01,
+  maximumLot: 50,
+  commissionPerLot: 0
+};
+
 const MODULE2_QA_CASES: Array<{
   code: Module2ReplayCase;
   label: string;
@@ -189,7 +199,7 @@ export async function setupRoutes(app: FastifyInstance) {
       generatedAt: new Date().toISOString(),
       testMode: true,
       twelveDataCreditsUsed: 0,
-      brokerOrdersPlaced: 0,
+      externalOrdersPlaced: 0,
       finalStatus: failed.length === 0 ? "PASS" : "FAIL",
       summary: {
         total: cases.length,
@@ -293,7 +303,7 @@ export async function setupRoutes(app: FastifyInstance) {
         [
           `orb-replay-${rows[0].id}`,
           `ORB replay: ${decision.status}`,
-          `${replayCase} produced ${decision.scenario}. No live API call, no broker order.`,
+          `${replayCase} produced ${decision.scenario}. No live API call, no real order.`,
           auth.tenantId
         ]
       );
@@ -429,7 +439,7 @@ export async function setupRoutes(app: FastifyInstance) {
       rehearsal: true,
       testMode: true,
       twelveDataCreditsUsed: 0,
-      brokerOrdersPlaced: 0,
+      externalOrdersPlaced: 0,
       finalStatus,
       setup,
       trade: closedTrade ?? trade,
@@ -446,7 +456,7 @@ export async function setupRoutes(app: FastifyInstance) {
           "Only valid breakout, retest, or sweep-reversal scenarios can open paper trades.",
           "Risk/TP/SL plan must exist before paper entry."
         ],
-        manualTraderNotes: "No broker execution is placed. Use Module 1 paper signal as the manual execution guide only."
+        manualTraderNotes: "No external execution is placed. Use Module 1 paper signal as the manual execution guide only."
       }
     };
     await query(
@@ -513,7 +523,7 @@ export async function setupRoutes(app: FastifyInstance) {
       generatedAt: new Date().toISOString(),
       testMode: true,
       twelveDataCreditsUsed: 0,
-      brokerOrdersPlaced: 0,
+      externalOrdersPlaced: 0,
       finalStatus: failed.length === 0 ? "PASS" : "FAIL",
       summary: {
         total: cases.length,
@@ -592,7 +602,7 @@ export async function setupRoutes(app: FastifyInstance) {
         [
           `module2-replay-${rows[0].id}`,
           `Module 2 replay: ${replay.status}`,
-          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no broker order.`,
+          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no real order.`,
           auth.tenantId
         ]
       );
@@ -641,7 +651,7 @@ export async function setupRoutes(app: FastifyInstance) {
       generatedAt: new Date().toISOString(),
       testMode: true,
       twelveDataCreditsUsed: 0,
-      brokerOrdersPlaced: 0,
+      externalOrdersPlaced: 0,
       finalStatus: failed.length === 0 ? "PASS" : "FAIL",
       summary: {
         total: cases.length,
@@ -720,7 +730,7 @@ export async function setupRoutes(app: FastifyInstance) {
         [
           `module3-replay-${rows[0].id}`,
           `Module 3 replay: ${replay.status}`,
-          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no broker order.`,
+          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no real order.`,
           auth.tenantId
         ]
       );
@@ -802,7 +812,7 @@ export async function setupRoutes(app: FastifyInstance) {
         [
           `module3-replay-${setup.id}`,
           "Module 3 rehearsal BUY replay",
-          "Module 3 rehearsal produced a valid BUY replay without Twelve Data credits or broker orders.",
+          "Module 3 rehearsal produced a valid BUY replay without Twelve Data credits or real orders.",
           auth.tenantId
         ]
       );
@@ -845,7 +855,7 @@ export async function setupRoutes(app: FastifyInstance) {
       rehearsal: true,
       testMode: true,
       twelveDataCreditsUsed: 0,
-      brokerOrdersPlaced: 0,
+      externalOrdersPlaced: 0,
       finalStatus,
       setup,
       trade: closedTrade ?? trade,
@@ -863,7 +873,7 @@ export async function setupRoutes(app: FastifyInstance) {
           "Pullback zone and confirmation candle must match.",
           "Paper trade only opens after the Module 3 checklist passes."
         ],
-        manualTraderNotes: "No broker execution is placed. Use Module 3 paper signal as the manual execution guide only."
+        manualTraderNotes: "No external execution is placed. Use Module 3 paper signal as the manual execution guide only."
       }
     };
     await query(
@@ -965,13 +975,11 @@ export async function setupRoutes(app: FastifyInstance) {
     const body = request.body as { sessionId: string; currentCandle: any; previousCandles: any[]; spread?: number; newsStatus?: any };
     const sessionResult = await query(
       `SELECT ts.*, orr.status AS range_status, orr.high, orr.low, orr.midpoint, orr.width, orr.width_ticks,
-        sv.configuration_json, rp.*, bs.contract_size, bs.tick_size, bs.tick_value, bs.minimum_lot, bs.lot_step, bs.maximum_lot,
-        bs.commission_per_lot
+        sv.configuration_json, rp.*
        FROM trading_sessions ts
        JOIN opening_ranges orr ON orr.session_id = ts.id
        JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
        JOIN risk_profiles rp ON rp.is_active = true
-       JOIN broker_specs bs ON bs.symbol = ts.symbol
        WHERE ts.id = $1 AND ts.tenant_id = $2 AND rp.tenant_id = $2
        LIMIT 1`,
       [body.sessionId, auth.tenantId]
@@ -997,14 +1005,14 @@ export async function setupRoutes(app: FastifyInstance) {
       entry,
       stop: Number(stop),
       target,
-      contractSize: Number(row.contract_size ?? 100),
-      tickSize: Number(row.tick_size ?? 0.01),
-      tickValue: Number(row.tick_value ?? 1),
-      minimumLot: Number(row.minimum_lot ?? 0.01),
-      lotStep: Number(row.lot_step ?? 0.01),
-      maximumLot: Number(row.maximum_lot ?? 50),
+      contractSize: XAUUSD_PAPER_SPEC.contractSize,
+      tickSize: XAUUSD_PAPER_SPEC.tickSize,
+      tickValue: XAUUSD_PAPER_SPEC.tickValue,
+      minimumLot: XAUUSD_PAPER_SPEC.minimumLot,
+      lotStep: XAUUSD_PAPER_SPEC.lotStep,
+      maximumLot: XAUUSD_PAPER_SPEC.maximumLot,
       spread: Number(body.spread ?? 0),
-      commissionPerLot: Number(row.commission_per_lot ?? 0),
+      commissionPerLot: XAUUSD_PAPER_SPEC.commissionPerLot,
       minimumRewardToRisk: Number(row.minimum_reward_to_risk),
       maximumDailyLossPercent: Number(row.maximum_daily_loss_percent),
       maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
@@ -1330,7 +1338,7 @@ async function buildOrbQaSuite(tenantId: string | null) {
     generatedAt: new Date().toISOString(),
     testMode: true,
     twelveDataCreditsUsed: 0,
-    brokerOrdersPlaced: 0,
+    externalOrdersPlaced: 0,
     finalStatus: failed.length === 0 ? "PASS" : "FAIL",
     summary: {
       total: cases.length,
@@ -1375,7 +1383,7 @@ async function buildModule3QaSuite(tenantId: string | null) {
     generatedAt: new Date().toISOString(),
     testMode: true,
     twelveDataCreditsUsed: 0,
-    brokerOrdersPlaced: 0,
+    externalOrdersPlaced: 0,
     finalStatus: failed.length === 0 ? "PASS" : "FAIL",
     summary: {
       total: cases.length,
