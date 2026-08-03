@@ -6518,7 +6518,7 @@ function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
   const flags = setup?.scenario_flags ?? {};
   const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
   const setupState = flags.state ?? setup?.status;
-  const hasSetup = Boolean(setup?.scenario);
+  const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
     ["NY_SESSION_ACTIVE", "New York session active", "Module 3 only evaluates during its configured New York VWAP window."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of Module 3 paper trades can trigger per session."],
@@ -6534,7 +6534,7 @@ function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_STOP_SIZE", "Maximum stop size", "Stop distance must remain inside the configured ATR limit."],
     ["SIGNAL_SCORE", "Minimum signal score", "Module 3 requires a high-quality opening-drive pullback score."]
   ];
-  const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasSetup ? "FAIL" : "WAITING", explanation));
+  const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
   rows.unshift({
     rule_code: "MODULE3_STATE",
     name: "Module 3 state",
@@ -6548,7 +6548,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
   const flags = setup?.scenario_flags ?? {};
   const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
   const setupState = flags.state ?? setup?.status;
-  const hasSetup = Boolean(setup?.scenario);
+  const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
     ["NY_SESSION_ACTIVE", "New York session active", "Module 2 only evaluates during its configured NY liquidity window."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of paper trades can trigger per session."],
@@ -6570,11 +6570,11 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Optimization quality filter."],
     ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."]
   ];
-  const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasSetup ? "FAIL" : "WAITING", explanation));
+  const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
   rows.unshift({
     rule_code: "MODULE2_STATE",
     name: "Module 2 state",
-    status: setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY" || setup?.status === "PAPER_TRADE_OPENED" ? "PASS" : hasSetup ? "WAITING" : "WAITING",
+    status: setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY" || setup?.status === "PAPER_TRADE_OPENED" ? "PASS" : "WAITING",
     explanation: setupState ? `Current engine state: ${String(setupState).replaceAll("_", " ")}.` : "Waiting for enough live candles and a valid Module 2 sequence."
   });
   return rows;
