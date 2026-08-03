@@ -259,15 +259,39 @@ export async function marketDataRoutes(app: FastifyInstance) {
     const timeframe = body.timeframeMinutes ?? moduleTimeframeMinutes(moduleCode, settings);
     const symbol = body.symbol ?? settings.symbol;
     const providerSymbol = body.providerSymbol ?? settings.feed.providerSymbol;
-    return syncTwelveDataChartCandles({
-      symbol,
-      providerSymbol,
-      timeframeMinutes: timeframe,
-      moduleCode,
-      tenantId: auth.tenantId,
-      startupBackfillCount: settings.feed.startupBackfillCount,
-      livePollCount: settings.feed.livePollCount
-    });
+    try {
+      return await syncTwelveDataChartCandles({
+        symbol,
+        providerSymbol,
+        timeframeMinutes: timeframe,
+        moduleCode,
+        tenantId: auth.tenantId,
+        startupBackfillCount: settings.feed.startupBackfillCount,
+        livePollCount: settings.feed.livePollCount
+      });
+    } catch (error) {
+      const cached = getCachedCandles(symbol, timeframe);
+      await recordOperationalEvent({
+        severity: "ERROR",
+        category: "TWELVE_DATA",
+        eventType: "TWELVE_DATA_CHART_SYNC_ERROR",
+        source: "market-data-api",
+        message: `Twelve Data chart sync failed: ${(error as Error).message}`,
+        metadata: { symbol, timeframeMinutes: timeframe, moduleCode, tenantId: auth.tenantId, error: (error as Error).message }
+      }).catch(() => undefined);
+      return {
+        connected: false,
+        provider: "TWELVE_DATA",
+        symbol,
+        timeframeMinutes: timeframe,
+        imported: 0,
+        skipped: true,
+        reason: "TWELVE_DATA_CHART_SYNC_ERROR",
+        error: (error as Error).message,
+        cachedCandles: cached.length,
+        latestCandle: cached.at(-1) ?? null
+      };
+    }
   });
 
   app.post("/api/market-data/twelve-data/live/start", async (request) => {
