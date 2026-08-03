@@ -128,6 +128,7 @@ type NotificationDetail = {
   rewardToRisk?: string | number | null;
   grade?: string | number | null;
   confidence?: string | number | null;
+  setupTier?: string | null;
   setupCandidateId?: string | number | null;
   tradeId?: string | number | null;
   symbol?: string | null;
@@ -1427,6 +1428,7 @@ function NotificationDetailScreen({
             <Metric label="Direction" value={String(direction)} />
             <Metric label="RR" value={formatDetailValue(rr)} />
             <Metric label="Grade" value={formatDetailValue(detail.grade)} />
+            <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
           </View>
           {!isTradeAlert ? <Text style={styles.reason}>This notification does not include a full paper-trade plan. Valid entry alerts will show entry, SL, TP, direction, RR, and module context here.</Text> : null}
         </View>
@@ -2281,6 +2283,7 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? null,
     grade: payload.grade ?? null,
     confidence: payload.confidence ?? null,
+    setupTier: stringOrNull(payload.setupTier ?? payload.setup_tier),
     setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? null,
     tradeId: payload.tradeId ?? payload.trade_id ?? null,
     symbol: stringOrNull(payload.symbol) ?? "XAUUSD",
@@ -2312,6 +2315,7 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     rewardToRisk: extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
     grade: extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
     confidence: extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
+    setupTier: stringOrNull(module?.currentSetup?.scenario_flags?.setupTier) ?? extractSetupTier(body),
     setupCandidateId: item?.setup_candidate_id ?? module?.currentSetup?.id ?? null,
     tradeId: item?.trade_id ?? trade.id ?? null,
     symbol: "XAUUSD",
@@ -2354,6 +2358,13 @@ function extractAction(body: string) {
   const upper = body.toUpperCase();
   if (upper.includes("SELL")) return "SELL";
   if (upper.includes("BUY")) return "BUY";
+  return null;
+}
+
+function extractSetupTier(body: string) {
+  const upper = body.toUpperCase();
+  if (upper.includes("MANDATORY SETUP") || upper.includes("CORE BUY") || upper.includes("CORE SELL")) return "MANDATORY";
+  if (upper.includes("FULL CHECKLIST SETUP") || upper.includes("FULL BUY") || upper.includes("FULL SELL")) return "FULL";
   return null;
 }
 
