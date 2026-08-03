@@ -20,5 +20,8 @@
   "devDependencies": {
     "@types/react": "^18.2.79",
     "@types/react-dom": "^18.2.25"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-arm64-musl": "4.62.3"
   }
 }
