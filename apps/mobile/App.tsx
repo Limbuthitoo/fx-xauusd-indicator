@@ -152,6 +152,28 @@ type ModuleLearningSnapshot = {
   recommendations?: any[];
 };
 
+type JournalTrade = {
+  id: string;
+  module_code?: string;
+  symbol?: string;
+  direction?: string;
+  scenario?: string;
+  outcome?: string;
+  result_r?: string | number | null;
+  actual_entry?: string | number | null;
+  actual_stop?: string | number | null;
+  actual_target?: string | number | null;
+  actual_exit?: string | number | null;
+  reward_to_risk?: string | number | null;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  detected_at?: string | null;
+  favorability_score?: string | number | null;
+  favorability_grade?: string | null;
+  final_reason?: string | null;
+  scenario_flags?: any;
+};
+
 type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "app-updates" | "about";
 
 const defaultPushPreferences: PushPreferences = {
@@ -284,6 +306,7 @@ function AppContent() {
   const [selectedNotificationDetail, setSelectedNotificationDetail] = useState<NotificationDetail | null>(null);
   const [learningByModule, setLearningByModule] = useState<Record<string, ModuleLearningSnapshot>>({});
   const [learningLoadingModule, setLearningLoadingModule] = useState<string | null>(null);
+  const [journalByModule, setJournalByModule] = useState<Record<string, JournalTrade[]>>({});
   const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
     checkedAt: null,
     checking: false,
@@ -575,6 +598,7 @@ function AppContent() {
     const nextModuleCode = selectedModuleCode ?? data.modules[0]?.code ?? null;
     if (!selectedModuleCode && nextModuleCode) setSelectedModuleCode(nextModuleCode);
     loadAssignedModuleLearning(data.modules, authToken).catch(() => undefined);
+    loadAssignedJournalTrades(data.modules, authToken).catch(() => undefined);
     if (syncChart && nextModuleCode) await loadChart(nextModuleCode, authToken);
     checkAppUpdate(false).catch(() => undefined);
     setLoading(false);
@@ -652,6 +676,27 @@ function AppContent() {
       })
     );
     setLearningByModule((previous) => {
+      const next = { ...previous };
+      for (const entry of entries) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      return next;
+    });
+  }
+
+  async function loadAssignedJournalTrades(modules: ModuleRow[], authToken = token) {
+    if (!authToken || modules.length === 0) return;
+    const entries = await Promise.all(
+      modules.map(async (module) => {
+        const response = await fetch(`${apiBaseUrl}/api/modules/${encodeURIComponent(module.code)}/journal/trades?limit=12`, {
+          headers: { authorization: `Bearer ${authToken}` }
+        });
+        if (!response.ok) return null;
+        const data = await response.json() as JournalTrade[];
+        return [module.code, data] as const;
+      })
+    );
+    setJournalByModule((previous) => {
       const next = { ...previous };
       for (const entry of entries) {
         if (entry) next[entry[0]] = entry[1];
@@ -936,7 +981,7 @@ function AppContent() {
           />
         ) : null}
 
-        {activeTab === "journal" ? <JournalScreen dashboard={dashboard} /> : null}
+        {activeTab === "journal" ? <JournalScreen dashboard={dashboard} journalByModule={journalByModule} /> : null}
 
         {activeTab === "alerts" ? (
           <AlertsScreen
@@ -1318,30 +1363,78 @@ function ChartScreen({
   );
 }
 
-function JournalScreen({ dashboard }: { dashboard: Dashboard | null }) {
+function JournalScreen({ dashboard, journalByModule }: { dashboard: Dashboard | null; journalByModule: Record<string, JournalTrade[]> }) {
   const modules = dashboard?.modules ?? [];
+  const allTrades = modules.flatMap((module) => journalByModule[module.code] ?? []);
+  const decidedTrades = allTrades.filter((trade) => ["WIN", "LOSS", "BREAKEVEN"].includes(String(trade.outcome ?? "")));
+  const wins = decidedTrades.filter((trade) => trade.outcome === "WIN").length;
+  const totalR = allTrades.reduce((sum, trade) => sum + Number(trade.result_r ?? 0), 0);
   return (
     <>
       <SectionTitle title="Paper Journal" />
       <View style={styles.card}>
-        {modules.map((module) => {
-          const trade = module.currentTrade ?? {};
-          return (
-            <View key={module.code} style={styles.journalRow}>
+        <Text style={styles.sectionMini}>Performance Summary</Text>
+        <View style={styles.metricsGrid}>
+          <Metric label="Trades" value={allTrades.length} />
+          <Metric label="Win Rate" value={decidedTrades.length ? formatPercent(wins / decidedTrades.length) : "--"} />
+          <Metric label="Total R" value={formatR(totalR)} />
+          <Metric label="Active" value={allTrades.filter((trade) => trade.outcome === "ACTIVE").length} />
+        </View>
+      </View>
+      {modules.map((module) => {
+        const trades = journalByModule[module.code] ?? [];
+        return (
+          <View key={module.code} style={styles.card}>
+            <View style={styles.moduleHeader}>
               <View>
-                <Text style={styles.ruleTitle}>{module.shortName}</Text>
-                <Text style={styles.muted}>{trade.outcome ?? "No active paper trade"}</Text>
+                <Text style={styles.cardTitle}>{module.shortName}</Text>
+                <Text style={styles.muted}>{module.name}</Text>
               </View>
               <View style={styles.journalStats}>
                 <Text style={styles.journalValue}>{formatPercent(module.weekly?.winRate)}</Text>
                 <Text style={styles.journalLabel}>Week WR</Text>
               </View>
             </View>
-          );
-        })}
-        {modules.length === 0 ? <Text style={styles.muted}>No journal data yet.</Text> : null}
-      </View>
+            {trades.slice(0, 8).map((trade) => (
+              <JournalTradeCard key={trade.id} trade={trade} module={module} />
+            ))}
+            {trades.length === 0 ? <Text style={styles.muted}>No paper trades recorded for this module yet.</Text> : null}
+          </View>
+        );
+      })}
+      {modules.length === 0 ? <EmptyCard text="No strategy modules are assigned to this tenant account." /> : null}
     </>
+  );
+}
+
+function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: ModuleRow }) {
+  const setupTier = String(trade.scenario_flags?.setupTier ?? "FULL");
+  const outcome = String(trade.outcome ?? "ACTIVE");
+  return (
+    <View style={styles.journalTradeCard}>
+      <View style={styles.journalTradeTop}>
+        <View>
+          <Text style={styles.ruleTitle}>{trade.direction ?? "--"} · {setupTier}</Text>
+          <Text style={styles.ruleExplanation}>{formatScenarioName(String(trade.scenario ?? "VALID_SETUP"))}</Text>
+        </View>
+        <View style={[styles.signalPill, outcome === "WIN" ? styles.goodPill : outcome === "LOSS" ? styles.badPill : styles.warnPill]}>
+          <Text style={styles.signalText}>{outcome}</Text>
+        </View>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Entry" value={formatPrice(trade.actual_entry)} />
+        <Metric label="SL" value={formatPrice(trade.actual_stop)} />
+        <Metric label="TP" value={formatPrice(trade.actual_target)} />
+        <Metric label="Exit" value={formatPrice(trade.actual_exit)} />
+        <Metric label="Result" value={formatR(trade.result_r)} />
+        <Metric label="RR" value={formatDetailValue(trade.reward_to_risk)} />
+      </View>
+      <View style={styles.journalEvidenceLine}>
+        <Text style={styles.noticeTime}>{formatTime(trade.opened_at ?? trade.detected_at ?? "")}</Text>
+        <Text style={styles.noticeTime}>{module.shortName} · Grade {trade.favorability_grade ?? "--"} · Score {trade.favorability_score ?? "--"}</Text>
+      </View>
+      <Text style={styles.ruleExplanation}>{trade.final_reason ?? "Automatic paper trade recorded from module checklist validation."}</Text>
+    </View>
   );
 }
 
@@ -2403,6 +2496,16 @@ function formatPercent(value: unknown) {
   return `${(Number(value ?? 0) * 100).toFixed(1)}%`;
 }
 
+function formatR(value: unknown) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return "--";
+  return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}R`;
+}
+
+function formatScenarioName(value: string) {
+  return value.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function formatFileSize(value: unknown) {
   const bytes = Number(value ?? 0);
   if (!Number.isFinite(bytes) || bytes <= 0) return "--";
@@ -2851,6 +2954,9 @@ const styles = StyleSheet.create({
   journalStats: { alignItems: "flex-end" },
   journalValue: { color: "#2fe6a8", fontWeight: "900", fontSize: 18 },
   journalLabel: { color: "#89938d", fontSize: 11, fontWeight: "800", marginTop: 3 },
+  journalTradeCard: { borderTopWidth: 1, borderTopColor: "#252c28", paddingTop: 14, marginTop: 14 },
+  journalTradeTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  journalEvidenceLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10 },
   moreProfileCard: {
     flexDirection: "row",
     alignItems: "center",
