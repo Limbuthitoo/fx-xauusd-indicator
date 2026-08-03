@@ -44,6 +44,7 @@ module.exports = {
 
     plugins: [
       ...(appJson.expo.plugins ?? []),
+      "expo-local-authentication",
       "./plugins/with-small-android-apk",
     ],
   },

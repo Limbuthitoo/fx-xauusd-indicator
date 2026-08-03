@@ -2,11 +2,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
+import * as LocalAuthentication from "expo-local-authentication";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import React, { Component, ReactNode, useEffect, useMemo, useState } from "react";
-import QRCode from "react-native-qrcode-svg";
 import {
   ActivityIndicator,
   Alert,
@@ -34,6 +34,7 @@ Notifications.setNotificationHandler({
 
 const TOKEN_KEY = "orb_mobile_token";
 const API_URL_KEY = "orb_mobile_api_url";
+const BIOMETRIC_ENABLED_KEY = "orb_mobile_biometric_enabled";
 const PUSH_TOKEN_KEY = "orb_mobile_push_token";
 const PUSH_SYNC_KEY = "orb_mobile_push_synced_at";
 const UPDATE_PROMPT_KEY = "orb_mobile_update_prompted_version";
@@ -89,6 +90,13 @@ type PushDiagnostics = {
   deliveryLogs?: any[];
   lastSyncedAt: string | null;
   lastTestStatus: string;
+};
+
+type BiometricState = {
+  available: boolean;
+  enrolled: boolean;
+  enabled: boolean;
+  label: string;
 };
 
 type PushPreferences = {
@@ -254,6 +262,12 @@ function AppContent() {
     lastTestStatus: "Not tested"
   });
   const [pushPreferences, setPushPreferences] = useState<PushPreferences>(defaultPushPreferences);
+  const [biometric, setBiometric] = useState<BiometricState>({
+    available: false,
+    enrolled: false,
+    enabled: false,
+    label: "Fingerprint"
+  });
   const [moreView, setMoreView] = useState<MoreView>("menu");
   const [socketStatus, setSocketStatus] = useState("Socket offline");
   const [activeTab, setActiveTab] = useState<MobileTab>("home");
@@ -360,12 +374,16 @@ function AppContent() {
   }, [token, apiBaseUrl, authUser?.passwordChangeRequired]);
 
   async function restoreSession() {
-    const [savedToken, savedApi, savedPushToken, savedPushSyncedAt] = await Promise.all([
+    const [savedToken, savedApi, savedPushToken, savedPushSyncedAt, savedBiometricEnabled, biometricStatus] = await Promise.all([
       readSecureToken(),
       AsyncStorage.getItem(API_URL_KEY),
       AsyncStorage.getItem(PUSH_TOKEN_KEY),
-      AsyncStorage.getItem(PUSH_SYNC_KEY)
+      AsyncStorage.getItem(PUSH_SYNC_KEY),
+      AsyncStorage.getItem(BIOMETRIC_ENABLED_KEY),
+      getBiometricStatus()
     ]);
+    const biometricEnabled = savedBiometricEnabled === "true" && biometricStatus.available && biometricStatus.enrolled;
+    setBiometric({ ...biometricStatus, enabled: biometricEnabled });
     const nextApiBaseUrl = normalizeApiBaseUrl(savedApi);
     if (nextApiBaseUrl) {
       setApiBaseUrl(nextApiBaseUrl);
@@ -378,6 +396,13 @@ function AppContent() {
       lastSyncedAt: savedPushSyncedAt
     }));
     if (savedToken) {
+      if (biometricEnabled) {
+        const unlocked = await authenticateBiometric("Unlock XAUUSD Signal");
+        if (!unlocked) {
+          setLoading(false);
+          return;
+        }
+      }
       const restoredUser = await loadMe(savedToken, nextApiBaseUrl ?? apiBaseUrl).catch(() => null);
       if (restoredUser) {
         setAuthUser(restoredUser);
@@ -387,6 +412,22 @@ function AppContent() {
       }
     }
     setLoading(false);
+  }
+
+  async function updateBiometricLock(enabled: boolean) {
+    const status = await getBiometricStatus();
+    if (enabled) {
+      if (!status.available || !status.enrolled) {
+        Alert.alert("Fingerprint unavailable", "Add fingerprint or face unlock in your phone settings first.");
+        setBiometric({ ...status, enabled: false });
+        return;
+      }
+      const unlocked = await authenticateBiometric("Enable fingerprint unlock");
+      if (!unlocked) return;
+    }
+    await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY, enabled ? "true" : "false");
+    setBiometric({ ...status, enabled });
+    Alert.alert(enabled ? "Fingerprint enabled" : "Fingerprint disabled", enabled ? "Your saved mobile session now requires device biometric unlock." : "The saved mobile session no longer requires biometric unlock.");
   }
 
   async function login(email: string, password: string, otp?: string) {
@@ -842,11 +883,13 @@ function AppContent() {
             pushStatus={pushStatus}
             pushDiagnostics={pushDiagnostics}
             pushPreferences={pushPreferences}
+            biometric={biometric}
             appUpdate={appUpdate}
             view={moreView}
             setView={setMoreView}
             socketStatus={socketStatus}
             onCheckAppUpdate={() => checkAppUpdate(true).catch((error) => Alert.alert("Update check failed", error.message))}
+            onToggleBiometric={(enabled) => updateBiometricLock(enabled).catch((error) => Alert.alert("Fingerprint failed", error.message))}
             onRegisterPush={() => registerPush().catch((error) => Alert.alert("Push failed", error.message))}
             onTestPush={() => sendTestPush().catch((error) => Alert.alert("Test push failed", error.message))}
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
@@ -901,6 +944,32 @@ async function clearSecureToken() {
     SecureStore.deleteItemAsync(TOKEN_KEY),
     AsyncStorage.removeItem(TOKEN_KEY)
   ]);
+}
+
+async function getBiometricStatus(): Promise<Omit<BiometricState, "enabled">> {
+  const [available, enrolled, supportedTypes] = await Promise.all([
+    LocalAuthentication.hasHardwareAsync().catch(() => false),
+    LocalAuthentication.isEnrolledAsync().catch(() => false),
+    LocalAuthentication.supportedAuthenticationTypesAsync().catch(() => [])
+  ]);
+  const label = biometricLabel(supportedTypes);
+  return { available, enrolled, label };
+}
+
+async function authenticateBiometric(promptMessage: string) {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage,
+    cancelLabel: "Use password",
+    disableDeviceFallback: false
+  });
+  return result.success === true;
+}
+
+function biometricLabel(types: LocalAuthentication.AuthenticationType[]) {
+  if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) return "Face unlock";
+  if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) return "Fingerprint";
+  if (types.includes(LocalAuthentication.AuthenticationType.IRIS)) return "Iris unlock";
+  return "Biometric";
 }
 
 function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, otp?: string) => Promise<void> }) {
@@ -1297,11 +1366,13 @@ function MoreScreen({
   pushStatus,
   pushDiagnostics,
   pushPreferences,
+  biometric,
   appUpdate,
   view,
   setView,
   socketStatus,
   onCheckAppUpdate,
+  onToggleBiometric,
   onRegisterPush,
   onTestPush,
   onDisablePushDevice,
@@ -1317,11 +1388,13 @@ function MoreScreen({
   pushStatus: string;
   pushDiagnostics: PushDiagnostics;
   pushPreferences: PushPreferences;
+  biometric: BiometricState;
   appUpdate: AppUpdateState;
   view: MoreView;
   setView: (view: MoreView) => void;
   socketStatus: string;
   onCheckAppUpdate: () => void;
+  onToggleBiometric: (enabled: boolean) => void;
   onRegisterPush: () => void;
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
@@ -1368,53 +1441,24 @@ function MoreScreen({
     );
   }
   if (view === "security") {
-    const mfaEnabled = dashboard?.user?.mfaEnabled === true;
     return (
       <>
         <MoreHeader title="Security" onBack={() => setView("menu")} />
         <View style={styles.moreDiagnosticsCard}>
-          <Metric label="Two-factor" value={mfaEnabled ? "Enabled" : "Off"} />
+          <Metric label="Device lock" value={biometric.enabled ? "Enabled" : "Off"} />
+          <Metric label="Method" value={biometric.label} />
+          <Metric label="Available" value={biometric.available && biometric.enrolled ? "Ready" : "Setup needed"} />
           <Metric label="Login email" value={dashboard?.user?.email ?? "--"} />
-          <Text style={styles.reason}>Use Google Authenticator, Microsoft Authenticator, Authy, or any TOTP app. After enabling, login requires your password and a 6-digit code.</Text>
+          <Text style={styles.reason}>Use your phone fingerprint or face unlock to protect the saved mobile session. The platform admin web console still uses stronger web security separately.</Text>
         </View>
         <View style={styles.moreMenuGroup}>
-          {!mfaEnabled ? (
-            <Pressable
-              style={styles.fullButton}
-              onPress={async () => {
-                try {
-                  setMfaSetup(await onStartMfa());
-                } catch (error) {
-                  Alert.alert("2FA setup failed", cleanErrorMessage((error as Error).message));
-                }
-              }}
-            >
-              <Text style={styles.fullButtonText}>Start 2FA Setup</Text>
-            </Pressable>
-          ) : null}
-          {mfaSetup ? (
-            <>
-              <View style={styles.mfaQrCard}>
-                <QRCode value={mfaSetup.otpAuthUrl} size={210} backgroundColor="#f4f7f4" color="#07100c" />
-                <Text style={styles.mfaQrText}>Scan with Google Authenticator</Text>
-              </View>
-              <Text style={styles.tokenLabel}>Secret</Text>
-              <Text style={styles.tokenValue} selectable>{mfaSetup.secret}</Text>
-              <Text style={styles.tokenLabel}>Authenticator URL</Text>
-              <Text style={styles.tokenValue} selectable numberOfLines={4}>{mfaSetup.otpAuthUrl}</Text>
-            </>
-          ) : null}
-          <TextInput style={styles.input} keyboardType="number-pad" value={mfaCode} onChangeText={(value) => setMfaCode(value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit code" placeholderTextColor="#6f7b75" />
-          {!mfaEnabled && mfaSetup ? (
-            <Pressable style={[styles.fullButton, mfaCode.length !== 6 && styles.disabledButton]} disabled={mfaCode.length !== 6} onPress={() => onEnableMfa(mfaCode)}>
-              <Text style={styles.fullButtonText}>Verify and Enable</Text>
-            </Pressable>
-          ) : null}
-          {mfaEnabled ? (
-            <Pressable style={[styles.secondaryButton, mfaCode.length !== 6 && styles.disabledButton]} disabled={mfaCode.length !== 6} onPress={() => onDisableMfa(mfaCode)}>
-              <Text style={styles.secondaryButtonText}>Disable 2FA</Text>
-            </Pressable>
-          ) : null}
+          <PushToggleRow
+            title={`${biometric.label} unlock`}
+            subtitle="Require phone biometric check before opening the saved mobile session."
+            value={biometric.enabled}
+            onValueChange={onToggleBiometric}
+          />
+          {!biometric.available || !biometric.enrolled ? <Text style={styles.reason}>No enrolled fingerprint/face unlock was found. Add it in Android settings, then return here.</Text> : null}
         </View>
       </>
     );
@@ -1603,7 +1647,7 @@ function MoreScreen({
 
       <View style={styles.moreMenuGroup}>
         <MoreMenuRow icon="account" title="Profile" subtitle="Account, plan, and subscription" value={dashboard?.tenant?.subscription_status ?? "ACTIVE"} onPress={() => setView("profile")} />
-        <MoreMenuRow icon="account" title="Security" subtitle="Password and two-factor authentication" value={dashboard?.user?.mfaEnabled ? "2FA On" : "Open"} onPress={() => setView("security")} />
+        <MoreMenuRow icon="account" title="Security" subtitle="Fingerprint unlock and saved session protection" value={biometric.enabled ? "On" : "Open"} onPress={() => setView("security")} />
         <MoreMenuRow icon="alerts" title="Push Alerts" subtitle={pushStatus} value={pushDiagnostics.permission} onPress={() => setView("push-settings")} />
         <MoreMenuRow icon="signals" title="Strategy Modules" subtitle={`${modules.length} assigned modules`} value="Open" onPress={() => setView("modules")} />
         <MoreMenuRow icon="chart" title="Chart Preferences" subtitle="Candle view, modules, and live stream" value="Open" onPress={() => setView("chart-preferences")} />
