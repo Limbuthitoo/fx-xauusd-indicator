@@ -2607,10 +2607,10 @@ export function evaluateVwapOpeningDrive(input: {
   const stopAtr = Math.abs(entry - stop) / Math.max(atr, 0.00001);
   const rrOk = rr >= config.minimumRiskReward;
   const stopOk = stopAtr <= config.maximumStopATR;
-  push("QUALITY_SPREAD", "Spread filter", spreadOk, false, input.spread ?? "unknown", `<= ${config.maximumSpread}`, "Spread must be acceptable for XAUUSD paper entry.");
-  push("QUALITY_NEWS", "No high-impact news", newsOk, false, input.newsStatus ?? "CLEAR", "CLEAR", "High-impact news blocks automatic Module 3 entries.");
+  push("QUALITY_SPREAD", "Spread filter", spreadOk, true, input.spread ?? "unknown", `<= ${config.maximumSpread}`, "Spread must be acceptable for XAUUSD paper entry.");
+  push("QUALITY_NEWS", "No high-impact news", newsOk, true, input.newsStatus ?? "CLEAR", "CLEAR", "High-impact news blocks automatic Module 3 entries.");
   push("QUALITY_RR", "Minimum RR 2:1", rrOk, true, Number(rr.toFixed(2)), `>= ${config.minimumRiskReward}`, "Reward-to-risk must meet the configured minimum.");
-  push("QUALITY_STOP_SIZE", "Maximum stop size", stopOk, false, Number(stopAtr.toFixed(2)), `<= ${config.maximumStopATR} ATR`, "Stop distance must not be too large after the pullback.");
+  push("QUALITY_STOP_SIZE", "Maximum stop size", stopOk, true, Number(stopAtr.toFixed(2)), `<= ${config.maximumStopATR} ATR`, "Stop distance must not be too large after the pullback.");
   const confirmationCount = [vwapAligned, trendAligned, pullbackTouched, confirmation, spreadOk, newsOk, rrOk, stopOk].filter(Boolean).length;
   const score = Math.min(100, Math.round(35 + (driveStrong ? 15 : 0) + confirmationCount * 7));
   const blockingPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");

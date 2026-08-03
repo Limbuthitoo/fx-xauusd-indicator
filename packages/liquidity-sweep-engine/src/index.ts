@@ -167,7 +167,13 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const setupFresh = currentIndex - bos.index <= config.maximumBarsAfterBosForEntry;
   if (!setupFresh) return blockedDecision("SETUP_TIMEOUT", "Module 2 setup expired before a valid candidate trade.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
 
+  push(evaluations, "ENTRY_ZONE_READY", "Fresh entry zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "fresh FVG or order block", zone ? "A fresh imbalance/order-block zone is available for entry." : "No fresh FVG or order-block zone is available after BOS/CHoCH.");
+  if (!zone) return waitDecision("WAITING_FOR_ENTRY_ZONE", "BOS/CHoCH is confirmed. Waiting for a fresh FVG/order-block entry zone.", evaluations, flags, levels, htfBias, sweep, direction, zone);
+
   const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
+  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
+  if (!retrace) return waitDecision("WAITING_FOR_RETRACE", "Fresh entry zone is ready. Waiting for price to retrace into it before any paper entry.", evaluations, flags, levels, htfBias, sweep, direction, zone);
+
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
   const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction);
   const vwap = volumeWeightedAveragePrice(setupCandles);
@@ -182,7 +188,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm entry." }
   ];
   for (const item of confirmations) {
-    push(evaluations, item.code, item.name, item.passed, false, "AUTOMATIC", item.actual, item.required, `${item.explanation} (+${item.points})`);
+    push(evaluations, item.code, item.name, item.passed, item.code === "CONFIRM_ENTRY_CANDLE", "AUTOMATIC", item.actual, item.required, `${item.explanation} (+${item.points})`);
   }
   const confirmationCount = confirmations.filter((item) => item.passed).length;
   const confirmationScore = confirmations.reduce((sum, item) => sum + (item.passed ? item.points : 0), 0);
@@ -193,14 +199,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const rrOk = plan.rr >= config.minimumRiskReward;
   const quality = [
     { code: "QUALITY_ATR_VOLATILITY", name: "ATR volatility filter", passed: atrVolatilityOk, actual: `${((atr / current.close) * 100).toFixed(3)}%`, required: ">= 0.015%", explanation: atrVolatilityOk ? "ATR shows enough volatility for the setup." : "ATR volatility is too low." },
-    { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadOk, actual: context.spread ?? "unknown", required: `<= ${config.maximumSpread}`, explanation: spreadOk ? "Spread is acceptable." : "Spread is above the configured maximum." },
-    { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
-    { code: "QUALITY_RR", name: "Minimum RR 2:1", passed: rrOk, actual: Number(plan.rr.toFixed(2)), required: `>= ${config.minimumRiskReward}`, explanation: rrOk ? "Reward-to-risk meets the minimum." : "Reward-to-risk is below the minimum." },
-    { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR`, explanation: plan.stopValid ? "Stop size is acceptable." : "Stop size is too large." },
+    { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadOk, blocking: true, actual: context.spread ?? "unknown", required: `<= ${config.maximumSpread}`, explanation: spreadOk ? "Spread is acceptable." : "Spread is above the configured maximum." },
+    { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, blocking: true, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
+    { code: "QUALITY_RR", name: "Minimum RR 2:1", passed: rrOk, blocking: true, actual: Number(plan.rr.toFixed(2)), required: `>= ${config.minimumRiskReward}`, explanation: rrOk ? "Reward-to-risk meets the minimum." : "Reward-to-risk is below the minimum." },
+    { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR`, explanation: plan.stopValid ? "Stop size is acceptable." : "Stop size is too large." },
     { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: currentIndex - bos.index, required: `<= ${config.maximumBarsAfterBosForEntry} candles after BOS`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
   ];
   for (const item of quality) {
-    push(evaluations, item.code, item.name, item.passed, false, "AUTOMATIC", item.actual, item.required, item.explanation);
+    push(evaluations, item.code, item.name, item.passed, "blocking" in item ? Boolean(item.blocking) : false, "AUTOMATIC", item.actual, item.required, item.explanation);
   }
   const qualityCount = quality.filter((item) => item.passed).length;
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
@@ -643,11 +649,12 @@ function blockedDecision(scenario: string, reason: string, evaluations: RuleEval
 }
 
 function stateFromScenario(scenario: string): LiquiditySweepState {
+  if (scenario.includes("WAITING_FOR_RETRACE")) return "WAITING_FOR_RETRACE";
+  if (scenario.includes("ENTRY_CONFIRMATION")) return "ENTRY_CONFIRMATION";
+  if (scenario.includes("ENTRY_ZONE_READY")) return "ENTRY_ZONE_READY";
   if (scenario.includes("SWEEP")) return "LEVEL_APPROACH";
   if (scenario.includes("DISPLACEMENT")) return "SWEEP_DETECTED";
   if (scenario.includes("BOS")) return "DISPLACEMENT_CONFIRMED";
   if (scenario.includes("ENTRY_ZONE")) return "BOS_CONFIRMED";
-  if (scenario.includes("RETRACE")) return "WAITING_FOR_RETRACE";
-  if (scenario.includes("CONFIRMATION")) return "ENTRY_CONFIRMATION";
   return "IDLE";
 }
