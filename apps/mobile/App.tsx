@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
@@ -41,7 +42,7 @@ const DEFAULT_API_BASE_URL =
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ??
   "http://localhost:7073";
 const APP_VERSION = Constants.expoConfig?.version ?? "0.0.0";
-const APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode ?? 0);
+const APP_VERSION_CODE = Number(Application.nativeBuildVersion ?? Constants.expoConfig?.android?.versionCode ?? 0);
 const BRAND_LOGO = require("./assets/brand-logo.png");
 const BRAND_MARK = require("./assets/brand-mark.png");
 
@@ -125,7 +126,15 @@ type NotificationDetail = {
   source: "push" | "history";
 };
 
-type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "about";
+type AppUpdateState = {
+  checkedAt: string | null;
+  checking: boolean;
+  error: string | null;
+  updateAvailable: boolean;
+  latest: any | null;
+};
+
+type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "app-updates" | "about";
 
 const defaultPushPreferences: PushPreferences = {
   nyPreSession: true,
@@ -249,6 +258,13 @@ function AppContent() {
   const [socketStatus, setSocketStatus] = useState("Socket offline");
   const [activeTab, setActiveTab] = useState<MobileTab>("home");
   const [selectedNotificationDetail, setSelectedNotificationDetail] = useState<NotificationDetail | null>(null);
+  const [appUpdate, setAppUpdate] = useState<AppUpdateState>({
+    checkedAt: null,
+    checking: false,
+    error: null,
+    updateAvailable: false,
+    latest: null
+  });
   const selectedModule = useMemo(
     () => dashboard?.modules.find((module) => module.code === selectedModuleCode) ?? dashboard?.modules[0],
     [dashboard?.modules, selectedModuleCode]
@@ -505,19 +521,37 @@ function AppContent() {
     const nextModuleCode = selectedModuleCode ?? data.modules[0]?.code ?? null;
     if (!selectedModuleCode && nextModuleCode) setSelectedModuleCode(nextModuleCode);
     if (syncChart && nextModuleCode) await loadChart(nextModuleCode, authToken);
-    checkAppUpdate().catch(() => undefined);
+    checkAppUpdate(false).catch(() => undefined);
     setLoading(false);
   }
 
-  async function checkAppUpdate() {
+  async function checkAppUpdate(showResult = false) {
     if (Platform.OS !== "android") return;
+    setAppUpdate((previous) => ({ ...previous, checking: true, error: null }));
     const response = await fetch(`${apiBaseUrl}/api/mobile/app-update?platform=android&currentVersion=${encodeURIComponent(APP_VERSION)}&currentCode=${encodeURIComponent(String(APP_VERSION_CODE || ""))}`);
-    if (!response.ok) return;
+    if (!response.ok) {
+      const message = await response.text();
+      setAppUpdate((previous) => ({ ...previous, checking: false, checkedAt: new Date().toISOString(), error: message || "Update check failed." }));
+      if (showResult) Alert.alert("Update check failed", cleanErrorMessage(message));
+      return;
+    }
     const payload = await response.json() as { updateAvailable?: boolean; latest?: any };
-    const latest = payload.latest;
-    if (!payload.updateAvailable || !latest?.downloadUrl || !latest?.version_name) return;
+    const latest = payload.latest
+      ? { ...payload.latest, downloadUrl: normalizeDownloadUrl(payload.latest.downloadUrl, apiBaseUrl) }
+      : null;
+    setAppUpdate({
+      checkedAt: new Date().toISOString(),
+      checking: false,
+      error: null,
+      updateAvailable: payload.updateAvailable === true,
+      latest: latest ?? null
+    });
+    if (!payload.updateAvailable || !latest?.downloadUrl || !latest?.version_name) {
+      if (showResult) Alert.alert("App is up to date", `Installed build ${APP_VERSION_CODE || APP_VERSION} is current.`);
+      return;
+    }
     const prompted = await AsyncStorage.getItem(UPDATE_PROMPT_KEY);
-    if (prompted === latest.version_name) return;
+    if (!showResult && prompted === latest.version_name) return;
     await AsyncStorage.setItem(UPDATE_PROMPT_KEY, latest.version_name);
     Alert.alert(
       `Update ${latest.version_name} available`,
@@ -808,9 +842,11 @@ function AppContent() {
             pushStatus={pushStatus}
             pushDiagnostics={pushDiagnostics}
             pushPreferences={pushPreferences}
+            appUpdate={appUpdate}
             view={moreView}
             setView={setMoreView}
             socketStatus={socketStatus}
+            onCheckAppUpdate={() => checkAppUpdate(true).catch((error) => Alert.alert("Update check failed", error.message))}
             onRegisterPush={() => registerPush().catch((error) => Alert.alert("Push failed", error.message))}
             onTestPush={() => sendTestPush().catch((error) => Alert.alert("Test push failed", error.message))}
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
@@ -1261,9 +1297,11 @@ function MoreScreen({
   pushStatus,
   pushDiagnostics,
   pushPreferences,
+  appUpdate,
   view,
   setView,
   socketStatus,
+  onCheckAppUpdate,
   onRegisterPush,
   onTestPush,
   onDisablePushDevice,
@@ -1279,9 +1317,11 @@ function MoreScreen({
   pushStatus: string;
   pushDiagnostics: PushDiagnostics;
   pushPreferences: PushPreferences;
+  appUpdate: AppUpdateState;
   view: MoreView;
   setView: (view: MoreView) => void;
   socketStatus: string;
+  onCheckAppUpdate: () => void;
   onRegisterPush: () => void;
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
@@ -1496,6 +1536,41 @@ function MoreScreen({
       </>
     );
   }
+  if (view === "app-updates") {
+    const latest = appUpdate.latest;
+    const latestVersion = latest?.version_name ?? "--";
+    const latestCode = latest?.version_code ?? "--";
+    const downloadUrl = latest?.downloadUrl;
+    return (
+      <>
+        <MoreHeader title="App Updates" onBack={() => setView("menu")} />
+        <View style={styles.moreDiagnosticsCard}>
+          <Metric label="Installed" value={`${APP_VERSION} (${APP_VERSION_CODE || "--"})`} />
+          <Metric label="Latest" value={`${latestVersion} (${latestCode})`} />
+          <Metric label="Status" value={appUpdate.checking ? "Checking..." : appUpdate.updateAvailable ? "Update available" : "Current"} />
+          <Metric label="Checked" value={appUpdate.checkedAt ? formatTime(appUpdate.checkedAt) : "--"} />
+          {appUpdate.error ? <Text style={styles.reason}>{cleanErrorMessage(appUpdate.error)}</Text> : null}
+        </View>
+        {latest ? (
+          <View style={styles.moreDiagnosticsCard}>
+            <Text style={styles.sectionMini}>Release Details</Text>
+            <Metric label="File" value={latest.file_name ?? "--"} />
+            <Metric label="Size" value={formatFileSize(latest.file_size_bytes)} />
+            <Metric label="SHA256" value={String(latest.sha256 ?? "--").slice(0, 18)} />
+            <Text style={styles.reason}>{latest.changelog || "No changelog provided."}</Text>
+            {downloadUrl ? (
+              <Pressable style={styles.fullButton} onPress={() => Linking.openURL(downloadUrl).catch(() => Alert.alert("Download failed", "Could not open the APK download link."))}>
+                <Text style={styles.fullButtonText}>Download APK</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+        <Pressable style={styles.secondaryButton} onPress={onCheckAppUpdate}>
+          <Text style={styles.secondaryButtonText}>{appUpdate.checking ? "Checking..." : "Check for Updates"}</Text>
+        </Pressable>
+      </>
+    );
+  }
   if (view === "about") {
     return (
       <>
@@ -1538,6 +1613,7 @@ function MoreScreen({
         <MoreMenuRow icon="time" title="Session Settings" subtitle="New York session and Nepal time display" value="NY" onPress={() => setView("session-settings")} />
         <MoreMenuRow icon="alerts" title="Notification History" subtitle="Signal, report, and paper-trade alerts" value="Open" onPress={() => setView("notification-history")} />
         <MoreMenuRow icon="account" title="Support" subtitle={supportInfo.supportEmail ?? "Help, feedback, and issue reports"} value="Help" onPress={() => setView("support")} />
+        <MoreMenuRow icon="chart" title="App Updates" subtitle={appUpdate.updateAvailable ? `Version ${appUpdate.latest?.version_name ?? ""} available` : "Latest APK and changelog"} value={appUpdate.updateAvailable ? "Update" : "Open"} onPress={() => setView("app-updates")} />
         <MoreMenuRow icon="chart" title="About XAUUSD Signal" subtitle="Version, build, and data source" value="Open" onPress={() => setView("about")} />
       </View>
 
@@ -2128,6 +2204,14 @@ function formatPercent(value: unknown) {
   return `${(Number(value ?? 0) * 100).toFixed(1)}%`;
 }
 
+function formatFileSize(value: unknown) {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "--";
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 function formatTime(value: string) {
   if (!value) return "--";
   const date = new Date(value);
@@ -2143,6 +2227,15 @@ function apiWebSocketUrl(apiBaseUrl: string, path: string) {
   url.pathname = path;
   url.search = "";
   return url.toString();
+}
+
+function normalizeDownloadUrl(value: unknown, apiBaseUrl: string) {
+  const raw = String(value ?? "");
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const base = normalizeApiBaseUrl(apiBaseUrl);
+  if (!base) return raw;
+  return `${base.replace(/\/$/, "")}/${raw.replace(/^\//, "")}`;
 }
 
 function normalizeApiBaseUrl(value: string | null | undefined) {

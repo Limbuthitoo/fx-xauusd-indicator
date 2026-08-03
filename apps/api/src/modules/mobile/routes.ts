@@ -24,7 +24,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       updateAvailable,
       latest: {
         ...latest,
-        downloadUrl: absoluteApiUrl(latest.download_path)
+        downloadUrl: absoluteApiUrl(latest.download_path, request)
       }
     };
   });
@@ -385,9 +385,13 @@ export async function mobileRoutes(app: FastifyInstance) {
   });
 }
 
-function absoluteApiUrl(path: string) {
+function absoluteApiUrl(path: string, request?: { headers?: Record<string, string | string[] | undefined>; protocol?: string }) {
   const base = process.env.PUBLIC_API_BASE_URL || process.env.PUBLIC_WEB_BASE_URL || "";
-  return base ? `${base.replace(/\/$/, "")}${path}` : path;
+  if (base) return `${base.replace(/\/$/, "")}${path}`;
+  const headers = request?.headers ?? {};
+  const host = String(headers["x-forwarded-host"] ?? headers.host ?? "");
+  const protocol = String(headers["x-forwarded-proto"] ?? request?.protocol ?? "https").split(",")[0] || "https";
+  return host ? `${protocol}://${host.replace(/\/$/, "")}${path}` : path;
 }
 
 function isNewerRelease(latestVersion: string, latestCode: number | null, currentVersion?: string, currentCode?: string) {
