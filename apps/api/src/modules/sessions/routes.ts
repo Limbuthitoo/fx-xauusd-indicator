@@ -114,6 +114,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     if (!current.rows[0]) return null;
     if (moduleCode === "orb_max_options" && auth.tenantId) {
       await reconcileOrbSessionWindow(current.rows[0].id, auth.tenantId);
+      await lockOrbRangeIfReady(current.rows[0].id, auth.tenantId);
     }
     return moduleCode === "orb_max_options"
       ? updateSessionState(current.rows[0].id)
@@ -211,73 +212,8 @@ export async function sessionRoutes(app: FastifyInstance) {
 
   app.post("/api/sessions/:id/lock-range", async (request) => {
     const auth = await requireTenantModule(request, "orb_max_options");
-    const settings = await getRuntimeSettings(auth.tenantId);
     const { id } = request.params as { id: string };
-    const sessionResult = await query(
-      `SELECT ts.*, sv.signal_timeframe_minutes, sv.opening_range_minutes
-       FROM trading_sessions ts
-       JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
-       WHERE ts.id = $1 AND ts.tenant_id = $2`,
-      [id, auth.tenantId]
-    );
-    const session = sessionResult.rows[0] as any;
-    const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
-    const candlesResult = await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread
-       FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
-       ORDER BY timestamp_utc`,
-      [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
-    );
-    const candles: Candle[] = candlesResult.rows.map((row: any) => ({
-      timestampUtc: row.timestamp_utc,
-      open: Number(row.open),
-      high: Number(row.high),
-      low: Number(row.low),
-      close: Number(row.close),
-      volume: row.volume == null ? null : Number(row.volume),
-      spread: row.spread == null ? null : Number(row.spread)
-    }));
-    const range = buildOpeningRange(candles.slice(0, ORB_RANGE_SOURCE_CANDLES), 0.01, ORB_RANGE_SOURCE_CANDLES);
-    const { rows } = await query(
-      `INSERT INTO opening_ranges (
-        session_id, status, high, low, midpoint, width, width_ticks, width_atr_percent,
-        source_candle_count, data_quality_status, invalid_reason, locked_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT (session_id) DO UPDATE SET
-        status = EXCLUDED.status,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        midpoint = EXCLUDED.midpoint,
-        width = EXCLUDED.width,
-        width_ticks = EXCLUDED.width_ticks,
-        width_atr_percent = EXCLUDED.width_atr_percent,
-        source_candle_count = EXCLUDED.source_candle_count,
-        data_quality_status = EXCLUDED.data_quality_status,
-        invalid_reason = EXCLUDED.invalid_reason,
-        locked_at = EXCLUDED.locked_at
-      RETURNING *`,
-      [
-        id,
-        range.status,
-        range.high,
-        range.low,
-        range.midpoint,
-        range.width,
-        range.widthTicks,
-        range.widthAtrPercent ?? null,
-        range.sourceCandleCount,
-        range.dataQualityStatus,
-        range.invalidReason ?? null,
-        range.lockedAt ?? null
-      ]
-    );
-    await query("UPDATE trading_sessions SET state = $2, data_status = $3 WHERE id = $1", [
-      id,
-      range.status === "LOCKED" ? "WAITING_FOR_SETUP" : "NO_TRADE",
-      range.dataQualityStatus
-    ]);
-    return rows[0];
+    return lockOpeningRangeForSessionId(id, auth.tenantId);
   });
 
   app.post("/api/sessions/:id/complete", async (request) => {
@@ -286,7 +222,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     const scope = scopeResult.rows[0] as any;
     if (!scope) return null;
     const auth = await requireTenantModule(request, scope.module_code ?? "orb_max_options");
-    if (scope.tenant_id !== auth.tenantId) return null;
+    if (auth.tenantId && auth.tenantId !== scope.tenant_id) return null;
     const body = request.body as { classification?: string };
     const { rows } = await query(
       "UPDATE trading_sessions SET state = 'SESSION_COMPLETED', final_classification = $2, completed_at = now() WHERE id = $1 AND tenant_id = $3 RETURNING *",
@@ -302,6 +238,93 @@ export async function sessionRoutes(app: FastifyInstance) {
     const { rows } = await query("SELECT * FROM trading_sessions WHERE tenant_id = $1 AND module_code = $2 ORDER BY session_date DESC, created_at DESC LIMIT 100", [auth.tenantId, moduleCode]);
     return rows;
   });
+}
+
+async function lockOpeningRangeForSessionId(id: string, tenantId: string | null) {
+  const settings = await getRuntimeSettings(tenantId);
+  const sessionResult = await query(
+    `SELECT ts.*, sv.signal_timeframe_minutes, sv.opening_range_minutes
+     FROM trading_sessions ts
+     JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
+     WHERE ts.id = $1 AND ts.tenant_id = $2`,
+    [id, tenantId]
+  );
+  const session = sessionResult.rows[0] as any;
+  if (!session) return null;
+  const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
+  const candlesResult = await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread
+     FROM candles
+     WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
+     ORDER BY timestamp_utc`,
+    [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
+  );
+  const candles: Candle[] = candlesResult.rows.map((row: any) => ({
+    timestampUtc: row.timestamp_utc,
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume == null ? null : Number(row.volume),
+    spread: row.spread == null ? null : Number(row.spread)
+  }));
+  const range = buildOpeningRange(candles.slice(0, ORB_RANGE_SOURCE_CANDLES), 0.01, ORB_RANGE_SOURCE_CANDLES);
+  const { rows } = await query(
+    `INSERT INTO opening_ranges (
+      session_id, status, high, low, midpoint, width, width_ticks, width_atr_percent,
+      source_candle_count, data_quality_status, invalid_reason, locked_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    ON CONFLICT (session_id) DO UPDATE SET
+      status = EXCLUDED.status,
+      high = EXCLUDED.high,
+      low = EXCLUDED.low,
+      midpoint = EXCLUDED.midpoint,
+      width = EXCLUDED.width,
+      width_ticks = EXCLUDED.width_ticks,
+      width_atr_percent = EXCLUDED.width_atr_percent,
+      source_candle_count = EXCLUDED.source_candle_count,
+      data_quality_status = EXCLUDED.data_quality_status,
+      invalid_reason = EXCLUDED.invalid_reason,
+      locked_at = EXCLUDED.locked_at
+    RETURNING *`,
+    [
+      id,
+      range.status,
+      range.high,
+      range.low,
+      range.midpoint,
+      range.width,
+      range.widthTicks,
+      range.widthAtrPercent ?? null,
+      range.sourceCandleCount,
+      range.dataQualityStatus,
+      range.invalidReason ?? null,
+      range.lockedAt ?? null
+    ]
+  );
+  await query("UPDATE trading_sessions SET state = $2, data_status = $3 WHERE id = $1", [
+    id,
+    range.status === "LOCKED" ? "WAITING_FOR_SETUP" : "NO_TRADE",
+    range.dataQualityStatus
+  ]);
+  return rows[0];
+}
+
+async function lockOrbRangeIfReady(sessionId: string, tenantId: string) {
+  const result = await query(
+    `SELECT ts.id, ts.opening_range_end_at, row_to_json(orr.*) AS opening_range
+     FROM trading_sessions ts
+     LEFT JOIN opening_ranges orr ON orr.session_id = ts.id
+     WHERE ts.id = $1
+       AND ts.tenant_id = $2
+       AND ts.module_code = 'orb_max_options'`,
+    [sessionId, tenantId]
+  );
+  const session = result.rows[0] as any;
+  if (!session) return null;
+  if (session.opening_range?.status === "LOCKED") return session.opening_range;
+  if (new Date() < new Date(session.opening_range_end_at)) return null;
+  return lockOpeningRangeForSessionId(sessionId, tenantId);
 }
 
 async function ensureReadiness(sessionId: string) {
