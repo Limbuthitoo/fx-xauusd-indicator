@@ -109,7 +109,9 @@ export async function sessionRoutes(app: FastifyInstance) {
       [auth.tenantId, moduleCode]
     );
     if (!current.rows[0]) return null;
-    return updateSessionState(current.rows[0].id);
+    return moduleCode === "orb_max_options"
+      ? updateSessionState(current.rows[0].id)
+      : updateGenericModuleSessionState(current.rows[0].id);
   });
 
   app.get("/api/sessions/current/orb-range-audit", async (request) => {
@@ -328,6 +330,20 @@ async function updateSessionState(sessionId: string) {
 
   const updated = await query("UPDATE trading_sessions SET state = $2 WHERE id = $1 RETURNING *", [sessionId, state]);
   return { ...updated.rows[0], opening_range: session.opening_range };
+}
+
+async function updateGenericModuleSessionState(sessionId: string) {
+  const result = await query("SELECT * FROM trading_sessions WHERE id = $1", [sessionId]);
+  const session = result.rows[0] as any;
+  if (!session) return null;
+  if (["TRADE_PLANNED", "TRADE_ACTIVE", "TRADE_CLOSED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) return session;
+  const now = new Date();
+  let state = session.state;
+  if (now < new Date(session.session_start_at)) state = "PRE_SESSION";
+  else if (now <= new Date(session.signal_window_end_at)) state = "WAITING_FOR_SETUP";
+  else state = "SESSION_EXPIRED";
+  const updated = await query("UPDATE trading_sessions SET state = $2 WHERE id = $1 RETURNING *", [sessionId, state]);
+  return updated.rows[0];
 }
 
 function formatInTimezone(value: string, timeZone: string) {
