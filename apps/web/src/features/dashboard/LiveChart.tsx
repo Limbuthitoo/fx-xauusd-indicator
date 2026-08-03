@@ -113,7 +113,7 @@ export type TwelveDataChartProps = {
 type PositionedOverlay = {
   id: string;
   label: string;
-  tone: "session" | "sweep" | "fvg" | "orderBlock" | "bos" | "displacement" | "invalid" | "reward" | "entry";
+  tone: "session" | "sweep" | "fvg" | "orderBlock" | "bos" | "displacement" | "invalid" | "reward" | "entry" | "orbHigh" | "orbMid" | "orbLow";
   left: number;
   top: number;
   width: number;
@@ -349,7 +349,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
-  }, [activeSetup, session, moduleCode]);
+  }, [activeSetup, session, moduleCode, effectiveOpeningRange]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -432,6 +432,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       candles: cleanCandles,
       moduleCode,
       session,
+      openingRange: effectiveOpeningRange,
       setup: activeSetup,
       chart: chartRef.current,
       series: candleSeriesRef.current,
@@ -584,37 +585,46 @@ function module1OrbRangeState(
     ? { start: session.session_start_at, end: session.opening_range_end_at, source: "session" }
     : null;
   const directWindow = module1OrbWindowFromCandles(cleanCandles);
-  const window = sessionWindow ?? directWindow;
-  if (!window) return { source: "missing", label: "NO WINDOW", range: openingRange, candleCount: 0 };
-  const start = new Date(window.start).getTime();
-  const end = new Date(window.end).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    return { source: "invalid", label: "BAD WINDOW", range: openingRange, candleCount: 0 };
+  const candidates = [sessionWindow, directWindow].filter(Boolean) as Array<{ start: string; end: string; source: string }>;
+  if (candidates.length === 0) return { source: "missing", label: "NO WINDOW", range: openingRange, candleCount: 0 };
+  let best = { window: candidates[0], rangeCandles: [] as TwelveDataCandle[] };
+  for (const candidate of candidates) {
+    const rangeCandles = module1RangeCandlesForWindow(cleanCandles, candidate.start, candidate.end);
+    if (rangeCandles.length > best.rangeCandles.length) best = { window: candidate, rangeCandles };
+    if (rangeCandles.length >= 3) break;
   }
-  const rangeCandles = cleanCandles.filter((candle) => {
-    const time = new Date(candle.timestampUtc).getTime();
-    return time >= start && time < end;
-  }).slice(0, 3);
-  if (rangeCandles.length < 3) {
+  if (best.rangeCandles.length < 3) {
     return {
-      source: window.source,
-      label: `${window.source.toUpperCase()} ${rangeCandles.length}/3`,
+      source: best.window.source,
+      label: `${best.window.source.toUpperCase()} ${best.rangeCandles.length}/3`,
       range: openingRange,
-      candleCount: rangeCandles.length
+      candleCount: best.rangeCandles.length
     };
   }
-  const high = Math.max(...rangeCandles.map((candle) => candle.high));
-  const low = Math.min(...rangeCandles.map((candle) => candle.low));
+  const high = Math.max(...best.rangeCandles.map((candle) => candle.high));
+  const low = Math.min(...best.rangeCandles.map((candle) => candle.low));
   return {
-    source: window.source,
-    label: window.source === "session" ? "CHART FALLBACK" : "NY 09:15 FALLBACK",
-    candleCount: rangeCandles.length,
+    source: best.window.source,
+    label: best.window.source === "session" ? "CHART FALLBACK" : "NY 09:15 FALLBACK",
+    candleCount: best.rangeCandles.length,
     range: {
       high,
       low,
       midpoint: (high + low) / 2
     }
   };
+}
+
+function module1RangeCandlesForWindow(candles: TwelveDataCandle[], startAt: string, endAt: string) {
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+  const strict = candles.filter((candle) => {
+    const time = new Date(candle.timestampUtc).getTime();
+    return time >= start && time < end;
+  }).slice(0, 3);
+  if (strict.length >= 3) return strict;
+  return candles.filter((candle) => new Date(candle.timestampUtc).getTime() >= start).slice(0, 3);
 }
 
 function module1OrbWindowFromCandles(candles: TwelveDataCandle[]) {
@@ -863,6 +873,7 @@ function buildPositionedOverlays(input: {
   candles: TwelveDataCandle[];
   moduleCode: string;
   session?: TwelveDataChartProps["session"];
+  openingRange?: TwelveDataChartProps["openingRange"];
   setup?: TwelveDataChartProps["setup"];
   chart: IChartApi | null;
   series: ISeriesApi<"Candlestick"> | null;
@@ -895,6 +906,20 @@ function buildPositionedOverlays(input: {
     if (right - left < 2 || bottom - top < 2) return;
     overlays.push({ id, label, tone, left, top, width: right - left, height: bottom - top });
   };
+  const addHorizontalLine = (id: string, label: string, tone: PositionedOverlay["tone"], price: unknown) => {
+    const coordinate = priceToCoordinate(price);
+    if (coordinate == null) return;
+    if (coordinate < 0 || coordinate > input.container!.clientHeight) return;
+    overlays.push({
+      id,
+      label,
+      tone,
+      left: 0,
+      top: Math.max(0, coordinate - 1),
+      width: input.container!.clientWidth,
+      height: 2
+    });
+  };
 
   const visibleCandles = input.candles.filter((candle) => {
     const x = timeToCoordinate(candle.timestampUtc);
@@ -902,6 +927,12 @@ function buildPositionedOverlays(input: {
   });
   const sessionHigh = Math.max(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.high));
   const sessionLow = Math.min(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.low));
+  if (input.moduleCode === "orb_max_options") {
+    addHorizontalLine("orb-high", "15M ORB High", "orbHigh", input.openingRange?.high);
+    addHorizontalLine("orb-mid", "15M ORB Mid", "orbMid", input.openingRange?.midpoint);
+    addHorizontalLine("orb-low", "15M ORB Low", "orbLow", input.openingRange?.low);
+    return overlays;
+  }
   if ((input.moduleCode === "high_probability_strategy_2" || input.moduleCode === "strategy_lab_3") && input.session?.session_start_at && input.session?.signal_window_end_at) {
     addBox("ny-session", "New York", "session", input.session.session_start_at, input.session.signal_window_end_at, sessionLow, sessionHigh);
   }
