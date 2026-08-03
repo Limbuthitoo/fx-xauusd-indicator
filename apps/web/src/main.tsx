@@ -7,6 +7,8 @@ import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
 const DEFAULT_TIMEFRAME_MINUTES = 5;
+const WEB_BRAND_LOGO = "/brand/brand-logo.png";
+const WEB_BRAND_MARK = "/brand/brand-mark.png";
 const STRATEGY_MODULE_CODES = ["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"];
 const DEFAULT_PUSH_PREFERENCES = {
   nyPreSession: true,
@@ -926,8 +928,8 @@ function App() {
     <main className="admin-shell">
       <aside className="admin-nav">
         <div className="brand-block">
-          <strong>XAUUSD ORB</strong>
-          <span>Admin Console</span>
+          <img src={WEB_BRAND_LOGO} alt="XAUUSD Signal" />
+          <span>Subscriber Dashboard</span>
         </div>
         <nav>
           {can("dashboard.view") ? <NavButton icon={<ShieldCheck />} label="Command Center" active={activeSection === "command"} onClick={() => setActiveSection("command")} /> : null}
@@ -1361,7 +1363,7 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
   return (
     <main className="login-screen">
       <form className="login-card" onSubmit={submit}>
-        <div className="login-mark"><Lock size={22} /></div>
+        <div className="login-mark"><img src={WEB_BRAND_MARK} alt="" /></div>
         <h1>{mode === "platform" ? "Platform Admin" : "Subscriber Dashboard"}</h1>
         <p>{mode === "platform" ? "Sign in to manage subscribers, modules, plans, platform settings, and production operations." : "Sign in to monitor assigned strategy modules, live chart signals, reports, notifications, and account settings."}</p>
         <label>
@@ -1467,7 +1469,7 @@ function PlatformAdminApp({
     <main className="platform-shell">
       <aside className="platform-nav">
         <div className="brand-block">
-          <strong>Trading Platform</strong>
+          <img src={WEB_BRAND_LOGO} alt="XAUUSD Signal" />
           <span>Super Admin Console</span>
         </div>
         <nav className="platform-menu">

@@ -45,14 +45,16 @@ main {
 
 .brand-block {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   padding: 8px 8px 12px;
   border-bottom: 1px solid #202820;
 }
 
-.brand-block strong {
-  color: #edf4ef;
-  font-size: 17px;
+.brand-block img {
+  display: block;
+  width: 174px;
+  max-width: 100%;
+  height: auto;
 }
 
 .brand-block span,
@@ -163,10 +165,17 @@ main {
   justify-content: center;
   width: 42px;
   height: 42px;
-  border: 1px solid #2f7656;
-  border-radius: 8px;
-  background: rgba(35, 196, 131, 0.12);
+  border: 1px solid #294838;
+  border-radius: 12px;
+  background: #050706;
   color: #23c483;
+  overflow: hidden;
+}
+
+.login-mark img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
 }
 
 .login-card h1 {
