@@ -112,6 +112,9 @@ export async function sessionRoutes(app: FastifyInstance) {
       [auth.tenantId, moduleCode]
     );
     if (!current.rows[0]) return null;
+    if (moduleCode === "orb_max_options" && auth.tenantId) {
+      await reconcileOrbSessionWindow(current.rows[0].id, auth.tenantId);
+    }
     return moduleCode === "orb_max_options"
       ? updateSessionState(current.rows[0].id)
       : updateGenericModuleSessionState(current.rows[0].id);
@@ -333,6 +336,48 @@ async function updateSessionState(sessionId: string) {
 
   const updated = await query("UPDATE trading_sessions SET state = $2 WHERE id = $1 RETURNING *", [sessionId, state]);
   return { ...updated.rows[0], opening_range: session.opening_range };
+}
+
+async function reconcileOrbSessionWindow(sessionId: string, tenantId: string) {
+  const settings = await getRuntimeSettings(tenantId);
+  const result = await query(
+    `SELECT id, session_date, session_start_at, opening_range_end_at, signal_window_end_at, state
+     FROM trading_sessions
+     WHERE id = $1
+       AND tenant_id = $2
+       AND module_code = 'orb_max_options'`,
+    [sessionId, tenantId]
+  );
+  const session = result.rows[0] as any;
+  if (!session) return;
+  if (["TRADE_CLOSED", "SESSION_COMPLETED"].includes(session.state)) return;
+
+  const times = sessionTimesForDate(session.session_date, settings.orb.sessionStart, settings.orb.openingRangeMinutes, settings.orb.tradeWindowEnd);
+  const sameWindow =
+    sameInstant(session.session_start_at, times.sessionStartAt) &&
+    sameInstant(session.opening_range_end_at, times.openingRangeEndAt) &&
+    sameInstant(session.signal_window_end_at, times.signalWindowEndAt);
+  if (sameWindow) return;
+
+  await query(
+    `UPDATE trading_sessions
+     SET session_start_at = $2,
+         opening_range_end_at = $3,
+         signal_window_end_at = $4,
+         session_preset = 'NY_0915',
+         state = CASE
+           WHEN state IN ('TRADE_PLANNED', 'TRADE_ACTIVE') THEN state
+           ELSE 'OPENING_RANGE_LOCKED'
+         END,
+         data_status = 'PENDING'
+     WHERE id = $1`,
+    [sessionId, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt]
+  );
+  await query("DELETE FROM opening_ranges WHERE session_id = $1", [sessionId]);
+}
+
+function sameInstant(left: string, right: string) {
+  return Math.abs(new Date(left).getTime() - new Date(right).getTime()) < 1000;
 }
 
 async function updateGenericModuleSessionState(sessionId: string) {
