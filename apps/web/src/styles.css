@@ -1271,6 +1271,32 @@ button:hover,
   line-height: 1.4;
 }
 
+.mfa-qr-wrap {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(47, 230, 168, 0.24);
+  border-radius: 8px;
+  background: rgba(47, 230, 168, 0.06);
+}
+
+.mfa-qr-wrap.compact {
+  align-self: start;
+  max-width: 260px;
+}
+
+.mfa-qr-wrap img {
+  width: 220px;
+  height: 220px;
+  border-radius: 8px;
+}
+
+.mfa-qr-wrap span {
+  color: #edf4ef;
+  font-weight: 800;
+}
+
 .admin-list {
   display: grid;
   gap: 7px;

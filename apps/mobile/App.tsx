@@ -5,6 +5,7 @@ import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import React, { Component, ReactNode, useEffect, useMemo, useState } from "react";
+import QRCode from "react-native-qrcode-svg";
 import {
   ActivityIndicator,
   Alert,
@@ -1353,6 +1354,10 @@ function MoreScreen({
           ) : null}
           {mfaSetup ? (
             <>
+              <View style={styles.mfaQrCard}>
+                <QRCode value={mfaSetup.otpAuthUrl} size={210} backgroundColor="#f4f7f4" color="#07100c" />
+                <Text style={styles.mfaQrText}>Scan with Google Authenticator</Text>
+              </View>
               <Text style={styles.tokenLabel}>Secret</Text>
               <Text style={styles.tokenValue} selectable>{mfaSetup.secret}</Text>
               <Text style={styles.tokenLabel}>Authenticator URL</Text>
@@ -2622,6 +2627,16 @@ const styles = StyleSheet.create({
   },
   moreBackText: { color: "#f4f7f4", fontSize: 22, fontWeight: "900" },
   moreHeaderTitle: { color: "#f4f7f4", fontSize: 21, fontWeight: "900", flex: 1 },
+  mfaQrCard: {
+    alignSelf: "center",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#f4f7f4",
+    borderRadius: 18,
+    padding: 14,
+    marginVertical: 10
+  },
+  mfaQrText: { color: "#07100c", fontSize: 12, fontWeight: "900" },
   pushToggleRow: {
     minHeight: 78,
     flexDirection: "row",

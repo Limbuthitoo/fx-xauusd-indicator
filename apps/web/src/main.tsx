@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import QRCode from "qrcode";
 import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
 import { API_BASE_URL, api, clearAuthToken, setAuthToken } from "./shared/api";
@@ -1515,6 +1516,7 @@ function RequiredMfaSetupScreen({
   logout: () => void;
 }) {
   const [setup, setSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1523,7 +1525,9 @@ function RequiredMfaSetupScreen({
     setError("");
     setLoading(true);
     try {
-      setSetup(await onStart());
+      const next = await onStart();
+      setSetup(next);
+      setQrDataUrl(await QRCode.toDataURL(next.otpAuthUrl, { margin: 1, width: 220, color: { dark: "#07100c", light: "#f4f7f4" } }));
     } catch (error) {
       setError((error as Error).message || "Could not start two-factor setup.");
     } finally {
@@ -1555,6 +1559,12 @@ function RequiredMfaSetupScreen({
           <button type="button" className="wide" disabled={loading} onClick={start}>{loading ? "Starting..." : "Start Setup"}</button>
         ) : (
           <>
+            {qrDataUrl ? (
+              <div className="mfa-qr-wrap">
+                <img src={qrDataUrl} alt="Scan this QR code in your authenticator app" />
+                <span>Scan with Google Authenticator</span>
+              </div>
+            ) : null}
             <label>
               Secret
               <input readOnly value={setup.secret} onFocus={(event) => event.currentTarget.select()} />
@@ -5950,6 +5960,7 @@ function MfaSettingsPanel({
   onDisable: (otp: string) => Promise<void>;
 }) {
   const [setup, setSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [otp, setOtp] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -5958,7 +5969,9 @@ function MfaSettingsPanel({
     setBusy(true);
     setMessage("");
     try {
-      setSetup(await onStart());
+      const next = await onStart();
+      setSetup(next);
+      setQrDataUrl(await QRCode.toDataURL(next.otpAuthUrl, { margin: 1, width: 220, color: { dark: "#07100c", light: "#f4f7f4" } }));
       setMessage("Add the secret to your authenticator app, then verify the 6-digit code.");
     } catch (error) {
       setMessage((error as Error).message);
@@ -6003,6 +6016,12 @@ function MfaSettingsPanel({
       <span>{user.mfaEnabled ? "Enabled. Login requires a 6-digit authenticator code." : "Not enabled. Add an authenticator app for stronger account security."}</span>
       {setup ? (
         <>
+          {qrDataUrl ? (
+            <div className="mfa-qr-wrap compact">
+              <img src={qrDataUrl} alt="Scan this QR code in your authenticator app" />
+              <span>Scan with Google Authenticator</span>
+            </div>
+          ) : null}
           <label>Secret<input readOnly value={setup.secret} onFocus={(event) => event.currentTarget.select()} /></label>
           <label>Authenticator URL<textarea readOnly value={setup.otpAuthUrl} onFocus={(event) => event.currentTarget.select()} /></label>
         </>
