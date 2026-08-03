@@ -43,7 +43,7 @@ const defaults: RuntimeSettings = {
     pollSeconds: Math.max(config.twelveDataPollSeconds, 60),
     rawCandleStorage: true,
     cacheDays: 7,
-    startupBackfillCount: 100,
+    startupBackfillCount: 300,
     livePollCount: 2
   }
 };

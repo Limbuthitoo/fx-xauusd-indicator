@@ -532,10 +532,10 @@ function App() {
   }
 
   async function runModule3Backfill() {
-    const feedSettings = settingValue<any>(state.settings, "feed.provider", { startupBackfillCount: 100 });
+    const feedSettings = settingValue<any>(state.settings, "feed.provider", { startupBackfillCount: 300 });
     const result = await api<any>("/api/module3/data-readiness/backfill", {
       method: "POST",
-      body: JSON.stringify({ count: feedSettings.startupBackfillCount ?? 100 })
+      body: JSON.stringify({ count: feedSettings.startupBackfillCount ?? 300 })
     });
     setState((previous) => ({ ...previous, module3DataReadiness: result.after }));
     setMessage(`Module 3 backfill complete: 1 Twelve Data call requested ${result.requestedCount} candles.`);
@@ -6348,7 +6348,7 @@ function SettingControl({ setting, onUpdate }: { setting: any; onUpdate: (key: s
             <label>Provider symbol<input value={draft?.providerSymbol ?? "XAU/USD"} onChange={(event) => setDraft({ ...draft, providerSymbol: event.target.value })} /></label>
             <label>Poll seconds<input type="number" min="60" max="3600" value={draft?.pollSeconds ?? 60} onChange={(event) => setDraft({ ...draft, pollSeconds: Number(event.target.value) })} /></label>
             <label>Cache days<input type="number" min="1" max="30" value={draft?.cacheDays ?? 7} onChange={(event) => setDraft({ ...draft, cacheDays: Number(event.target.value) })} /></label>
-            <label>Startup candles<input type="number" min="1" max="5000" value={draft?.startupBackfillCount ?? 100} onChange={(event) => setDraft({ ...draft, startupBackfillCount: Number(event.target.value) })} /></label>
+            <label>Startup candles<input type="number" min="1" max="5000" value={draft?.startupBackfillCount ?? 300} onChange={(event) => setDraft({ ...draft, startupBackfillCount: Number(event.target.value) })} /></label>
             <label>Live poll candles<input type="number" min="1" max="100" value={draft?.livePollCount ?? 2} onChange={(event) => setDraft({ ...draft, livePollCount: Number(event.target.value) })} /></label>
             <label><input type="checkbox" checked={Boolean(draft?.rawCandleStorage)} onChange={(event) => setDraft({ ...draft, rawCandleStorage: event.target.checked })} /> Store raw Twelve Data candles</label>
           </div>

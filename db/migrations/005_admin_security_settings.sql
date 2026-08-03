@@ -119,6 +119,6 @@ VALUES
   ('trading.timeframeMinutes', '5'::jsonb, 'Trading', 'Signal candle timeframe in minutes.'),
   ('trading.paperTrading', '{"enabled":true,"brokerExecution":false}'::jsonb, 'Trading', 'Paper trading and broker execution mode.'),
   ('orb.session', '{"timezone":"America/New_York","sessionStart":"09:30","tradeWindowEnd":"11:30","apiStartLeadMinutes":15}'::jsonb, 'ORB', 'New York ORB session schedule.'),
-  ('feed.provider', '{"name":"TWELVE_DATA","rawCandleStorage":true,"cacheDays":7}'::jsonb, 'Feed', 'Market data provider and storage behavior.'),
+  ('feed.provider', '{"name":"TWELVE_DATA","rawCandleStorage":true,"cacheDays":7,"startupBackfillCount":300,"livePollCount":2}'::jsonb, 'Feed', 'Market data provider and storage behavior.'),
   ('notifications.browser', '{"enabled":true}'::jsonb, 'Notifications', 'Browser notification preference.')
 ON CONFLICT (key) DO NOTHING;

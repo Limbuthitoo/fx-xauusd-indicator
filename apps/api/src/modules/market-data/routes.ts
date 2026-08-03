@@ -141,7 +141,7 @@ const AUTO_API_START_LEAD_MINUTES = 15;
 const DEFAULT_TENANT_SLUG = "default-orb-tenant";
 const PERSIST_TWELVE_DATA_CANDLES = true;
 const LIVE_CANDLE_CACHE_DAYS = 7;
-const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 100;
+const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 300;
 const TWELVE_DATA_LIVE_POLL_COUNT = 2;
 const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
@@ -413,7 +413,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
     const session = await requireTenantModule(request, "orb_max_options");
     const settings = await getRuntimeSettings(session.tenantId);
     const body = request.body as { count?: number };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? 100), 20), 100);
+    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 20), 5000);
     const before = await buildOrbDataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays, settings);
     const result = await syncTwelveDataCandles({
       symbol: settings.symbol,
@@ -515,7 +515,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
     const session = await requireTenantModule(request, "high_probability_strategy_2");
     const settings = await getRuntimeSettings(session.tenantId);
     const body = request.body as { count?: number; persist?: boolean };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? 100), 20), 100);
+    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 20), 5000);
     const before = await buildModule2DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
     const result = await syncTwelveDataCandles({
       symbol: settings.symbol,
@@ -552,7 +552,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
     const session = await requireTenantModule(request, "strategy_lab_3");
     const settings = await getRuntimeSettings(session.tenantId);
     const body = request.body as { count?: number };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? 100), 25), 100);
+    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 25), 5000);
     const before = await buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
     const result = await syncTwelveDataCandles({
       symbol: settings.symbol,
