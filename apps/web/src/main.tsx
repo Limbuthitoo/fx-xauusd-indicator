@@ -3221,7 +3221,7 @@ function ProductionHealthDashboard({
           <Metric label="Feed provider" value={feedProviderLabel(state.feedStatus?.provider)} />
           <Metric label="Twelve Data" value={state.twelveStatus?.configured === false ? "API KEY MISSING" : state.twelveStatus?.running ? "RUNNING" : "STOPPED"} />
           <Metric label="PostgreSQL" value={postgresHealthLabel(state)} />
-          <Metric label="Memory cache" value={`${state.cacheStatus?.cachedCandles ?? state.twelveStatus?.cachedCandles ?? 0}/${state.cacheStatus?.cacheLimit ?? "--"}`} />
+          <Metric label="Candle store" value={`${state.cacheStatus?.cachedCandles ?? state.twelveStatus?.cachedCandles ?? 0}/${state.cacheStatus?.cacheLimit ?? "--"}`} />
           <Metric label="Latest candle" value={formatNepalTime(latestCandle?.timestampUtc)} />
           <Metric label="Scheduler" value={state.automationStatus?.phase ?? state.session?.state ?? "WAITING"} />
           <Metric label="Twelve usage" value={`${state.productionReadiness?.data?.twelveData?.usedToday ?? state.platformUsage?.creditsUsedToday ?? 0}/800`} />
@@ -5837,7 +5837,7 @@ function DataAdminPanel({ state, refresh, runCacheBacktest, clearLiveCache, clea
     <Panel icon={<Database />} title="Data Admin">
       <Metric label="Twelve Data" value={state.twelveStatus?.configured === false ? "API KEY MISSING" : state.twelveStatus?.running ? "RUNNING" : "STOPPED"} />
       <Metric label="Raw DB candles" value={state.twelveStatus?.persistRawCandles === false ? "OFF" : "ON"} />
-      <Metric label="Memory cache" value={`${state.cacheStatus?.cachedCandles ?? state.twelveStatus?.cachedCandles ?? 0}/${state.cacheStatus?.cacheLimit ?? "--"}`} />
+      <Metric label="Candle store" value={`${state.cacheStatus?.cachedCandles ?? state.twelveStatus?.cachedCandles ?? 0}/${state.cacheStatus?.cacheLimit ?? "--"}`} />
       <Metric label="Cache retention" value={state.cacheStatus?.cacheDays ? `${state.cacheStatus.cacheDays} days` : "--"} />
       <Metric label="Startup request" value={`${state.twelveStatus?.startupBackfillCount ?? "--"} candles`} />
       <Metric label="Minute request" value={`${state.twelveStatus?.livePollCount ?? "--"} candles`} />

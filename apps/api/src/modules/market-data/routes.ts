@@ -314,6 +314,11 @@ export async function marketDataRoutes(app: FastifyInstance) {
 
   app.get("/api/market-data/twelve-data/live/status", async () => {
     const settings = await refreshRuntimeSettings();
+    const postgresCount = await query(
+      "SELECT count(*)::int AS count FROM candles WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'",
+      [twelveDataState.symbol, twelveDataState.timeframeMinutes]
+    ).catch(() => ({ rows: [{ count: 0 }] }));
+    const memoryCandles = getCachedCandles(twelveDataState.symbol, twelveDataState.timeframeMinutes).length;
     return {
       ...twelveDataState,
       configured: Boolean(config.twelveDataApiKey),
@@ -321,7 +326,9 @@ export async function marketDataRoutes(app: FastifyInstance) {
       livePollCount: settings.feed.livePollCount,
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
-      cachedCandles: getCachedCandles(twelveDataState.symbol, twelveDataState.timeframeMinutes).length
+      memoryCandles,
+      postgresCandles: Number(postgresCount.rows[0]?.count ?? 0),
+      cachedCandles: memoryCandles + Number(postgresCount.rows[0]?.count ?? 0)
     };
   });
 
@@ -332,15 +339,39 @@ export async function marketDataRoutes(app: FastifyInstance) {
     const timeframe = Number(search.timeframeMinutes ?? settings.timeframeMinutes);
     const limit = Math.min(Number(search.limit ?? liveCandleCacheLimit(timeframe)), liveCandleCacheLimit(timeframe));
     const cached = getCachedCandles(symbol, timeframe);
+    const postgresRows = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread, source, created_at
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND source LIKE 'TWELVE_DATA%'
+       ORDER BY timestamp_utc DESC
+       LIMIT $3`,
+      [symbol, timeframe, limit]
+    ).catch(() => ({ rows: [] as any[] }));
+    const postgresCandles = postgresRows.rows.reverse().map((row: any) => ({
+      timestampUtc: row.timestamp_utc,
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: row.volume == null ? null : Number(row.volume),
+      spread: row.spread == null ? null : Number(row.spread),
+      source: row.source,
+      receivedAt: row.created_at
+    }));
+    const candles = normalizeLiveCandles([...postgresCandles, ...cached]).slice(-limit);
     return {
       symbol,
       timeframeMinutes: timeframe,
       cacheDays: settings.feed.cacheDays,
       cacheLimit: liveCandleCacheLimit(timeframe),
-      cachedCandles: cached.length,
+      memoryCandles: cached.length,
+      postgresCandles: Number(postgresRows.rows.length ?? 0),
+      cachedCandles: candles.length,
       persistRawCandles: settings.feed.rawCandleStorage,
-      latestCandle: cached.at(-1) ?? null,
-      candles: cached.slice(-limit)
+      latestCandle: candles.at(-1) ?? null,
+      candles
     };
   });
 
@@ -2106,6 +2137,14 @@ function liveCandleCacheLimit(timeframe: number) {
 
 export function getCachedCandles(symbol: string, timeframe: number) {
   return liveCandleCache.get(cacheKey(symbol, timeframe)) ?? [];
+}
+
+function normalizeLiveCandles(candles: LiveCandle[]) {
+  const byTime = new Map<string, LiveCandle>();
+  for (const candle of candles) {
+    byTime.set(candle.timestampUtc, candle);
+  }
+  return [...byTime.values()].sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
 }
 
 async function refreshDerivedCandles(symbol: string, sourceTimeframe: number, targetTimeframes: number[]) {
