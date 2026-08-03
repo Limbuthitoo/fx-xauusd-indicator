@@ -112,6 +112,72 @@ export async function sessionRoutes(app: FastifyInstance) {
     return updateSessionState(current.rows[0].id);
   });
 
+  app.get("/api/sessions/current/orb-range-audit", async (request) => {
+    const auth = await requireTenantModule(request, "orb_max_options");
+    const settings = await getRuntimeSettings(auth.tenantId);
+    const current = await query(
+      `SELECT ts.*, row_to_json(orr.*) AS opening_range
+       FROM trading_sessions ts
+       LEFT JOIN opening_ranges orr ON orr.session_id = ts.id
+       WHERE ts.tenant_id = $1
+         AND ts.module_code = 'orb_max_options'
+       ORDER BY ts.created_at DESC
+       LIMIT 1`,
+      [auth.tenantId]
+    );
+    const session = current.rows[0] as any;
+    if (!session) return { status: "NO_SESSION", reason: "No Module 1 ORB session exists yet." };
+
+    const timeframe = Number(settings.timeframeMinutes);
+    const expectedCount = Math.ceil(Number(settings.orb.openingRangeMinutes) / timeframe);
+    const candlesResult = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread, source
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND timestamp_utc >= $3
+         AND timestamp_utc < $4
+       ORDER BY timestamp_utc ASC`,
+      [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
+    );
+    const candles: Candle[] = candlesResult.rows.map((row: any) => ({
+      timestampUtc: row.timestamp_utc,
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: row.volume == null ? null : Number(row.volume),
+      spread: row.spread == null ? null : Number(row.spread)
+    }));
+    const recalculated = buildOpeningRange(candles, 0.01, expectedCount);
+    return {
+      status: recalculated.status,
+      symbol: session.symbol,
+      provider: "TWELVE_DATA",
+      sourceTimeframeMinutes: timeframe,
+      openingRangeMinutes: Number(settings.orb.openingRangeMinutes),
+      expectedSourceCandles: expectedCount,
+      sessionStartAt: session.session_start_at,
+      openingRangeEndAt: session.opening_range_end_at,
+      sessionStartNepal: formatInTimezone(session.session_start_at, "Asia/Kathmandu"),
+      openingRangeEndNepal: formatInTimezone(session.opening_range_end_at, "Asia/Kathmandu"),
+      sessionStartNewYork: formatInTimezone(session.session_start_at, "America/New_York"),
+      openingRangeEndNewYork: formatInTimezone(session.opening_range_end_at, "America/New_York"),
+      savedOpeningRange: session.opening_range ?? null,
+      recalculatedOpeningRange: recalculated,
+      candles: candlesResult.rows.map((row: any) => ({
+        timestampUtc: row.timestamp_utc,
+        nepalTime: formatInTimezone(row.timestamp_utc, "Asia/Kathmandu"),
+        newYorkTime: formatInTimezone(row.timestamp_utc, "America/New_York"),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        source: row.source ?? null
+      }))
+    };
+  });
+
   app.get("/api/sessions/:id/readiness", async (request) => {
     await requireTenantModule(request, "orb_max_options");
     const { id } = request.params as { id: string };
@@ -262,4 +328,17 @@ async function updateSessionState(sessionId: string) {
 
   const updated = await query("UPDATE trading_sessions SET state = $2 WHERE id = $1 RETURNING *", [sessionId, state]);
   return { ...updated.rows[0], opening_range: session.opening_range };
+}
+
+function formatInTimezone(value: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(value));
 }

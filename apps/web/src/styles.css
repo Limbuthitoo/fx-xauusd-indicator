@@ -947,6 +947,52 @@ button:hover,
   word-break: break-word;
 }
 
+.mini-audit-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #202820;
+}
+
+.mini-audit-row,
+.orb-source-candles div {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.55fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mini-audit-row span,
+.orb-source-candles span {
+  color: #8d9a92;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.mini-audit-row strong,
+.orb-source-candles strong {
+  min-width: 0;
+  color: #edf4ef;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.orb-source-candles {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  padding: 8px;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: rgba(16, 22, 18, 0.72);
+}
+
 .reason {
   color: #b6c3bb;
   font-size: 13px;

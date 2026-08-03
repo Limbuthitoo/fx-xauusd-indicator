@@ -45,6 +45,7 @@ type PanelState = {
   monthlyReport?: any[];
   latestBacktest?: any;
   orbDataReadiness?: any;
+  orbRangeAudit?: any;
   orbRehearsals?: any[];
   module2JournalTrades?: any[];
   module2Audit?: any;
@@ -1165,6 +1166,33 @@ function App() {
               <Metric label="High" value={orb?.high ?? "--"} />
               <Metric label="Midpoint" value={orb?.midpoint ?? "--"} />
               <Metric label="Low" value={orb?.low ?? "--"} />
+              {state.orbRangeAudit ? (
+                <div className="mini-audit-list">
+                  <div className="mini-audit-row">
+                    <span>Range window</span>
+                    <strong>{state.orbRangeAudit.sessionStartNepal ?? "--"} - {state.orbRangeAudit.openingRangeEndNepal ?? "--"} NPT</strong>
+                  </div>
+                  <div className="mini-audit-row">
+                    <span>Source candles</span>
+                    <strong>{state.orbRangeAudit.candles?.length ?? 0}/{state.orbRangeAudit.expectedSourceCandles ?? "--"} x {state.orbRangeAudit.sourceTimeframeMinutes ?? "--"}M</strong>
+                  </div>
+                  <div className="mini-audit-row">
+                    <span>Recalculated</span>
+                    <strong>
+                      H {formatPriceValue(state.orbRangeAudit.recalculatedOpeningRange?.high)} / L {formatPriceValue(state.orbRangeAudit.recalculatedOpeningRange?.low)}
+                    </strong>
+                  </div>
+                  <div className="orb-source-candles">
+                    {(state.orbRangeAudit.candles ?? []).map((candle: any) => (
+                      <div key={candle.timestampUtc}>
+                        <span>{candle.nepalTime}</span>
+                        <strong>H {formatPriceValue(candle.high)} / L {formatPriceValue(candle.low)}</strong>
+                      </div>
+                    ))}
+                    {(state.orbRangeAudit.candles ?? []).length === 0 ? <p className="reason">No saved source candles found for the ORB window yet.</p> : null}
+                  </div>
+                </div>
+              ) : null}
             </Panel>
           </section>
         ) : null}
@@ -7078,6 +7106,11 @@ function formatPercent(value: unknown) {
 
 function formatCurrency(value: unknown) {
   return `$${Number(value ?? 0).toFixed(2)}`;
+}
+
+function formatPriceValue(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(3) : "--";
 }
 
 function formatR(value: unknown) {
