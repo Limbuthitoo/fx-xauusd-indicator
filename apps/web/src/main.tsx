@@ -6408,7 +6408,7 @@ function SettingControl({ setting, onUpdate }: { setting: any; onUpdate: (key: s
         ) : null}
         {setting.key === "orb.session" ? (
           <div className="setting-fields">
-            <label>Session start<input type="time" value={draft?.sessionStart ?? "09:30"} onChange={(event) => setDraft({ ...draft, sessionStart: event.target.value })} /></label>
+            <label>Session start<input type="time" value={draft?.sessionStart ?? "09:15"} onChange={(event) => setDraft({ ...draft, sessionStart: event.target.value })} /></label>
             <label>Trade window end<input type="time" value={draft?.tradeWindowEnd ?? "16:00"} onChange={(event) => setDraft({ ...draft, tradeWindowEnd: event.target.value })} /></label>
             <label>Opening range<input type="number" min="1" max="240" value={draft?.openingRangeMinutes ?? 15} onChange={(event) => setDraft({ ...draft, openingRangeMinutes: Number(event.target.value) })} /></label>
             <label>API lead minutes<input type="number" min="1" max="240" value={draft?.apiStartLeadMinutes ?? 15} onChange={(event) => setDraft({ ...draft, apiStartLeadMinutes: Number(event.target.value) })} /></label>

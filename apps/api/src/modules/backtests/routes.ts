@@ -745,7 +745,7 @@ function runMemoryCacheBacktest(input: {
           symbol: input.symbol,
           strategyVersionId: input.strategyVersionId,
           sessionDate,
-          sessionPreset: "NY_0930",
+          sessionPreset: "NY_0915",
           state: "WAITING_FOR_SETUP",
           sessionStartAt: times.sessionStartAt,
           openingRangeEndAt: times.openingRangeEndAt,

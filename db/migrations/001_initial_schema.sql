@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS user_preferences (
   user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   selected_symbol TEXT NOT NULL DEFAULT 'XAUUSD',
-  selected_session_preset TEXT NOT NULL DEFAULT 'NY_0930',
+  selected_session_preset TEXT NOT NULL DEFAULT 'NY_0915',
   selected_strategy_version_id UUID,
   account_currency TEXT NOT NULL DEFAULT 'USD',
   timezone TEXT NOT NULL DEFAULT 'Asia/Kathmandu',

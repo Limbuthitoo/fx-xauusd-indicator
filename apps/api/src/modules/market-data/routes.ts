@@ -1510,7 +1510,7 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     ? String(moduleConfig.newYorkEndTime ?? "16:00")
     : settings.orb.tradeWindowEnd;
   const openingRangeMinutes = moduleUsesStrategyWindow ? 0 : settings.orb.openingRangeMinutes;
-  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : moduleCode === "strategy_lab_3" ? "NY_VWAP_DRIVE" : "NY_0930";
+  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : moduleCode === "strategy_lab_3" ? "NY_VWAP_DRIVE" : "NY_0915";
   const versionResult = await query(
     `SELECT *
      FROM strategy_versions

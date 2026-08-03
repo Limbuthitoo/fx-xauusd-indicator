@@ -37,7 +37,7 @@ export async function sessionRoutes(app: FastifyInstance) {
        WHERE symbol = $1 AND strategy_version_id = $2 AND session_date = $3 AND session_preset = $4 AND tenant_id = $5 AND module_code = 'orb_max_options'
        ORDER BY created_at DESC
        LIMIT 1`,
-      [symbol, version.id, sessionDate, body.preset ?? "NY_0930", auth.tenantId]
+      [symbol, version.id, sessionDate, body.preset ?? "NY_0915", auth.tenantId]
     );
     if (existing.rows[0]) {
       await ensureReadiness(existing.rows[0].id);
@@ -50,7 +50,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       ) VALUES (
         $8, 'orb_max_options', (SELECT id FROM users WHERE tenant_id = $8 LIMIT 1), $1, $2, $3, $4, 'PRE_SESSION', $5, $6, $7
       ) RETURNING *`,
-      [symbol, version.id, sessionDate, body.preset ?? "NY_0930", times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, auth.tenantId]
+      [symbol, version.id, sessionDate, body.preset ?? "NY_0915", times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, auth.tenantId]
     );
     await ensureReadiness(rows[0].id);
     return rows[0];
@@ -65,7 +65,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     const times = sessionTimesForDate(sessionDate, settings.orb.sessionStart, settings.orb.openingRangeMinutes, settings.orb.tradeWindowEnd);
     const existing = await query(
       `SELECT * FROM trading_sessions
-       WHERE symbol = $3 AND strategy_version_id = $1 AND session_date = $2 AND session_preset = 'NY_0930' AND tenant_id = $4 AND module_code = 'orb_max_options'
+       WHERE symbol = $3 AND strategy_version_id = $1 AND session_date = $2 AND session_preset = 'NY_0915' AND tenant_id = $4 AND module_code = 'orb_max_options'
        ORDER BY created_at DESC
        LIMIT 1`,
       [version.id, sessionDate, settings.symbol, auth.tenantId]
@@ -79,7 +79,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         tenant_id, module_code, user_id, symbol, strategy_version_id, session_date, session_preset, state,
         session_start_at, opening_range_end_at, signal_window_end_at
       ) VALUES (
-        $7, 'orb_max_options', (SELECT id FROM users WHERE tenant_id = $7 LIMIT 1), $1, $2, $3, 'NY_0930', 'PRE_SESSION', $4, $5, $6
+        $7, 'orb_max_options', (SELECT id FROM users WHERE tenant_id = $7 LIMIT 1), $1, $2, $3, 'NY_0915', 'PRE_SESSION', $4, $5, $6
       ) RETURNING *`,
       [settings.symbol, version.id, sessionDate, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, auth.tenantId]
     );

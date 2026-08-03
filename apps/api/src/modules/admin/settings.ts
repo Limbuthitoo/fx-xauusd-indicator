@@ -32,7 +32,7 @@ const defaults: RuntimeSettings = {
   brokerExecution: false,
   orb: {
     timezone: "America/New_York",
-    sessionStart: "09:30",
+    sessionStart: "09:15",
     tradeWindowEnd: "16:00",
     openingRangeMinutes: 15,
     apiStartLeadMinutes: 15

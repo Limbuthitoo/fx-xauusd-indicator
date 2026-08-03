@@ -1418,7 +1418,7 @@ async function ensureTodaySession(tenantId: string | null) {
      WHERE ts.symbol = 'XAUUSD'
        AND ts.strategy_version_id = $1
        AND ts.session_date = $2
-       AND ts.session_preset = 'NY_0930'
+       AND ts.session_preset = 'NY_0915'
        AND ts.tenant_id = $3
      ORDER BY ts.created_at DESC
      LIMIT 1`,
@@ -1431,7 +1431,7 @@ async function ensureTodaySession(tenantId: string | null) {
       tenant_id, user_id, symbol, strategy_version_id, session_date, session_preset, state,
       session_start_at, opening_range_end_at, signal_window_end_at
     ) VALUES (
-      $6, (SELECT id FROM users WHERE tenant_id = $6 LIMIT 1), 'XAUUSD', $1, $2, 'NY_0930', 'PRE_SESSION', $3, $4, $5
+      $6, (SELECT id FROM users WHERE tenant_id = $6 LIMIT 1), 'XAUUSD', $1, $2, 'NY_0915', 'PRE_SESSION', $3, $4, $5
     ) RETURNING *`,
     [version.id, sessionDate, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, tenantId]
   );
