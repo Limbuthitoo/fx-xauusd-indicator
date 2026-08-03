@@ -86,6 +86,7 @@ export type TwelveDataChartProps = {
   moduleName?: string;
   session?: {
     session_start_at?: string | null;
+    opening_range_end_at?: string | null;
     signal_window_end_at?: string | null;
   } | null;
   openingRange?: {
@@ -149,6 +150,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [feedStatus, setFeedStatus] = useState<FeedStatus | null>(null);
   const [socketStatus, setSocketStatus] = useState("CONNECTING");
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
+  const effectiveOpeningRange = useMemo(
+    () => moduleCode === "orb_max_options" ? openingRangeWithCandleFallback(openingRange, candles, session) : openingRange,
+    [moduleCode, openingRange, candles, session]
+  );
 
   async function loadChartData() {
     const chartSync = await ensureChartSync().catch(() => null);
@@ -347,9 +352,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     priceLinesRef.current.forEach((line) => candleSeriesRef.current?.removePriceLine(line as never));
     priceLinesRef.current = [];
     const defaultLines = [
-      { title: "15M ORB High", price: numberValue(openingRange?.high), color: "#1f7a8c" },
-      { title: "15M ORB Mid", price: numberValue(openingRange?.midpoint), color: "#f0b429" },
-      { title: "15M ORB Low", price: numberValue(openingRange?.low), color: "#e05252" },
+      { title: "15M ORB High", price: numberValue(effectiveOpeningRange?.high), color: "#1f7a8c" },
+      { title: "15M ORB Mid", price: numberValue(effectiveOpeningRange?.midpoint), color: "#f0b429" },
+      { title: "15M ORB Low", price: numberValue(effectiveOpeningRange?.low), color: "#e05252" },
       { title: "Entry", price: numberValue(activeSetup?.entry_price), color: "#16a46c" },
       { title: "Stop", price: numberValue(activeSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeSetup?.target_price), color: "#7c9cff" }
@@ -372,7 +377,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [openingRange, activeSetup, priceLines]);
+  }, [effectiveOpeningRange, activeSetup, priceLines]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -556,6 +561,32 @@ function numberValue(value: unknown) {
   if (value == null || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function openingRangeWithCandleFallback(
+  openingRange: TwelveDataChartProps["openingRange"],
+  candles: TwelveDataCandle[],
+  session: TwelveDataChartProps["session"]
+) {
+  if (numberValue(openingRange?.high) != null && numberValue(openingRange?.low) != null) return openingRange;
+  if (!session?.session_start_at || !session.opening_range_end_at) return openingRange;
+  const start = new Date(session.session_start_at).getTime();
+  const end = new Date(session.opening_range_end_at).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return openingRange;
+  const rangeCandles = normalizeCandles(candles)
+    .filter((candle) => {
+      const time = new Date(candle.timestampUtc).getTime();
+      return time >= start && time < end;
+    })
+    .slice(0, 3);
+  if (rangeCandles.length < 3) return openingRange;
+  const high = Math.max(...rangeCandles.map((candle) => candle.high));
+  const low = Math.min(...rangeCandles.map((candle) => candle.low));
+  return {
+    high,
+    low,
+    midpoint: (high + low) / 2
+  };
 }
 
 function format(value: number | null | undefined) {
