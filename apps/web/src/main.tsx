@@ -985,7 +985,7 @@ function App() {
         <nav>
           {can("dashboard.view") ? <NavButton icon={<ShieldCheck />} label="Command Center" active={activeSection === "command"} onClick={() => setActiveSection("command")} /> : null}
           {can("chart.view") ? <NavButton icon={<LineChart />} label="Live Chart" active={activeSection === "live"} onClick={() => setActiveSection("live")} /> : null}
-          {can("dashboard.view") ? <NavButton icon={<Database />} label="Health" active={activeSection === "health"} onClick={() => setActiveSection("health")} /> : null}
+          {can("dashboard.view") ? <NavButton icon={<Database />} label="System Status" active={activeSection === "health"} onClick={() => setActiveSection("health")} /> : null}
           {can("signals.view") ? <NavButton icon={<Database />} label="Strategy Center" active={activeSection === "orb"} onClick={() => setActiveSection("orb")} /> : null}
           {can("reports.view") ? <NavButton icon={<FileText />} label="Reports" active={activeSection === "reports"} onClick={() => setActiveSection("reports")} /> : null}
           {can("reports.view") ? <NavButton icon={<LineChart />} label="Learning" active={activeSection === "learning"} onClick={() => setActiveSection("learning")} /> : null}
@@ -1019,7 +1019,7 @@ function App() {
           <Status label="Session" value={state.session?.state ?? "AUTO WAITING"} tone={toneFor(state.session?.state)} />
           <Status label="Market Feed" value={state.feedStatus?.live ? "LIVE" : state.feedStatus?.testMode ? "TEST" : state.feedStatus?.latestCandle ? "STALE" : "WAITING"} tone={state.feedStatus?.live ? "good" : "warn"} />
           <Status label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} tone={state.feedStatus?.live ? "good" : "neutral"} />
-          <Status label="Module" value={activeModule?.name ?? "LOCKED"} tone={activeModule ? "good" : "bad"} />
+          <Status label="Module" value={activeModule?.name ?? "No modules assigned"} tone={activeModule ? "good" : "warn"} />
           <Status label="Paper Mode" value="AUTO" tone="good" />
           <Status label="Broker Orders" value="OFF" tone="bad" />
         </section>
@@ -1039,7 +1039,7 @@ function App() {
           </section>
         ) : null}
 
-        {accountLocked && activeSection !== "account" ? (
+        {accountLocked && activeSection !== "account" && activeSection !== "health" ? (
           <section className="admin-page-grid">
             <AccountLockedPanel state={state} subscriptionActive={subscriptionActive} />
           </section>
@@ -1073,7 +1073,7 @@ function App() {
           </section>
         ) : null}
 
-        {activeSection === "health" && !accountLocked ? (
+        {activeSection === "health" ? (
           <section className="admin-page-grid">
             <ProductionHealthDashboard
               state={state}
@@ -3164,7 +3164,8 @@ function ProductionHealthDashboard({
   const readinessChecks = state.productionReadiness?.checks ?? [];
   const blocked = diagnostics.filter((item) => item.tone === "bad").length;
   const warnings = diagnostics.filter((item) => item.tone === "warn").length;
-  const overall = state.productionReadiness?.status ?? (blocked > 0 ? "BLOCKED" : warnings > 0 ? "CAUTION" : "READY");
+  const rawOverall = state.productionReadiness?.status ?? (blocked > 0 ? "BLOCKED" : warnings > 0 ? "CAUTION" : "READY");
+  const overall = rawOverall === "BLOCKED" ? "NEEDS ATTENTION" : rawOverall;
   const chartReason = liveChartDiagnostic(state);
   const latestCandle = state.cacheStatus?.latestCandle ?? state.feedStatus?.latestCandle;
   return (
@@ -3173,7 +3174,7 @@ function ProductionHealthDashboard({
         <div className="strategy-validation-hero">
           <div>
             <span>System status</span>
-            <strong className={overall === "READY" ? "good-text" : overall === "CAUTION" ? "warn-text" : "bad-text"}>{overall}</strong>
+            <strong className={rawOverall === "READY" ? "good-text" : rawOverall === "CAUTION" ? "warn-text" : "bad-text"}>{overall}</strong>
           </div>
           <em>{warnings} warning{warnings === 1 ? "" : "s"} · {blocked} blocker{blocked === 1 ? "" : "s"}</em>
         </div>
@@ -6667,7 +6668,7 @@ function sectionTitle(section: ActiveSection) {
   const titles: Record<ActiveSection, string> = {
     command: "Command Center",
     live: "Live Chart",
-    health: "Health",
+    health: "System Status",
     orb: "Strategy Center",
     reports: "Reports",
     learning: "Learning",
@@ -6683,7 +6684,7 @@ function sectionSubtitle(section: ActiveSection) {
   const subtitles: Record<ActiveSection, string> = {
     command: "One operational view for all enabled XAUUSD strategy modules, paper trades, confidence, and rehearsals.",
     live: "Realtime XAUUSD candles, live indicators, and automatic paper-trade signal state.",
-    health: "Production checks for Twelve Data, PostgreSQL/cache, NY scheduler, chart readiness, and module automation.",
+    health: "Live service checks for Twelve Data, PostgreSQL/cache, NY scheduler, chart readiness, and module automation.",
     orb: "Module-specific setup evidence, generated BUY/SELL records, outcomes, and scenario reasoning.",
     reports: "Weekly, monthly, and scenario performance for the ORB Max options trading logic.",
     learning: "Compare module learning, weak rules, recommendations, and sample readiness.",
