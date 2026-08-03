@@ -5163,12 +5163,12 @@ function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: stri
 
 function Module3RuleAuditPanel({ setup }: { setup?: any }) {
   const evaluations = setup?.module_code === "strategy_lab_3" ? setup?.evaluations ?? [] : [];
-  const hard = evaluations.filter((row: any) => ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE", "QUALITY_RR", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
-  const quality = evaluations.filter((row: any) => ["EMA_ALIGNMENT", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_STOP_SIZE"].includes(row.rule_code ?? row.ruleCode));
+  const gates = evaluations.filter((row: any) => ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE", "QUALITY_RR", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
+  const filters = evaluations.filter((row: any) => ["EMA_ALIGNMENT", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_STOP_SIZE"].includes(row.rule_code ?? row.ruleCode));
   return (
     <Panel icon={<ShieldCheck />} title="Module 3 Rule Audit">
-      <Module2RuleLayer title="Mandatory Rules" rows={hard} empty="No Module 3 mandatory-rule evidence yet." />
-      <Module2RuleLayer title="Quality Filters" rows={quality} empty="No Module 3 quality-filter evidence yet." />
+      <Module2RuleLayer title="Signal Gates" rows={gates} empty="No Module 3 signal-gate evidence yet." />
+      <Module2RuleLayer title="Support Filters" rows={filters} empty="No Module 3 support-filter evidence yet." />
     </Panel>
   );
 }
