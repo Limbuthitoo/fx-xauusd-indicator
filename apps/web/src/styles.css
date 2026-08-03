@@ -385,6 +385,118 @@ h2 {
   line-height: 1.35;
 }
 
+.live-side-hero,
+.live-signal-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(94px, auto);
+  gap: 1px;
+  overflow: hidden;
+  margin-bottom: 10px;
+  border: 1px solid #253027;
+  border-radius: 8px;
+  background: #253027;
+}
+
+.live-side-hero div,
+.live-signal-summary div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  background: #111612;
+}
+
+.live-side-hero > div:last-child,
+.live-signal-summary > em {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  padding: 12px;
+  background: #101612;
+  color: #a9b7ae;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.live-side-hero span,
+.live-signal-summary span,
+.live-evidence-list span,
+.live-check-summary span {
+  color: #8f9d94;
+  font-size: 12px;
+}
+
+.live-side-hero strong,
+.live-signal-summary strong {
+  color: #edf4ef;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.live-side-hero.good,
+.live-signal-summary.good {
+  border-color: #178f64;
+}
+
+.live-side-hero.warn,
+.live-signal-summary.warn {
+  border-color: #9d7419;
+}
+
+.live-side-hero.bad,
+.live-signal-summary.bad {
+  border-color: #9f3e43;
+}
+
+.live-side-metrics,
+.live-trade-plan {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #253027;
+}
+
+.live-side-metrics .metric,
+.live-trade-plan .metric {
+  border: 0;
+  border-radius: 0;
+}
+
+.live-evidence-list,
+.live-check-summary {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.live-evidence-list div,
+.live-check-summary div {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.75fr) minmax(0, 1.25fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.live-evidence-list strong,
+.live-check-summary strong {
+  overflow: hidden;
+  color: #edf4ef;
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .module2-live-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(92px, 0.75fr);

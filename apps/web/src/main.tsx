@@ -1120,26 +1120,17 @@ function App() {
             </section>
 
             <aside className="auto-sidebar">
-              {selectedModuleCode === "high_probability_strategy_2" ? (
-                <>
-                  <Module2LiveControlPanel state={state} setup={currentModuleSetup} trade={currentModuleTrade} tradePlan={currentModuleTradePlan} feedHealth={feedHealth} />
-                  <PaperTradePanel trade={currentModuleTrade} tradePlan={currentModuleTradePlan} setup={currentModuleSetup} />
-                  <Module2LiveEvidencePanel setup={currentModuleSetup} />
-                  <Panel icon={<CheckCircle2 />} title="Rule Checklist">
-                    <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
-                  </Panel>
-                </>
-              ) : (
-                <>
-                  <AutoEnginePanel state={state} setup={currentModuleSetup} activeVersion={activeVersion} feedHealth={feedHealth} message={message} />
-                  <PaperTradePanel trade={currentModuleTrade} tradePlan={currentModuleTradePlan} setup={currentModuleSetup} />
-                  <ScenarioPanel setup={currentModuleSetup} scenarioMatrix={scenarioMatrix} />
-                  {selectedModuleCode === "strategy_lab_3" ? <Module3StrategyValidationPanel setup={currentModuleSetup} evaluations={ruleEvaluations} session={state.session} /> : null}
-                  <Panel icon={<CheckCircle2 />} title="Rule Checklist">
-                    <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
-                  </Panel>
-                </>
-              )}
+              <LiveSystemStatusPanel state={state} moduleCode={selectedModuleCode} setup={currentModuleSetup} trade={currentModuleTrade} feedHealth={feedHealth} />
+              <LiveStrategyCenterPanel
+                moduleCode={selectedModuleCode}
+                moduleName={activeModule?.name}
+                setup={currentModuleSetup}
+                trade={currentModuleTrade}
+                tradePlan={currentModuleTradePlan}
+                evaluations={ruleEvaluations}
+                openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
+                session={state.session}
+              />
             </aside>
           </section>
         ) : null}
@@ -3094,6 +3085,137 @@ function ScenarioPanel({ setup, scenarioMatrix }: { setup?: any; scenarioMatrix:
       </div>
     </Panel>
   );
+}
+
+function LiveSystemStatusPanel({ state, moduleCode, setup, trade, feedHealth }: { state: PanelState; moduleCode: string; setup?: any; trade?: any; feedHealth: string }) {
+  const latestCandle = state.feedStatus?.latestCandle?.timestampUtc ?? state.cacheStatus?.latestCandle?.timestampUtc;
+  const checks = moduleCode === "high_probability_strategy_2" ? state.module2Readiness?.checks ?? [] : [];
+  const module2FeedReady = moduleCode === "high_probability_strategy_2" ? checkStatus(checks, "FIVE_MIN_CANDLES") : null;
+  return (
+    <Panel icon={<Database />} title="System Status">
+      <div className={`live-side-hero ${state.feedStatus?.live ? "good" : state.feedStatus?.latestCandle ? "warn" : "bad"}`}>
+        <div>
+          <span>Feed</span>
+          <strong>{feedHealth}</strong>
+        </div>
+        <div>
+          <span>Paper</span>
+          <strong>{trade?.id ? "ACTIVE" : "READY"}</strong>
+        </div>
+      </div>
+      <div className="live-side-metrics">
+        <Metric label="Module" value={moduleShortName(moduleCode)} />
+        <Metric label="Timing" value={moduleTimingLabel(moduleCode)} />
+        <Metric label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} />
+        <Metric label="Socket" value={state.feedStatus?.live ? "LIVE" : "WAIT"} />
+        <Metric label="NY phase" value={state.automationStatus?.phase ?? state.session?.state ?? "WAITING"} />
+        <Metric label="Latest candle" value={formatNepalTime(latestCandle)} />
+        {module2FeedReady ? <Metric label="M2 5M candles" value={module2FeedReady} /> : null}
+        <Metric label="News" value={state.newsStatus?.status ?? "CLEAR"} />
+      </div>
+      <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid New York session setup."}</p>
+    </Panel>
+  );
+}
+
+function LiveStrategyCenterPanel({
+  moduleCode,
+  moduleName,
+  setup,
+  trade,
+  tradePlan,
+  evaluations,
+  openingRange,
+  session
+}: {
+  moduleCode: string;
+  moduleName?: string;
+  setup?: any;
+  trade?: any;
+  tradePlan?: any;
+  evaluations: any[];
+  openingRange?: any;
+  session?: any;
+}) {
+  const signal = getSignal(setup, trade);
+  const rows = moduleCode === "orb_max_options"
+    ? maxOrbChecklistRows(evaluations, setup, session)
+    : moduleCode === "high_probability_strategy_2"
+      ? liquiditySweepChecklistRows(evaluations, setup)
+      : moduleCode === "strategy_lab_3"
+        ? vwapOpeningDriveChecklistRows(evaluations, setup)
+      : genericModuleChecklistRows(evaluations, setup, moduleCode);
+  const sections = groupedChecklistSections(moduleCode, rows);
+  const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
+  const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
+  const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  return (
+    <Panel icon={<ShieldCheck />} title="Strategy Center">
+      <div className={`live-signal-summary ${signal.tone}`}>
+        <div>
+          <span>{moduleShortName(moduleCode, moduleName)}</span>
+          <strong>{signal.label}</strong>
+        </div>
+        <em>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for valid setup"}</em>
+      </div>
+      <div className="live-trade-plan">
+        <Metric label="Direction" value={trade?.direction ?? setup?.direction ?? "--"} />
+        <Metric label="Entry" value={formatPriceValue(entry)} />
+        <Metric label="Stop" value={formatPriceValue(stop)} />
+        <Metric label="Target" value={formatPriceValue(target)} />
+      </div>
+      <LiveModuleEvidence moduleCode={moduleCode} setup={setup} openingRange={openingRange} />
+      <div className="live-check-summary">
+        {sections.map((section) => (
+          <div key={section.title}>
+            <span>{section.title}</span>
+            <strong>{section.rows.filter((item: any) => item.status === "PASS").length}/{section.rows.length}</strong>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: string; setup?: any; openingRange?: any }) {
+  const flags = setup?.scenario_flags ?? {};
+  if (moduleCode === "orb_max_options") {
+    return (
+      <div className="live-evidence-list">
+        <div><span>ORB High</span><strong>{formatPriceValue(openingRange?.high)}</strong></div>
+        <div><span>ORB Mid</span><strong>{formatPriceValue(openingRange?.midpoint)}</strong></div>
+        <div><span>ORB Low</span><strong>{formatPriceValue(openingRange?.low)}</strong></div>
+      </div>
+    );
+  }
+  if (moduleCode === "high_probability_strategy_2") {
+    const sweep = flags.sweep ?? {};
+    const displacement = flags.displacement ?? {};
+    const bos = flags.bos ?? {};
+    const zone = flags.entryZone ?? {};
+    return (
+      <div className="live-evidence-list">
+        <div><span>Liquidity</span><strong>{sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`}</strong></div>
+        <div><span>Sweep</span><strong>{formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt)}</strong></div>
+        <div><span>Displacement</span><strong>{displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`}</strong></div>
+        <div><span>BOS / CHoCH</span><strong>{bos?.level == null ? "--" : Number(bos.level).toFixed(2)}</strong></div>
+        <div><span>Entry zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
+      </div>
+    );
+  }
+  if (moduleCode === "strategy_lab_3") {
+    const drive = flags.drive ?? {};
+    const zone = flags.entryZone ?? {};
+    return (
+      <div className="live-evidence-list">
+        <div><span>Opening drive</span><strong>{drive?.rangeAtr == null ? "--" : `${Number(drive.rangeAtr).toFixed(2)} ATR`}</strong></div>
+        <div><span>VWAP</span><strong>{flags.vwapAlignment ?? flags.vwapBias ?? "--"}</strong></div>
+        <div><span>Pullback zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
+        <div><span>Confirmation</span><strong>{flags.confirmationCandle?.timestampUtc ? formatNepalTime(flags.confirmationCandle.timestampUtc) : "--"}</strong></div>
+      </div>
+    );
+  }
+  return null;
 }
 
 function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }: { state: PanelState; setup?: any; trade?: any; tradePlan?: any; feedHealth: string }) {
