@@ -1774,13 +1774,13 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
 
 function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LONG" | "SHORT") {
   const passUntil: Record<Module2ReplayCase, string[]> = {
-    BUY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"],
-    SELL: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"],
+    BUY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"],
+    SELL: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"],
     SWEEP_NO_DISPLACEMENT: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED"],
     DISPLACEMENT_NO_BOS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED"],
-    BOS_NO_RETRACE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRM_FRESH_FVG"],
-    INVALIDATED_SETUP: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRM_FRESH_FVG"],
-    LOW_SCORE_NO_TRADE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS"]
+    BOS_NO_RETRACE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    INVALIDATED_SETUP: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    LOW_SCORE_NO_TRADE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS"]
   };
   const labels = [
     ["NY_SESSION_ACTIVE", "New York session active", "Current candle is inside the configured New York sweep window."],
@@ -1789,6 +1789,8 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", "Price swept mapped liquidity and closed back through the level."],
     ["DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, "A strong directional displacement candle formed after the sweep."],
     ["BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed by close", "Candle body closed beyond the selected internal structure point."],
+    ["ENTRY_ZONE_READY", "Fresh entry zone ready", "A fresh FVG/order-block entry zone exists after BOS/CHoCH."],
+    ["ENTRY_ZONE_RETRACE", "Price retraced into entry zone", "Price returned into the fresh entry zone before the confirmation candle."],
     ["CONFIRM_EMA_200", "Confirmation: 200 EMA alignment", "200 EMA confirmation matched."],
     ["CONFIRM_VWAP", "Confirmation: VWAP alignment", "VWAP confirmation matched."],
     ["CONFIRM_FRESH_FVG", "Confirmation: fresh FVG", "Fresh FVG confirmation matched."],
@@ -1801,14 +1803,15 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["QUALITY_RR", "Quality: RR >= 2:1", "Risk-reward quality filter passed."],
     ["QUALITY_STOP_SIZE", "Quality: stop size", "Stop-size quality filter passed."],
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Fresh setup quality filter passed."],
-    ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters matched."]
+    ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters matched."],
+    ["SIGNAL_SCORE", "Minimum signal score", "Final Module 2 signal score reached the configured threshold."]
   ];
   const passed = new Set(passUntil[replayCase]);
   return labels.map(([ruleCode, name, explanation]) => ({
     ruleCode,
     name,
-    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT"].includes(ruleCode) ? "FAIL" : "WAIT",
-    blocking: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT"].includes(ruleCode),
+    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode) ? "FAIL" : "WAIT",
+    blocking: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode),
     source: "MODULE2_REPLAY",
     actualValue: passed.has(ruleCode) ? "matched" : "not matched",
     requiredValue: "matched",
@@ -1841,18 +1844,20 @@ function module2ReplayReasons(replayCase: Module2ReplayCase, score: number) {
 function module2ReplayQaSummary(replay: ReturnType<typeof buildModule2Replay>, testCase: (typeof MODULE2_QA_CASES)[number]) {
   const evaluations = replay.evaluations;
   const statusByRule = new Map(evaluations.map((row) => [row.ruleCode, row.status]));
-  const hardRuleCodes = ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED"];
+  const hardRuleCodes = ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"];
   const hardRulesPassed = hardRuleCodes.every((code) => statusByRule.get(code) === "PASS");
+  const entryTriggerPassed = statusByRule.get("CONFIRM_ENTRY_CANDLE") === "PASS";
   const confirmationCount = ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE"]
     .filter((code) => statusByRule.get(code) === "PASS").length;
   const qualityCount = ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP"]
     .filter((code) => statusByRule.get(code) === "PASS").length;
+  const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
   const paperEligible = replay.status.includes("SETUP READY") && replay.entryPrice != null && replay.stopPrice != null && replay.targetPrice != null;
   const scenarioMatched = replay.scenario === testCase.expected || replay.flags.state === testCase.expected;
   const statusMatched = replay.status === testCase.expectedStatus;
   const paperMatched = paperEligible === testCase.opensPaperTrade;
   const failureRuleMatched = testCase.failureRule ? statusByRule.get(testCase.failureRule) !== "PASS" : true;
-  const validSignalLayersMatched = testCase.opensPaperTrade ? hardRulesPassed && confirmationCount >= 3 && qualityCount >= 3 : true;
+  const validSignalLayersMatched = testCase.opensPaperTrade ? hardRulesPassed && entryTriggerPassed && confirmationCount >= 3 && qualityCount >= 3 && safetyRulesPassed : true;
   const passed = scenarioMatched && statusMatched && paperMatched && failureRuleMatched && validSignalLayersMatched;
   const blockingFailure = evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
   const reasons = [
@@ -1860,13 +1865,15 @@ function module2ReplayQaSummary(replay: ReturnType<typeof buildModule2Replay>, t
     statusMatched ? null : `Expected status ${testCase.expectedStatus}, got ${replay.status}.`,
     paperMatched ? null : `Paper eligibility expected ${testCase.opensPaperTrade}, got ${paperEligible}.`,
     failureRuleMatched ? null : `Expected ${testCase.failureRule} to block or wait.`,
-    validSignalLayersMatched ? null : `Valid signal needs hard rules, 3 confirmations, and 3 quality filters.`
+    validSignalLayersMatched ? null : `Valid signal needs hard rules, entry confirmation, 3 confirmations, 3 quality filters, safety filters, and signal score.`
   ].filter(Boolean);
   return {
     passed,
     hardRulesPassed,
+    entryTriggerPassed,
     confirmationCount,
     qualityCount,
+    safetyRulesPassed,
     paperEligible,
     blockingFailure,
     reason: passed ? "Replay behavior matches Module 2 QA expectation." : reasons.join(" ")

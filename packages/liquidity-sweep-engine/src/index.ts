@@ -211,9 +211,11 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const qualityCount = quality.filter((item) => item.passed).length;
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
 
-  const mandatoryPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
+  const scoreOk = score >= config.minimumSignalScore;
+  push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
+  const mandatoryPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
   flags.levels = levels;
   flags.htfBias = htfBias;
   flags.sweep = sweep;
@@ -223,6 +225,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
   flags.tradeGrade = gradeValue;
+  flags.confidence = score;
   flags.state = mandatoryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
   flags.riskReward = plan.rr;
 

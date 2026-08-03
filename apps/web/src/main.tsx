@@ -6570,7 +6570,8 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_RR", "Quality: RR >= 2:1", "Optimization quality filter."],
     ["QUALITY_STOP_SIZE", "Quality: stop size", "Optimization quality filter."],
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Optimization quality filter."],
-    ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."]
+    ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."],
+    ["SIGNAL_SCORE", "Minimum signal score", "The final Module 2 confidence score must pass the configured threshold."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
   rows.unshift({
@@ -6998,8 +6999,8 @@ function moduleShortName(moduleCode: string, name?: string) {
 function module2RuleLayer(code?: string) {
   if (!code) return "other";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
-  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "SIGNAL_SCORE") return "quality";
+  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(code)) return "hard";
   return "other";
 }
 

@@ -2488,7 +2488,7 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   });
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, decision)) {
+  if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     await notifyTenantOnce(
@@ -2794,7 +2794,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   await notifyModule2Stage(session, decision);
   await applyModule2SetupLifecycle(saved?.setup, decision, current);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, decision)) {
+  if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     await notifyTenantOnce(
@@ -2946,7 +2946,7 @@ async function runModule2DryRunFromSavedCandles(tenantId: string | null, session
     setupCandles: setupRows.length,
     biasCandles: biasRows.length,
     latestCandle: rowTimestamp(current),
-    wouldOpenPaperTrade: isProductionReadySetup({ module_code: "high_probability_strategy_2", status: decision.status, scenario: decision.scenario, scenario_flags: decision.scenarioFlags }, decision),
+    wouldOpenPaperTrade: isProductionReadySetup({ module_code: "high_probability_strategy_2", status: decision.status, scenario: decision.scenario, scenario_flags: decision.scenarioFlags }, decision, { status: "PERMITTED" }),
     evaluations: decision.evaluations
   };
 }
@@ -3692,11 +3692,12 @@ function checkReadinessValue(readiness: any, code: string) {
   return readiness.checks?.find((check: any) => check.code === code)?.value ?? null;
 }
 
-function isProductionReadySetup(setup: any, decision: any) {
+function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (!setup || !["high_probability_strategy_2", "strategy_lab_3"].includes(setup.module_code)) return false;
   if (!["LONG SETUP READY", "SHORT SETUP READY"].includes(String(setup.status))) return false;
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
+  if (risk?.status !== "PERMITTED") return false;
   const blockingRules = decision?.evaluations?.filter((evaluation: any) => evaluation.blocking) ?? [];
   return blockingRules.length > 0 && blockingRules.every((evaluation: any) => evaluation.status === "PASS");
 }
@@ -3855,6 +3856,9 @@ async function saveSetupCandleSnapshot(setup: any, session: any, timeframe: numb
 
 async function createAutomaticPaperTrade(session: any, setup: any, risk: any, currentRow: any, moduleCode = "orb_max_options") {
   if (setup.entry_price == null || setup.stop_price == null || setup.target_price == null) return null;
+  if (risk?.status !== "PERMITTED") {
+    return { skipped: true, reason: "RISK_NOT_PERMITTED", riskStatus: risk?.status ?? "MISSING", riskReasons: risk?.reasons ?? [] };
+  }
   if (setup.scenario === "QA_TEST_SIGNAL" || setup.scenario_flags?.replay === true) {
     return { skipped: true, reason: "TEST_SIGNAL_NOT_PRODUCTION" };
   }
