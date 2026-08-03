@@ -17,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - helpful runtime message
 
 MIN_TRADES_FOR_CONFIDENCE = 10
 MIN_TRADES_FOR_DIRECTIONAL_HINT = 5
+MODULE_CODE = "orb_max_options"
 
 
 @dataclass
@@ -81,6 +82,7 @@ def load_results(cur) -> list[dict[str, Any]]:
           sc.direction,
           sc.favorability_score,
           sc.favorability_grade,
+          COALESCE(sc.scenario_flags->>'setupTier', 'FULL') AS setup_tier,
           t.outcome,
           t.result_r::float AS result_r,
           t.opened_at AS occurred_at
@@ -88,6 +90,7 @@ def load_results(cur) -> list[dict[str, Any]]:
         JOIN trade_plans tp ON tp.id = t.trade_plan_id
         JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
         WHERE t.outcome IN ('WIN', 'LOSS', 'BREAKEVEN')
+          AND sc.module_code = %s
           AND sc.scenario <> 'QA_TEST_SIGNAL'
           AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         UNION ALL
@@ -97,14 +100,17 @@ def load_results(cur) -> list[dict[str, Any]]:
           bt.direction,
           NULL AS favorability_score,
           NULL AS favorability_grade,
+          'BACKTEST' AS setup_tier,
           bt.outcome,
           bt.result_r::float AS result_r,
           br.completed_at AS occurred_at
         FROM backtest_trades bt
         JOIN backtest_runs br ON br.id = bt.backtest_run_id
         WHERE bt.outcome IN ('WIN', 'LOSS', 'BREAKEVEN')
+          AND COALESCE(br.module_code, %s) = %s
         ORDER BY occurred_at NULLS LAST
-        """
+        """,
+        (MODULE_CODE, MODULE_CODE, MODULE_CODE),
     )
     return list(cur.fetchall())
 
@@ -140,11 +146,11 @@ def build_recommendations(rows: list[dict[str, Any]]) -> list[Recommendation]:
             )
         )
 
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        grouped[(row.get("scenario") or "UNKNOWN", row.get("direction") or "UNKNOWN")].append(row)
+        grouped[(row.get("scenario") or "UNKNOWN", row.get("direction") or "UNKNOWN", row.get("setup_tier") or "FULL")].append(row)
 
-    for (scenario, direction), group in sorted(grouped.items()):
+    for (scenario, direction, setup_tier), group in sorted(grouped.items()):
         metrics = metrics_for(group)
         if metrics["trades"] < MIN_TRADES_FOR_DIRECTIONAL_HINT:
             continue
@@ -156,10 +162,10 @@ def build_recommendations(rows: list[dict[str, Any]]) -> list[Recommendation]:
                     scenario=scenario,
                     direction=direction,
                     confidence=confidence_for(metrics["trades"]),
-                    title=f"Favor {direction} {pretty(scenario)}",
-                    rationale=f"This scenario/direction has {metrics['trades']} results, {metrics['win_rate']:.1%} win rate, and {metrics['expectancy']:.2f}R expectancy.",
+                    title=f"Favor {direction} {pretty(scenario)} ({setup_tier})",
+                    rationale=f"This scenario/direction/tier has {metrics['trades']} results, {metrics['win_rate']:.1%} win rate, and {metrics['expectancy']:.2f}R expectancy.",
                     metrics=metrics,
-                    suggested_action={"action": "PRIORITIZE_SCENARIO", "scenario": scenario, "direction": direction},
+                    suggested_action={"action": "PRIORITIZE_SCENARIO", "scenario": scenario, "direction": direction, "setupTier": setup_tier},
                 )
             )
         elif metrics["expectancy"] < -0.15 or metrics["win_rate"] < 0.35:
@@ -169,10 +175,10 @@ def build_recommendations(rows: list[dict[str, Any]]) -> list[Recommendation]:
                     scenario=scenario,
                     direction=direction,
                     confidence=confidence_for(metrics["trades"]),
-                    title=f"Review {direction} {pretty(scenario)}",
-                    rationale=f"This scenario/direction has weak evidence: {metrics['win_rate']:.1%} win rate and {metrics['expectancy']:.2f}R expectancy.",
+                    title=f"Review {direction} {pretty(scenario)} ({setup_tier})",
+                    rationale=f"This scenario/direction/tier has weak evidence: {metrics['win_rate']:.1%} win rate and {metrics['expectancy']:.2f}R expectancy.",
                     metrics=metrics,
-                    suggested_action={"action": "REVIEW_FILTERS", "scenario": scenario, "direction": direction},
+                    suggested_action={"action": "REVIEW_FILTERS", "scenario": scenario, "direction": direction, "setupTier": setup_tier},
                 )
             )
 
@@ -210,12 +216,15 @@ def metrics_for(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def build_summary(rows: list[dict[str, Any]], recommendations: list[Recommendation]) -> dict[str, Any]:
     by_source: dict[str, int] = defaultdict(int)
+    by_setup_tier: dict[str, int] = defaultdict(int)
     for row in rows:
         by_source[row.get("source") or "UNKNOWN"] += 1
+        by_setup_tier[row.get("setup_tier") or "FULL"] += 1
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "overall": metrics_for(rows),
         "bySource": dict(by_source),
+        "bySetupTier": dict(by_setup_tier),
         "recommendations": len(recommendations),
     }
 

@@ -80,6 +80,7 @@ def load_module2_trades(cur, tenant_id: str) -> list[dict[str, Any]]:
           sc.favorability_score,
           sc.favorability_grade,
           sc.scenario_flags,
+          COALESCE(sc.scenario_flags->>'setupTier', 'FULL') AS setup_tier,
           t.outcome,
           t.result_r::float AS result_r,
           t.opened_at,
@@ -128,6 +129,7 @@ def build_summary(trades: list[dict[str, Any]], failures: list[dict[str, Any]], 
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "overall": metrics_for(trades),
+        "bySetupTier": bucket_metrics(trades, lambda row: row.get("setup_tier") or "FULL"),
         "byGrade": bucket_metrics(trades, lambda row: row.get("favorability_grade") or "UNKNOWN"),
         "byDirection": bucket_metrics(trades, lambda row: row.get("direction") or "UNKNOWN"),
         "byLiquidity": bucket_metrics(trades, liquidity_bucket),
@@ -187,6 +189,33 @@ def build_recommendations(trades: list[dict[str, Any]], failures: list[dict[str,
                     f"{bucket_name} has negative expectancy at {metrics['expectancy']:.2f}R.",
                     metrics,
                     {"action": "REVIEW_DIRECTION_FILTERS", "direction": bucket_name},
+                )
+            )
+
+    for tier, rows in bucket_rows(trades, lambda row: row.get("setup_tier") or "FULL").items():
+        metrics = metrics_for(rows)
+        if metrics["trades"] < MIN_BUCKET_SAMPLE:
+            continue
+        if tier == "MANDATORY" and metrics["expectancy"] < -0.15:
+            recommendations.append(
+                recommendation(
+                    "REVIEW_MANDATORY_TIER",
+                    confidence(metrics["trades"]),
+                    "Review mandatory-only Module 2 entries",
+                    f"Mandatory-tier Module 2 trades have {metrics['trades']} results and {metrics['expectancy']:.2f}R expectancy.",
+                    metrics,
+                    {"action": "REVIEW_SETUP_TIER", "setupTier": tier, "moduleCode": MODULE_CODE},
+                )
+            )
+        if tier == "FULL" and metrics["expectancy"] > 0.2 and metrics["winRate"] >= 0.5:
+            recommendations.append(
+                recommendation(
+                    "FAVOR_FULL_TIER",
+                    confidence(metrics["trades"]),
+                    "Favor full-checklist Module 2 entries",
+                    f"Full-tier Module 2 trades have {metrics['trades']} results, {metrics['winRate']:.1%} win rate, and {metrics['expectancy']:.2f}R expectancy.",
+                    metrics,
+                    {"action": "PRIORITIZE_SETUP_TIER", "setupTier": tier, "moduleCode": MODULE_CODE},
                 )
             )
 
