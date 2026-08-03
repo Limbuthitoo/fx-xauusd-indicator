@@ -4562,16 +4562,36 @@ function Module2EvidenceInspector({ setup }: { setup?: any }) {
   const sweep = flags.sweep ?? {};
   const displacement = flags.displacement ?? {};
   const bos = flags.bos ?? {};
+  const levels = Array.isArray(flags.levels) ? flags.levels : [];
+  const confirmationLayer = flags.confirmationLayer ?? {};
+  const qualityLayer = flags.qualityLayer ?? {};
+  const displacementCandle = displacement?.candle ?? {};
   return (
     <Panel icon={<Database />} title="Module 2 Evidence">
-      <Metric label="Sweep price" value={sweep?.level?.price == null ? "--" : Number(sweep.level.price).toFixed(2)} />
-      <Metric label="Sweep time" value={formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt)} />
-      <Metric label="Displacement" value={formatNepalTime(displacement?.candle?.timestampUtc)} />
+      <Metric label="State" value={String(flags.state ?? setup?.status ?? "WAITING")} />
+      <Metric label="Liquidity map" value={levels.length ? `${levels.length} levels` : "--"} />
+      <Metric label="Swept liquidity" value={sweep?.level?.type ? `${formatScenario(sweep.level.type)} · ${sweep.level.side ?? "--"}` : "--"} />
+      <Metric label="Sweep level" value={sweep?.level?.price == null ? "--" : Number(sweep.level.price).toFixed(2)} />
+      <Metric label="Sweep distance" value={sweep?.distanceAtr == null ? "--" : `${Number(sweep.distanceAtr).toFixed(2)} ATR`} />
+      <Metric label="Sweep time" value={formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt ?? sweep?.candle?.timestampUtc)} />
+      <Metric label="Displacement time" value={formatNepalTime(displacementCandle?.timestampUtc)} />
+      <Metric label="Displacement range" value={displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`} />
       <Metric label="BOS level" value={bos?.level == null ? "--" : Number(bos.level).toFixed(2)} />
       <Metric label="BOS time" value={formatNepalTime(bos?.candle?.timestampUtc)} />
+      <Metric label="BOS structure" value={bos?.structure?.kind ? `${bos.structure.kind} · ${Number(bos.structure.price ?? bos.level).toFixed(2)}` : "--"} />
       <Metric label="Zone type" value={zone?.kind ?? "--"} />
       <Metric label="Zone bounds" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
+      <Metric label="Confirmations" value={confirmationLayer?.count == null ? "--" : `${confirmationLayer.count}/${confirmationLayer.required ?? 5}`} />
+      <Metric label="Quality filters" value={qualityLayer?.count == null ? "--" : `${qualityLayer.count}/${qualityLayer.required ?? 3}`} />
+      <Metric label="Checklist tier" value={flags.setupTier ?? "--"} />
       <Metric label="Entry / SL / TP" value={setup?.entry_price == null ? "--" : `${Number(setup.entry_price).toFixed(2)} / ${Number(setup.stop_price).toFixed(2)} / ${Number(setup.target_price).toFixed(2)}`} />
+      <div className="evidence-notes">
+        <strong>Liquidity Levels</strong>
+        {levels.slice(0, 8).map((level: any) => (
+          <span key={`${level.type}-${level.price}`}>{formatScenario(level.type)} · {Number(level.price).toFixed(2)} · {level.priority ?? "LOW"}</span>
+        ))}
+        {levels.length === 0 ? <span>Waiting for PDH/PDL, Asian, London, equal high/low, or swing liquidity evidence.</span> : null}
+      </div>
     </Panel>
   );
 }
