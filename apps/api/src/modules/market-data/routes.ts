@@ -4512,15 +4512,16 @@ async function notifyTenantOnce(
   preferenceKey?: "nyPreSession" | "validEntries" | "paperTradeOpened" | "takeProfitStopLoss" | "dailyReports" | "weeklyMonthlyReports" | "learningReviews" | "systemDiagnostics"
 ) {
   if (!(await canCreateTenantNotification(tenantId, priority))) return { skipped: true, reason: "NOTIFICATION_PLAN_LIMIT" };
+  const notificationData = { ...data, eventKey, eventType };
   const inserted = await query(
-    `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-     VALUES ($5,$1,$2,$3,$4,$6)
+    `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
+     VALUES ($5,$1,$2,$3,$4,$6,$7::jsonb)
      ON CONFLICT (event_key) DO NOTHING
      RETURNING id`,
-    [eventKey, eventType, title, body, tenantId, priority]
+    [eventKey, eventType, title, body, tenantId, priority, JSON.stringify(notificationData)]
   );
   if (inserted.rows[0]) {
-    await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...data, eventKey, eventType, notificationId: inserted.rows[0].id } });
+    await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...notificationData, notificationId: inserted.rows[0].id } });
   }
 }
 
@@ -4565,7 +4566,12 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
       confidence,
       setupCandidateId: setup.id,
       tradeId: trade?.id ?? null,
-      symbol: setup.symbol ?? "XAUUSD"
+      symbol: setup.symbol ?? "XAUUSD",
+      finalReason: setup.final_reason ?? null,
+      status: setup.status ?? null,
+      mandatoryPassed: setup.scenario_flags?.mandatoryPassed ?? null,
+      confirmationPassed: setup.scenario_flags?.confirmationPassed ?? null,
+      qualityPassed: setup.scenario_flags?.qualityPassed ?? null
     }
   };
 }

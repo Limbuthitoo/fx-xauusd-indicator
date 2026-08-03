@@ -132,6 +132,12 @@ type NotificationDetail = {
   setupCandidateId?: string | number | null;
   tradeId?: string | number | null;
   symbol?: string | null;
+  finalReason?: string | null;
+  status?: string | null;
+  eventKey?: string | null;
+  mandatoryPassed?: string | number | boolean | null;
+  confirmationPassed?: string | number | boolean | null;
+  qualityPassed?: string | number | boolean | null;
   source: "push" | "history";
 };
 
@@ -1515,6 +1521,7 @@ function NotificationDetailScreen({
   const rr = detail.rewardToRisk ?? trade.reward_to_risk ?? "--";
   const symbol = detail.symbol ?? trade.symbol ?? "XAUUSD";
   const isTradeAlert = hasTradeDetails(detail) || entry !== "--" || stopLoss !== "--" || takeProfit !== "--";
+  const setupReason = detail.finalReason ?? module?.currentSetup?.final_reason ?? null;
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -1549,6 +1556,7 @@ function NotificationDetailScreen({
             <Metric label="RR" value={formatDetailValue(rr)} />
             <Metric label="Grade" value={formatDetailValue(detail.grade)} />
             <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
+            <Metric label="Status" value={formatDetailValue(detail.status)} />
           </View>
           {!isTradeAlert ? <Text style={styles.reason}>This notification does not include a full paper-trade plan. Valid entry alerts will show entry, SL, TP, direction, RR, and module context here.</Text> : null}
         </View>
@@ -1557,8 +1565,13 @@ function NotificationDetailScreen({
           <Text style={styles.sectionMini}>Setup Context</Text>
           <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
           <Metric label="Confidence" value={detail.confidence == null ? "--" : `${detail.confidence}%`} />
+          <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
+          <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
+          <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
           <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
           <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+          <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
+          {setupReason ? <Text style={styles.reason}>{setupReason}</Text> : null}
           {moduleCode ? (
             <Pressable style={styles.fullButton} onPress={() => onOpenChart(moduleCode)}>
               <Text style={styles.fullButtonText}>Open Module Chart</Text>
@@ -2412,6 +2425,12 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? null,
     tradeId: payload.tradeId ?? payload.trade_id ?? null,
     symbol: stringOrNull(payload.symbol) ?? "XAUUSD",
+    finalReason: stringOrNull(payload.finalReason ?? payload.final_reason),
+    status: stringOrNull(payload.status),
+    eventKey: stringOrNull(payload.eventKey ?? payload.event_key),
+    mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
+    confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
+    qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
     source: "push"
   };
 }
@@ -2419,7 +2438,8 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
 function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): NotificationDetail {
   const title = String(item?.title ?? "Trading notification");
   const body = String(item?.body ?? "");
-  const moduleCode = stringOrNull(item?.module_code) ?? moduleCodeFromText(`${item?.event_type ?? ""} ${title} ${body}`);
+  const payload = normalizeNotificationPayload(item?.data);
+  const moduleCode = stringOrNull(payload.moduleCode ?? payload.module_code ?? item?.module_code) ?? moduleCodeFromText(`${item?.event_type ?? ""} ${title} ${body}`);
   const module = dashboard?.modules.find((row) => row.code === moduleCode) ?? null;
   const trade = module?.currentTrade ?? {};
   return {
@@ -2430,22 +2450,42 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     priority: stringOrNull(item?.priority),
     createdAt: stringOrNull(item?.created_at),
     moduleCode,
-    moduleName: module?.shortName ?? moduleDisplayName(moduleCode),
-    scenario: extractScenario(body) ?? stringOrNull(module?.currentSetup?.scenario),
-    direction: extractDirection(body) ?? stringOrNull(trade.direction),
-    action: extractAction(body) ?? (trade.direction === "SHORT" ? "SELL" : trade.direction === "LONG" ? "BUY" : null),
-    entry: extractBodyField(body, "entry") ?? trade.actual_entry ?? trade.entry_price ?? null,
-    stopLoss: extractBodyField(body, "sl") ?? extractBodyField(body, "stop") ?? trade.actual_stop ?? trade.stop_price ?? null,
-    takeProfit: extractBodyField(body, "tp") ?? extractBodyField(body, "target") ?? trade.actual_target ?? trade.target_price ?? null,
-    rewardToRisk: extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
-    grade: extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
-    confidence: extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
-    setupTier: stringOrNull(module?.currentSetup?.scenario_flags?.setupTier) ?? extractSetupTier(body),
-    setupCandidateId: item?.setup_candidate_id ?? module?.currentSetup?.id ?? null,
-    tradeId: item?.trade_id ?? trade.id ?? null,
-    symbol: "XAUUSD",
+    moduleName: stringOrNull(payload.moduleName ?? payload.module_name) ?? module?.shortName ?? moduleDisplayName(moduleCode),
+    scenario: stringOrNull(payload.scenario) ?? extractScenario(body) ?? stringOrNull(module?.currentSetup?.scenario),
+    direction: stringOrNull(payload.direction) ?? extractDirection(body) ?? stringOrNull(trade.direction),
+    action: stringOrNull(payload.action) ?? extractAction(body) ?? (trade.direction === "SHORT" ? "SELL" : trade.direction === "LONG" ? "BUY" : null),
+    entry: payload.entry ?? payload.entryPrice ?? payload.entry_price ?? extractBodyField(body, "entry") ?? trade.actual_entry ?? trade.entry_price ?? null,
+    stopLoss: payload.stopLoss ?? payload.stop_loss ?? payload.sl ?? extractBodyField(body, "sl") ?? extractBodyField(body, "stop") ?? trade.actual_stop ?? trade.stop_price ?? null,
+    takeProfit: payload.takeProfit ?? payload.take_profit ?? payload.tp ?? extractBodyField(body, "tp") ?? extractBodyField(body, "target") ?? trade.actual_target ?? trade.target_price ?? null,
+    rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
+    grade: payload.grade ?? extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
+    confidence: payload.confidence ?? extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
+    setupTier: stringOrNull(payload.setupTier ?? payload.setup_tier) ?? stringOrNull(module?.currentSetup?.scenario_flags?.setupTier) ?? extractSetupTier(body),
+    setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? item?.setup_candidate_id ?? module?.currentSetup?.id ?? null,
+    tradeId: payload.tradeId ?? payload.trade_id ?? item?.trade_id ?? trade.id ?? null,
+    symbol: stringOrNull(payload.symbol) ?? "XAUUSD",
+    finalReason: stringOrNull(payload.finalReason ?? payload.final_reason),
+    status: stringOrNull(payload.status),
+    eventKey: stringOrNull(payload.eventKey ?? payload.event_key ?? item?.event_key),
+    mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
+    confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
+    qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
     source: "history"
   };
+}
+
+function normalizeNotificationPayload(value: any): Record<string, any> {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }
 
 function moduleCodeFromText(text: string) {
