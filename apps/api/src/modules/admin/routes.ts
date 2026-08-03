@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { config } from "../../infrastructure/config.js";
 import { poolStats, query } from "../../infrastructure/db/client.js";
@@ -158,6 +158,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const { rows } = await query(
       `SELECT *
        FROM mobile_app_releases
+       WHERE status = 'ACTIVE'
        ORDER BY created_at DESC
        LIMIT 20`
     );
@@ -194,6 +195,12 @@ export async function adminRoutes(app: FastifyInstance) {
     const packageName = String(body.packageName ?? detected.packageName ?? "").trim() || null;
     const platform = String(body.platform ?? "android").toLowerCase() === "android" ? "android" : "android";
     const sha256 = createHash("sha256").update(buffer).digest("hex");
+    const previousActive = await query(
+      `SELECT id, storage_path
+       FROM mobile_app_releases
+       WHERE platform = $1 AND status = 'ACTIVE'`,
+      [platform]
+    );
     const releasesDir = resolve(process.cwd(), "../../data/mobile-releases");
     await mkdir(releasesDir, { recursive: true });
     const storedFileName = `${Date.now()}-${versionName.replace(/[^a-zA-Z0-9._-]/g, "_")}-${fileName}`;
@@ -221,6 +228,15 @@ export async function adminRoutes(app: FastifyInstance) {
         session.sub
       ]
     );
+    await query(
+      `UPDATE mobile_app_releases
+       SET status = 'SUPERSEDED'
+       WHERE platform = $1
+         AND status = 'ACTIVE'
+         AND id <> $2`,
+      [platform, result.rows[0].id]
+    );
+    await removeSupersededApkFiles(previousActive.rows.map((row: any) => row.storage_path), storagePath);
     await writeAudit(session.sub, "MOBILE_APP_RELEASE_UPLOADED", "mobile_app_release", result.rows[0].id, null, {
       versionName,
       versionCode: Number.isFinite(versionCode) ? versionCode : null,
@@ -1068,6 +1084,11 @@ function inferVersionCodeFromName(versionName: string) {
   const parts = String(versionName).split(/[.+-]/).map((part) => Number(part));
   const last = parts[parts.length - 1];
   return Number.isFinite(last) && last > 0 ? last : null;
+}
+
+async function removeSupersededApkFiles(paths: string[], currentPath: string) {
+  const uniquePaths = [...new Set(paths.filter((path) => path && path !== currentPath))];
+  await Promise.all(uniquePaths.map((path) => unlink(path).catch(() => undefined)));
 }
 
 function requirePlatformSuperAdmin(request: Parameters<typeof requirePermission>[0]) {
