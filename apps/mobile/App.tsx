@@ -40,6 +40,7 @@ const DEFAULT_API_BASE_URL =
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ??
   "http://localhost:7073";
 const APP_VERSION = Constants.expoConfig?.version ?? "0.0.0";
+const APP_VERSION_CODE = Number(Constants.expoConfig?.android?.versionCode ?? 0);
 const BRAND_LOGO = require("./assets/brand-logo.png");
 const BRAND_MARK = require("./assets/brand-mark.png");
 
@@ -57,7 +58,7 @@ type ModuleRow = {
 };
 
 type Dashboard = {
-  user: { displayName: string; email: string };
+  user: AuthUser;
   tenant: { name: string; subscription_status?: string; plan_name?: string } | null;
   clocks: { newYork: string; nepal: string; utc: string };
   modules: ModuleRow[];
@@ -72,6 +73,8 @@ type AuthUser = {
   tenantId?: string | null;
   platformSuperAdmin?: boolean;
   passwordChangeRequired?: boolean;
+  mfaEnabled?: boolean;
+  mfaEnrollmentRequired?: boolean;
 };
 
 type PushDiagnostics = {
@@ -121,7 +124,7 @@ type NotificationDetail = {
   source: "push" | "history";
 };
 
-type MoreView = "menu" | "profile" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "about";
+type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "about";
 
 const defaultPushPreferences: PushPreferences = {
   nyPreSession: true,
@@ -369,14 +372,24 @@ function AppContent() {
     setLoading(false);
   }
 
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, otp?: string) {
     const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ email, password, otp })
     });
-    if (!response.ok) throw new Error("Invalid tenant login.");
+    if (!response.ok) {
+      const text = await response.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      throw new Error(parsed?.mfaRequired ? "Two-factor code required." : parsed?.message ?? "Invalid tenant login.");
+    }
     const payload = await response.json() as { token: string; user: AuthUser };
+    if (payload.user?.platformSuperAdmin) throw new Error("Platform admin accounts must use the web platform console.");
     await Promise.all([
       writeSecureToken(payload.token),
       AsyncStorage.setItem(API_URL_KEY, apiBaseUrl)
@@ -387,6 +400,47 @@ function AppContent() {
     await registerPush(payload.token);
     await loadDashboard(payload.token, true);
     await loadPushDiagnostics(payload.token);
+  }
+
+  async function startMfaSetup() {
+    if (!token) throw new Error("Login required.");
+    const response = await fetch(`${apiBaseUrl}/api/auth/mfa/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({})
+    });
+    if (!response.ok) throw new Error(cleanErrorMessage(await response.text()));
+    return response.json() as Promise<{ secret: string; otpAuthUrl: string }>;
+  }
+
+  async function enableMfa(otp: string) {
+    if (!token) throw new Error("Login required.");
+    const response = await fetch(`${apiBaseUrl}/api/auth/mfa/enable`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ otp })
+    });
+    if (!response.ok) throw new Error(cleanErrorMessage(await response.text()));
+    const payload = await response.json() as { token: string; user: AuthUser };
+    await writeSecureToken(payload.token);
+    setAuthUser(payload.user);
+    setToken(payload.token);
+    return payload.token;
+  }
+
+  async function disableMfa(otp: string) {
+    if (!token) throw new Error("Login required.");
+    const response = await fetch(`${apiBaseUrl}/api/auth/mfa/disable`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ otp })
+    });
+    if (!response.ok) throw new Error(cleanErrorMessage(await response.text()));
+    const payload = await response.json() as { token: string; user: AuthUser };
+    await writeSecureToken(payload.token);
+    setAuthUser(payload.user);
+    setToken(payload.token);
+    return payload.token;
   }
 
   async function loadMe(authToken: string, baseUrl = apiBaseUrl) {
@@ -456,7 +510,7 @@ function AppContent() {
 
   async function checkAppUpdate() {
     if (Platform.OS !== "android") return;
-    const response = await fetch(`${apiBaseUrl}/api/mobile/app-update?platform=android&currentVersion=${encodeURIComponent(APP_VERSION)}`);
+    const response = await fetch(`${apiBaseUrl}/api/mobile/app-update?platform=android&currentVersion=${encodeURIComponent(APP_VERSION)}&currentCode=${encodeURIComponent(String(APP_VERSION_CODE || ""))}`);
     if (!response.ok) return;
     const payload = await response.json() as { updateAvailable?: boolean; latest?: any };
     const latest = payload.latest;
@@ -760,6 +814,9 @@ function AppContent() {
             onTestPush={() => sendTestPush().catch((error) => Alert.alert("Test push failed", error.message))}
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
             onSavePushPreferences={(preferences) => savePushPreferences(preferences).catch((error) => Alert.alert("Save failed", error.message))}
+            onStartMfa={startMfaSetup}
+            onEnableMfa={(otp) => enableMfa(otp).then((nextToken) => loadDashboard(nextToken, false, false)).then(() => Alert.alert("2FA enabled", "Your next login will require a 6-digit code.")).catch((error) => Alert.alert("2FA failed", error.message))}
+            onDisableMfa={(otp) => disableMfa(otp).then((nextToken) => loadDashboard(nextToken, false, false)).then(() => Alert.alert("2FA disabled", "Two-factor authentication is now disabled.")).catch((error) => Alert.alert("2FA failed", error.message))}
             onCreateTicket={(input) => submitSupportTicket(input).then(() => Alert.alert("Ticket submitted", "Platform support will review your request.")).catch((error) => Alert.alert("Ticket failed", error.message))}
             onOpenNotification={(item) => {
               setSelectedNotificationDetail(notificationDetailFromHistory(item, dashboard));
@@ -809,9 +866,11 @@ async function clearSecureToken() {
   ]);
 }
 
-function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
+function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, otp?: string) => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [showOtp, setShowOtp] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
     <SafeAreaView style={styles.screen}>
@@ -823,15 +882,18 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
         <Text style={styles.loginCopy}>Tenant mobile companion for NY session indicators, module alerts, and paper-trade entry details.</Text>
         <TextInput style={styles.input} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} placeholder="Tenant email" placeholderTextColor="#6f7b75" />
         <TextInput style={styles.input} secureTextEntry value={password} onChangeText={setPassword} placeholder="Password" placeholderTextColor="#6f7b75" />
+        {showOtp ? <TextInput style={styles.input} keyboardType="number-pad" value={otp} onChangeText={(value) => setOtp(value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit two-factor code" placeholderTextColor="#6f7b75" /> : null}
         <Pressable
           style={styles.loginButton}
           disabled={busy}
           onPress={async () => {
             setBusy(true);
             try {
-              await onLogin(email, password);
+              await onLogin(email, password, otp);
             } catch (error) {
-              Alert.alert("Login failed", (error as Error).message);
+              const message = (error as Error).message;
+              if (message.includes("Two-factor")) setShowOtp(true);
+              Alert.alert("Login failed", cleanErrorMessage(message));
             } finally {
               setBusy(false);
             }
@@ -1205,6 +1267,9 @@ function MoreScreen({
   onTestPush,
   onDisablePushDevice,
   onSavePushPreferences,
+  onStartMfa,
+  onEnableMfa,
+  onDisableMfa,
   onCreateTicket,
   onOpenNotification
 }: {
@@ -1220,6 +1285,9 @@ function MoreScreen({
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
   onSavePushPreferences: (preferences: PushPreferences) => void;
+  onStartMfa: () => Promise<{ secret: string; otpAuthUrl: string }>;
+  onEnableMfa: (otp: string) => void;
+  onDisableMfa: (otp: string) => void;
   onCreateTicket: (input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) => void;
   onOpenNotification: (notification: any) => void;
 }) {
@@ -1230,6 +1298,8 @@ function MoreScreen({
   const [ticketTitle, setTicketTitle] = useState("");
   const [ticketDescription, setTicketDescription] = useState("");
   const [requestedModuleCode, setRequestedModuleCode] = useState("");
+  const [mfaSetup, setMfaSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
 
   function submitTicket() {
     onCreateTicket({
@@ -1252,6 +1322,54 @@ function MoreScreen({
           <Metric label="Email" value={dashboard?.user?.email ?? "--"} />
           <Metric label="Plan" value={dashboard?.tenant?.plan_name ?? "--"} />
           <Metric label="Subscription" value={dashboard?.tenant?.subscription_status ?? "ACTIVE"} />
+        </View>
+      </>
+    );
+  }
+  if (view === "security") {
+    const mfaEnabled = dashboard?.user?.mfaEnabled === true;
+    return (
+      <>
+        <MoreHeader title="Security" onBack={() => setView("menu")} />
+        <View style={styles.moreDiagnosticsCard}>
+          <Metric label="Two-factor" value={mfaEnabled ? "Enabled" : "Off"} />
+          <Metric label="Login email" value={dashboard?.user?.email ?? "--"} />
+          <Text style={styles.reason}>Use Google Authenticator, Microsoft Authenticator, Authy, or any TOTP app. After enabling, login requires your password and a 6-digit code.</Text>
+        </View>
+        <View style={styles.moreMenuGroup}>
+          {!mfaEnabled ? (
+            <Pressable
+              style={styles.fullButton}
+              onPress={async () => {
+                try {
+                  setMfaSetup(await onStartMfa());
+                } catch (error) {
+                  Alert.alert("2FA setup failed", cleanErrorMessage((error as Error).message));
+                }
+              }}
+            >
+              <Text style={styles.fullButtonText}>Start 2FA Setup</Text>
+            </Pressable>
+          ) : null}
+          {mfaSetup ? (
+            <>
+              <Text style={styles.tokenLabel}>Secret</Text>
+              <Text style={styles.tokenValue} selectable>{mfaSetup.secret}</Text>
+              <Text style={styles.tokenLabel}>Authenticator URL</Text>
+              <Text style={styles.tokenValue} selectable numberOfLines={4}>{mfaSetup.otpAuthUrl}</Text>
+            </>
+          ) : null}
+          <TextInput style={styles.input} keyboardType="number-pad" value={mfaCode} onChangeText={(value) => setMfaCode(value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit code" placeholderTextColor="#6f7b75" />
+          {!mfaEnabled && mfaSetup ? (
+            <Pressable style={[styles.fullButton, mfaCode.length !== 6 && styles.disabledButton]} disabled={mfaCode.length !== 6} onPress={() => onEnableMfa(mfaCode)}>
+              <Text style={styles.fullButtonText}>Verify and Enable</Text>
+            </Pressable>
+          ) : null}
+          {mfaEnabled ? (
+            <Pressable style={[styles.secondaryButton, mfaCode.length !== 6 && styles.disabledButton]} disabled={mfaCode.length !== 6} onPress={() => onDisableMfa(mfaCode)}>
+              <Text style={styles.secondaryButtonText}>Disable 2FA</Text>
+            </Pressable>
+          ) : null}
         </View>
       </>
     );
@@ -1379,7 +1497,8 @@ function MoreScreen({
         <MoreHeader title="About" onBack={() => setView("menu")} />
         <View style={styles.moreDiagnosticsCard}>
           <Metric label="App" value={supportInfo.brandName ?? "XAUUSD Signal"} />
-          <Metric label="Version" value="0.1.0" />
+          <Metric label="Version" value={APP_VERSION} />
+          <Metric label="Build code" value={APP_VERSION_CODE || "--"} />
           <Metric label="Data Source" value="Shared backend feed" />
           <Metric label="API" value={apiBaseUrl} />
         </View>
@@ -1404,6 +1523,7 @@ function MoreScreen({
 
       <View style={styles.moreMenuGroup}>
         <MoreMenuRow icon="account" title="Profile" subtitle="Account, plan, and subscription" value={dashboard?.tenant?.subscription_status ?? "ACTIVE"} onPress={() => setView("profile")} />
+        <MoreMenuRow icon="account" title="Security" subtitle="Password and two-factor authentication" value={dashboard?.user?.mfaEnabled ? "2FA On" : "Open"} onPress={() => setView("security")} />
         <MoreMenuRow icon="alerts" title="Push Alerts" subtitle={pushStatus} value={pushDiagnostics.permission} onPress={() => setView("push-settings")} />
         <MoreMenuRow icon="signals" title="Strategy Modules" subtitle={`${modules.length} assigned modules`} value="Open" onPress={() => setView("modules")} />
         <MoreMenuRow icon="chart" title="Chart Preferences" subtitle="Candle view, modules, and live stream" value="Open" onPress={() => setView("chart-preferences")} />

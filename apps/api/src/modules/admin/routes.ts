@@ -172,6 +172,7 @@ export async function adminRoutes(app: FastifyInstance) {
       changelog?: string;
       versionName?: string;
       versionCode?: number | string | null;
+      packageName?: string;
       platform?: string;
     };
     const fileName = safeApkFileName(body.fileName);
@@ -187,13 +188,10 @@ export async function adminRoutes(app: FastifyInstance) {
       throw error;
     }
     const detected = detectApkVersion(buffer, fileName);
-    const versionName = String(body.versionName ?? detected.versionName ?? "").trim();
-    if (!versionName) {
-      const error = new Error("Version could not be detected. Enter the version manually.") as Error & { statusCode?: number };
-      error.statusCode = 400;
-      throw error;
-    }
-    const versionCode = Number(body.versionCode ?? detected.versionCode);
+    const fallbackVersionCode = Math.floor(Date.now() / 1000);
+    const versionName = String(body.versionName ?? detected.versionName ?? `0.1.${fallbackVersionCode}`).trim();
+    const versionCode = Number(body.versionCode ?? detected.versionCode ?? inferVersionCodeFromName(versionName) ?? fallbackVersionCode);
+    const packageName = String(body.packageName ?? detected.packageName ?? "").trim() || null;
     const platform = String(body.platform ?? "android").toLowerCase() === "android" ? "android" : "android";
     const sha256 = createHash("sha256").update(buffer).digest("hex");
     const releasesDir = resolve(process.cwd(), "../../data/mobile-releases");
@@ -204,15 +202,16 @@ export async function adminRoutes(app: FastifyInstance) {
     const downloadPath = `/api/mobile/app-releases/${storedFileName}`;
     const result = await query(
       `INSERT INTO mobile_app_releases (
-         platform, version_name, version_code, file_name, storage_path, download_path,
+         platform, version_name, version_code, package_name, file_name, storage_path, download_path,
          file_size_bytes, sha256, changelog, uploaded_by_admin_user_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
       [
         platform,
         versionName,
         Number.isFinite(versionCode) ? versionCode : null,
+        packageName,
         fileName,
         storagePath,
         downloadPath,
@@ -225,6 +224,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await writeAudit(session.sub, "MOBILE_APP_RELEASE_UPLOADED", "mobile_app_release", result.rows[0].id, null, {
       versionName,
       versionCode: Number.isFinite(versionCode) ? versionCode : null,
+      packageName,
       fileName,
       bytes: buffer.length,
       sha256
@@ -1053,10 +1053,21 @@ function detectApkVersion(buffer: Buffer, fileName: string) {
   const textCode =
     ascii.match(/versionCode[^\d]{0,32}(\d{1,10})/i)?.[1] ??
     fileName.match(/(?:code|vc)[-_]?(\d{1,10})/i)?.[1];
+  const packageName =
+    ascii.match(/package[^\w.]{0,32}([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,})/i)?.[1] ??
+    ascii.match(/applicationId[^\w.]{0,32}([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,})/i)?.[1] ??
+    "com.onehub.fxindicator";
   return {
     versionName: textVersion,
-    versionCode: textCode ? Number(textCode) : null
+    versionCode: textCode ? Number(textCode) : null,
+    packageName
   };
+}
+
+function inferVersionCodeFromName(versionName: string) {
+  const parts = String(versionName).split(/[.+-]/).map((part) => Number(part));
+  const last = parts[parts.length - 1];
+  return Number.isFinite(last) && last > 0 ? last : null;
 }
 
 function requirePlatformSuperAdmin(request: Parameters<typeof requirePermission>[0]) {

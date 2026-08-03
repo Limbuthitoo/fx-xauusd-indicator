@@ -13,7 +13,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       `SELECT id, platform, version_name, version_code, file_name, download_path, file_size_bytes, sha256, changelog, created_at
        FROM mobile_app_releases
        WHERE platform = $1 AND status = 'ACTIVE'
-       ORDER BY created_at DESC
+       ORDER BY version_code DESC NULLS LAST, created_at DESC
        LIMIT 1`,
       [platform]
     );
@@ -59,7 +59,7 @@ export async function mobileRoutes(app: FastifyInstance) {
     const search = request.query as { moduleCode?: string; symbol?: string; limit?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const symbol = search.symbol ?? "XAUUSD";
-    const timeframe = moduleCode === "orb_max_options" ? 15 : 5;
+    const timeframe = 5;
     const limit = Math.min(Math.max(Number(search.limit ?? 80), 20), 180);
     const moduleAccess = await query(
       `SELECT 1
@@ -219,7 +219,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       moduleRows.push({
         ...module,
         shortName: moduleShortName(module.code),
-        timeframeMinutes: module.code === "orb_max_options" ? 15 : 5,
+        timeframeMinutes: 5,
         currentSetup: setup.rows[0] ?? null,
         currentTrade: trade.rows[0] ?? null,
         weekly,

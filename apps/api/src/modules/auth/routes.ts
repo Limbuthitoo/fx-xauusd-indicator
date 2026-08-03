@@ -24,6 +24,8 @@ type AdminSession = {
   platformSuperAdmin: boolean;
   permissions: string[];
   passwordChangeRequired?: boolean;
+  mfaEnabled?: boolean;
+  mfaEnrollmentRequired?: boolean;
   sid?: string;
   exp: number;
 };
@@ -124,6 +126,8 @@ export async function authRoutes(app: FastifyInstance) {
       platformSuperAdmin: admin.platform_super_admin === true,
       permissions,
       passwordChangeRequired: admin.password_change_required === true,
+      mfaEnabled: admin.mfa_enabled === true,
+      mfaEnrollmentRequired: admin.platform_super_admin === true && admin.mfa_enabled !== true && admin.password_change_required !== true,
       sid: sessionId,
       exp: Date.now() + TOKEN_TTL_MS
     };
@@ -137,7 +141,14 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/refresh", async (request, reply) => {
     const session = verifyAdminSession(request);
     if (!session) return reply.code(401).send({ message: "Authentication required." });
-    const refreshed = { ...session, exp: Date.now() + TOKEN_TTL_MS };
+    const fresh = await currentSecurityState(session.sub);
+    const refreshed = {
+      ...session,
+      passwordChangeRequired: fresh.passwordChangeRequired,
+      mfaEnabled: fresh.mfaEnabled,
+      mfaEnrollmentRequired: session.platformSuperAdmin && !fresh.mfaEnabled && !fresh.passwordChangeRequired,
+      exp: Date.now() + TOKEN_TTL_MS
+    };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
     await recordSecurityEvent({
@@ -228,7 +239,14 @@ export async function authRoutes(app: FastifyInstance) {
       [session.sub, passwordHash]
     );
     await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND sid <> $2 AND revoked_at IS NULL", [session.sub, session.sid ?? ""]);
-    const refreshed: AdminSession = { ...session, passwordChangeRequired: false, exp: Date.now() + TOKEN_TTL_MS };
+    const fresh = await currentSecurityState(session.sub);
+    const refreshed: AdminSession = {
+      ...session,
+      passwordChangeRequired: false,
+      mfaEnabled: fresh.mfaEnabled,
+      mfaEnrollmentRequired: session.platformSuperAdmin && !fresh.mfaEnabled,
+      exp: Date.now() + TOKEN_TTL_MS
+    };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
     setAuthCookie(reply, token, refreshed.exp);
@@ -278,7 +296,10 @@ export async function authRoutes(app: FastifyInstance) {
       request,
       metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
     });
-    return { status: "enabled" };
+    const refreshed: AdminSession = { ...session, mfaEnabled: true, mfaEnrollmentRequired: false, exp: Date.now() + TOKEN_TTL_MS };
+    const token = signSession(refreshed);
+    await persistAdminSession(refreshed, token, request);
+    return { status: "enabled", token, user: refreshed };
   });
 
   app.post("/api/auth/mfa/disable", async (request, reply) => {
@@ -297,7 +318,15 @@ export async function authRoutes(app: FastifyInstance) {
       request,
       metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
     });
-    return { status: "disabled" };
+    const refreshed: AdminSession = {
+      ...session,
+      mfaEnabled: false,
+      mfaEnrollmentRequired: session.platformSuperAdmin === true && session.passwordChangeRequired !== true,
+      exp: Date.now() + TOKEN_TTL_MS
+    };
+    const token = signSession(refreshed);
+    await persistAdminSession(refreshed, token, request);
+    return { status: "disabled", token, user: refreshed };
   });
 
   app.post("/api/auth/password-reset/request", async (request) => {
@@ -501,6 +530,12 @@ export function requireAdmin(request: FastifyRequest) {
     error.code = "PASSWORD_CHANGE_REQUIRED";
     throw error;
   }
+  if (session.mfaEnrollmentRequired === true && !mfaEnrollmentAllowedPath(request.url)) {
+    const error = new Error("Two-factor authentication setup required before accessing the platform console.") as Error & { statusCode?: number; code?: string };
+    error.statusCode = 403;
+    error.code = "MFA_ENROLLMENT_REQUIRED";
+    throw error;
+  }
   return session;
 }
 
@@ -690,6 +725,22 @@ function tokenFromRequest(request: FastifyRequest) {
 function passwordChangeAllowedPath(url: string) {
   const path = url.split("?")[0];
   return path === "/api/auth/change-password" || path === "/api/auth/logout" || path === "/api/auth/logout-all" || path === "/api/auth/me";
+}
+
+function mfaEnrollmentAllowedPath(url: string) {
+  const path = url.split("?")[0];
+  return path === "/api/auth/mfa/setup" || path === "/api/auth/mfa/enable" || path === "/api/auth/logout" || path === "/api/auth/logout-all" || path === "/api/auth/me";
+}
+
+async function currentSecurityState(adminUserId: string) {
+  const { rows } = await query(
+    "SELECT mfa_enabled, password_change_required FROM admin_users WHERE id = $1 LIMIT 1",
+    [adminUserId]
+  ).catch(() => ({ rows: [] as any[] }));
+  return {
+    mfaEnabled: rows[0]?.mfa_enabled === true,
+    passwordChangeRequired: rows[0]?.password_change_required === true
+  };
 }
 
 function setAuthCookie(reply: any, token: string, exp: number) {

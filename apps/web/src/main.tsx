@@ -96,6 +96,8 @@ type AdminUser = {
   tenantId?: string | null;
   platformSuperAdmin?: boolean;
   passwordChangeRequired?: boolean;
+  mfaEnabled?: boolean;
+  mfaEnrollmentRequired?: boolean;
   permissions: string[];
 };
 
@@ -366,6 +368,34 @@ function App() {
     setUser(result.user);
     setMessage("Password changed. Your dashboard is now unlocked.");
     await refresh();
+  }
+
+  async function startMfaSetup() {
+    return api<{ secret: string; otpAuthUrl: string }>("/api/auth/mfa/setup", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
+  async function enableMfa(otp: string) {
+    const result = await api<{ token: string; user: AdminUser }>("/api/auth/mfa/enable", {
+      method: "POST",
+      body: JSON.stringify({ otp })
+    });
+    setAuthToken(result.token);
+    setUser(result.user);
+    setMessage("Two-factor authentication is enabled.");
+    if (!result.user.mfaEnrollmentRequired && !result.user.passwordChangeRequired) await refresh();
+  }
+
+  async function disableMfa(otp: string) {
+    const result = await api<{ token: string; user: AdminUser }>("/api/auth/mfa/disable", {
+      method: "POST",
+      body: JSON.stringify({ otp })
+    });
+    setAuthToken(result.token);
+    setUser(result.user);
+    setMessage(result.user.mfaEnrollmentRequired ? "Two-factor setup is required for platform admin." : "Two-factor authentication is disabled.");
   }
 
   function logout() {
@@ -909,8 +939,12 @@ function App() {
     return <LoginScreen mode={isPlatformAdminRoute ? "platform" : "tenant"} onLogin={login} />;
   }
 
-  if (user.passwordChangeRequired && !user.platformSuperAdmin) {
+  if (user.passwordChangeRequired) {
     return <RequiredPasswordChangeScreen user={user} onChangePassword={changeOwnPassword} logout={logout} />;
+  }
+
+  if (user.mfaEnrollmentRequired) {
+    return <RequiredMfaSetupScreen user={user} onStart={startMfaSetup} onEnable={enableMfa} logout={logout} />;
   }
 
   if (isPlatformAdminRoute) {
@@ -1031,7 +1065,7 @@ function App() {
 
         {activeSection === "account" ? (
           <section className="admin-page-grid">
-            <MyAccountPanel state={state} user={user} onCheckout={createBillingCheckout} onCreateTicket={createTenantSupportTicket} onSavePushPreferences={updateTenantPushPreferences} onDisablePushDevice={disableTenantPushDevice} />
+            <MyAccountPanel state={state} user={user} onCheckout={createBillingCheckout} onCreateTicket={createTenantSupportTicket} onSavePushPreferences={updateTenantPushPreferences} onDisablePushDevice={disableTenantPushDevice} onStartMfa={startMfaSetup} onEnableMfa={enableMfa} onDisableMfa={disableMfa} />
             <AccountModulesPanel state={state} />
             <PlanUsagePanel state={state} />
             <PasswordPlaceholderPanel />
@@ -1463,6 +1497,81 @@ function RequiredPasswordChangeScreen({
         <p className="reason">Use at least 12 characters with uppercase, lowercase, number, and symbol.</p>
         {error ? <p className="form-error">{error}</p> : null}
         <button disabled={loading}>{loading ? "Changing..." : "Change Password"}</button>
+        <button type="button" className="secondary-button" onClick={logout}>Logout</button>
+      </form>
+    </main>
+  );
+}
+
+function RequiredMfaSetupScreen({
+  user,
+  onStart,
+  onEnable,
+  logout
+}: {
+  user: AdminUser;
+  onStart: () => Promise<{ secret: string; otpAuthUrl: string }>;
+  onEnable: (otp: string) => Promise<void>;
+  logout: () => void;
+}) {
+  const [setup, setSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
+  const [otp, setOtp] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function start() {
+    setError("");
+    setLoading(true);
+    try {
+      setSetup(await onStart());
+    } catch (error) {
+      setError((error as Error).message || "Could not start two-factor setup.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await onEnable(otp);
+    } catch (error) {
+      setError((error as Error).message || "Invalid two-factor code.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="login-screen">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-mark"><ShieldCheck size={22} /></div>
+        <h1>Enable Two-Factor</h1>
+        <p>Platform admin access requires a 6-digit authenticator code. Add this account in Google Authenticator, Microsoft Authenticator, Authy, or any TOTP app.</p>
+        <Metric label="Account" value={user.email} />
+        {!setup ? (
+          <button type="button" className="wide" disabled={loading} onClick={start}>{loading ? "Starting..." : "Start Setup"}</button>
+        ) : (
+          <>
+            <label>
+              Secret
+              <input readOnly value={setup.secret} onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <label>
+              Authenticator URL
+              <textarea readOnly value={setup.otpAuthUrl} onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <label>
+              6-digit code
+              <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoFocus />
+            </label>
+            <p className="reason">Copy the secret or URL into your authenticator app, then enter the current 6-digit code to finish setup.</p>
+            <button className="wide" disabled={loading || otp.length !== 6}>{loading ? "Verifying..." : "Enable 2FA"}</button>
+          </>
+        )}
+        {error ? <p className="form-error">{error}</p> : null}
         <button type="button" className="secondary-button" onClick={logout}>Logout</button>
       </form>
     </main>
@@ -5718,7 +5827,10 @@ function MyAccountPanel({
   onCheckout,
   onCreateTicket,
   onSavePushPreferences,
-  onDisablePushDevice
+  onDisablePushDevice,
+  onStartMfa,
+  onEnableMfa,
+  onDisableMfa
 }: {
   state: PanelState;
   user: AdminUser;
@@ -5726,6 +5838,9 @@ function MyAccountPanel({
   onCreateTicket: (input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) => Promise<void>;
   onSavePushPreferences: (preferences: any) => Promise<void>;
   onDisablePushDevice: (deviceId: string) => Promise<void>;
+  onStartMfa: () => Promise<{ secret: string; otpAuthUrl: string }>;
+  onEnableMfa: (otp: string) => Promise<void>;
+  onDisableMfa: (otp: string) => Promise<void>;
 }) {
   const tenant = state.tenantContext?.tenant ?? {};
   const subscription = state.tenantContext?.subscription ?? {};
@@ -5799,6 +5914,7 @@ function MyAccountPanel({
         <button onClick={() => onCheckout(currentPlan, "RENEWAL").catch(() => undefined)}><CreditCard size={16} />Request Renewal</button>
         <button onClick={() => onCheckout(upgradePlan, "SUBSCRIPTION").catch(() => undefined)}><Layers size={16} />Request Upgrade</button>
       </div>
+      <MfaSettingsPanel user={user} onStart={onStartMfa} onEnable={onEnableMfa} onDisable={onDisableMfa} />
       <div className="admin-list">
         {supportTickets.slice(0, 5).map((ticket: any) => (
           <div className="admin-row" key={ticket.id}>
@@ -5819,6 +5935,86 @@ function MyAccountPanel({
       </div>
       <TenantPushSettingsPanel status={state.tenantPushStatus} onSave={onSavePushPreferences} onDisableDevice={onDisablePushDevice} />
     </Panel>
+  );
+}
+
+function MfaSettingsPanel({
+  user,
+  onStart,
+  onEnable,
+  onDisable
+}: {
+  user: AdminUser;
+  onStart: () => Promise<{ secret: string; otpAuthUrl: string }>;
+  onEnable: (otp: string) => Promise<void>;
+  onDisable: (otp: string) => Promise<void>;
+}) {
+  const [setup, setSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
+  const [otp, setOtp] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function start() {
+    setBusy(true);
+    setMessage("");
+    try {
+      setSetup(await onStart());
+      setMessage("Add the secret to your authenticator app, then verify the 6-digit code.");
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enable() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await onEnable(otp);
+      setSetup(null);
+      setOtp("");
+      setMessage("Two-factor authentication enabled.");
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    if (!window.confirm("Disable two-factor authentication for this account?")) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await onDisable(otp);
+      setOtp("");
+      setMessage("Two-factor authentication disabled.");
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="manual-payment-note">
+      <strong>Two-Factor Authentication</strong>
+      <span>{user.mfaEnabled ? "Enabled. Login requires a 6-digit authenticator code." : "Not enabled. Add an authenticator app for stronger account security."}</span>
+      {setup ? (
+        <>
+          <label>Secret<input readOnly value={setup.secret} onFocus={(event) => event.currentTarget.select()} /></label>
+          <label>Authenticator URL<textarea readOnly value={setup.otpAuthUrl} onFocus={(event) => event.currentTarget.select()} /></label>
+        </>
+      ) : null}
+      <label>6-digit code<input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="123456" /></label>
+      <div className="account-actions">
+        {!user.mfaEnabled ? <button disabled={busy} onClick={() => start().catch(() => undefined)}><ShieldCheck size={16} />Start 2FA Setup</button> : null}
+        {!user.mfaEnabled && setup ? <button disabled={busy || otp.length !== 6} onClick={() => enable().catch(() => undefined)}><CheckCircle2 size={16} />Verify and Enable</button> : null}
+        {user.mfaEnabled ? <button disabled={busy || otp.length !== 6} onClick={() => disable().catch(() => undefined)}><Lock size={16} />Disable 2FA</button> : null}
+      </div>
+      {message ? <span>{message}</span> : null}
+    </div>
   );
 }
 
