@@ -98,6 +98,8 @@ const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 300;
 const TWELVE_DATA_LIVE_POLL_COUNT = 2;
 const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
+const ORB_RANGE_TIMEFRAME_MINUTES = 5;
+const ORB_RANGE_SOURCE_CANDLES = 3;
 const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
 const XAUUSD_PAPER_SPEC = {
   contractSize: 100,
@@ -2319,8 +2321,11 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   }
 
   let range = await getOpeningRange(session.id);
+  if (range?.status === "LOCKED" && now >= new Date(session.opening_range_end_at)) {
+    range = await repairOpeningRangeIfNeeded(session, range);
+  }
   if ((!range || range.status !== "LOCKED") && now >= new Date(session.opening_range_end_at)) {
-    range = await lockOpeningRangeForSession(session, timeframe, liveCandles);
+    range = await lockOpeningRangeForSession(session);
     if (range.status === "LOCKED") {
       await notifyTenantOnce(
         session.tenant_id,
@@ -4114,7 +4119,9 @@ async function getOpeningRange(sessionId: string) {
   return result.rows[0] as any | undefined;
 }
 
-async function lockOpeningRangeForSession(session: any, timeframe: number, liveCandles = getCachedCandles(session.symbol, timeframe)) {
+async function lockOpeningRangeForSession(session: any) {
+  const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
+  const liveCandles = getCachedCandles(session.symbol, timeframe);
   const cachedRows = cachedCandlesBetween(liveCandles, session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
   const candlesResult =
     cachedRows.length > 0
@@ -4127,7 +4134,7 @@ async function lockOpeningRangeForSession(session: any, timeframe: number, liveC
           [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
         );
   const candles: Candle[] = candlesResult.rows.map((row: any) => ({
-    timestampUtc: row.timestamp_utc,
+    timestampUtc: row.timestamp_utc ?? row.timestampUtc,
     open: Number(row.open),
     high: Number(row.high),
     low: Number(row.low),
@@ -4135,8 +4142,7 @@ async function lockOpeningRangeForSession(session: any, timeframe: number, liveC
     volume: row.volume == null ? null : Number(row.volume),
     spread: row.spread == null ? null : Number(row.spread)
   }));
-  const expectedCount = Math.ceil(Number(session.opening_range_minutes ?? 15) / timeframe);
-  const range = buildOpeningRange(candles, 0.01, expectedCount);
+  const range = buildOpeningRange(candles.slice(0, ORB_RANGE_SOURCE_CANDLES), 0.01, ORB_RANGE_SOURCE_CANDLES);
   const { rows } = await query(
     `INSERT INTO opening_ranges (
       session_id, status, high, low, midpoint, width, width_ticks, width_atr_percent,
@@ -4176,6 +4182,51 @@ async function lockOpeningRangeForSession(session: any, timeframe: number, liveC
     range.dataQualityStatus
   ]);
   return rows[0] as any;
+}
+
+async function repairOpeningRangeIfNeeded(session: any, savedRange: any) {
+  const recalculated = await calculateCanonicalOrbRange(session);
+  if (recalculated.status !== "LOCKED") return savedRange;
+  const same =
+    nearlyEqual(savedRange.high, recalculated.high) &&
+    nearlyEqual(savedRange.low, recalculated.low) &&
+    nearlyEqual(savedRange.midpoint, recalculated.midpoint) &&
+    Number(savedRange.source_candle_count ?? 0) === ORB_RANGE_SOURCE_CANDLES;
+  if (same) return savedRange;
+  return lockOpeningRangeForSession(session);
+}
+
+async function calculateCanonicalOrbRange(session: any) {
+  const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
+  const cachedRows = cachedCandlesBetween(getCachedCandles(session.symbol, timeframe), session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
+  const rows =
+    cachedRows.length > 0
+      ? cachedRows
+      : (
+          await query(
+            `SELECT timestamp_utc, open, high, low, close, volume, spread
+             FROM candles
+             WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
+             ORDER BY timestamp_utc ASC`,
+            [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
+          )
+        ).rows;
+  const candles: Candle[] = rows.slice(0, ORB_RANGE_SOURCE_CANDLES).map((row: any) => ({
+    timestampUtc: row.timestamp_utc ?? row.timestampUtc,
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume == null ? null : Number(row.volume),
+    spread: row.spread == null ? null : Number(row.spread)
+  }));
+  return buildOpeningRange(candles, 0.01, ORB_RANGE_SOURCE_CANDLES);
+}
+
+function nearlyEqual(left: unknown, right: unknown, tolerance = 0.00001) {
+  const a = Number(left);
+  const b = Number(right);
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance;
 }
 
 async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, previousRows: any[]) {

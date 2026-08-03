@@ -15,6 +15,9 @@ const readinessItems = [
   ["NO_REVENGE_TRADING", "No revenge-trading or FOMO risk"]
 ];
 
+const ORB_RANGE_TIMEFRAME_MINUTES = 5;
+const ORB_RANGE_SOURCE_CANDLES = 3;
+
 export async function sessionRoutes(app: FastifyInstance) {
   app.get("/api/clocks", async () => clocks());
 
@@ -130,8 +133,8 @@ export async function sessionRoutes(app: FastifyInstance) {
     const session = current.rows[0] as any;
     if (!session) return { status: "NO_SESSION", reason: "No Module 1 ORB session exists yet." };
 
-    const timeframe = Number(settings.timeframeMinutes);
-    const expectedCount = Math.ceil(Number(settings.orb.openingRangeMinutes) / timeframe);
+    const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
+    const expectedCount = ORB_RANGE_SOURCE_CANDLES;
     const candlesResult = await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread, source
        FROM candles
@@ -151,7 +154,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       volume: row.volume == null ? null : Number(row.volume),
       spread: row.spread == null ? null : Number(row.spread)
     }));
-    const recalculated = buildOpeningRange(candles, 0.01, expectedCount);
+    const recalculated = buildOpeningRange(candles.slice(0, ORB_RANGE_SOURCE_CANDLES), 0.01, expectedCount);
     return {
       status: recalculated.status,
       symbol: session.symbol,
@@ -215,7 +218,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       [id, auth.tenantId]
     );
     const session = sessionResult.rows[0] as any;
-    const timeframe = settings.timeframeMinutes;
+    const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
     const candlesResult = await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
@@ -232,7 +235,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       volume: row.volume == null ? null : Number(row.volume),
       spread: row.spread == null ? null : Number(row.spread)
     }));
-    const range = buildOpeningRange(candles, 0.01, Math.ceil(Number(settings.orb.openingRangeMinutes) / timeframe));
+    const range = buildOpeningRange(candles.slice(0, ORB_RANGE_SOURCE_CANDLES), 0.01, ORB_RANGE_SOURCE_CANDLES);
     const { rows } = await query(
       `INSERT INTO opening_ranges (
         session_id, status, high, low, midpoint, width, width_ticks, width_atr_percent,
