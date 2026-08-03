@@ -2594,10 +2594,12 @@ export function evaluateVwapOpeningDrive(input: {
   const pullbackRows = candles.filter((candle) => candle.timestampUtc > driveEnd).slice(-Number(config.pullbackMaxBars));
   const zoneLow = direction === "LONG" ? Math.min(vwap, ema) - atr * config.pullbackZoneAtr : Math.min(vwap, ema);
   const zoneHigh = direction === "LONG" ? Math.max(vwap, ema) : Math.max(vwap, ema) + atr * config.pullbackZoneAtr;
+  const pullbackZoneReady = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
   const pullbackTouched = pullbackRows.some((candle) => candle.low <= zoneHigh && candle.high >= zoneLow);
   const confirmation = confirmsModule3(current, direction, Number(config.confirmationBodyPercent));
   push("VWAP_ALIGNMENT", "VWAP alignment", vwapAligned, true, Number(current.close.toFixed(2)), direction === "LONG" ? `> ${vwap.toFixed(2)}` : `< ${vwap.toFixed(2)}`, "Price must be on the correct side of VWAP after the drive.");
   push("EMA_ALIGNMENT", "20 EMA alignment", trendAligned, false, Number(current.close.toFixed(2)), direction === "LONG" ? `>= ${ema.toFixed(2)}` : `<= ${ema.toFixed(2)}`, "EMA alignment confirms continuation context.");
+  push("PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", pullbackZoneReady, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry.");
   push("PULLBACK_ZONE_TOUCHED", "Pullback zone touched", pullbackTouched, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "VWAP/EMA zone", "Price must pull back into the VWAP/EMA value zone.");
   push("CONFIRMATION_CANDLE", "Confirmation candle", confirmation, true, current.close > current.open ? "BULLISH" : current.close < current.open ? "BEARISH" : "DOJI", direction, "A completed candle must confirm continuation away from the pullback zone.");
   const entry = current.close;
@@ -2621,6 +2623,8 @@ export function evaluateVwapOpeningDrive(input: {
   flags.ema = ema;
   flags.entryZone = { low: zoneLow, high: zoneHigh, midpoint: (zoneLow + zoneHigh) / 2, kind: "VWAP_PULLBACK_ZONE" };
   flags.riskReward = rr;
+  flags.confidence = score;
+  flags.tradeGrade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
   flags.state = blockingPassed && scoreOk ? "SIGNAL_ACTIVE" : "WAITING_FOR_PULLBACK_CONFIRMATION";
   if (!blockingPassed || !scoreOk) {
     return module3Decision("VWAP_PULLBACK_NOT_READY", direction, "WAIT", "Waiting for VWAP pullback checklist to fully match.", evaluations, flags, score);

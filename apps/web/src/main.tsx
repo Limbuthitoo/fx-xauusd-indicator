@@ -4555,17 +4555,17 @@ function Module3StrategyValidationPanel({ setup, evaluations, session }: { setup
     {
       title: "Hard Rules",
       description: "All must pass before Module 3 can create a paper-trade candidate.",
-      codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE", "QUALITY_RR", "SIGNAL_SCORE"]
+      codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
     },
     {
       title: "Confirmations",
       description: "These improve continuation quality after the opening drive.",
-      codes: ["EMA_ALIGNMENT", "QUALITY_SPREAD", "QUALITY_NEWS"]
+      codes: ["EMA_ALIGNMENT"]
     },
     {
       title: "Quality Filters",
       description: "These protect the paper entry from poor execution conditions.",
-      codes: ["QUALITY_STOP_SIZE"]
+      codes: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"]
     }
   ];
   const rowByCode = new Map(rows.map((row: any) => [row.rule_code ?? row.ruleCode, row]));
@@ -5163,12 +5163,14 @@ function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: stri
 
 function Module3RuleAuditPanel({ setup }: { setup?: any }) {
   const evaluations = setup?.module_code === "strategy_lab_3" ? setup?.evaluations ?? [] : [];
-  const gates = evaluations.filter((row: any) => ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE", "QUALITY_RR", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
-  const filters = evaluations.filter((row: any) => ["EMA_ALIGNMENT", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_STOP_SIZE"].includes(row.rule_code ?? row.ruleCode));
+  const gates = evaluations.filter((row: any) => ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"].includes(row.rule_code ?? row.ruleCode));
+  const confirmations = evaluations.filter((row: any) => ["EMA_ALIGNMENT"].includes(row.rule_code ?? row.ruleCode));
+  const filters = evaluations.filter((row: any) => ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
   return (
     <Panel icon={<ShieldCheck />} title="Module 3 Rule Audit">
       <Module2RuleLayer title="Signal Gates" rows={gates} empty="No Module 3 signal-gate evidence yet." />
-      <Module2RuleLayer title="Support Filters" rows={filters} empty="No Module 3 support-filter evidence yet." />
+      <Module2RuleLayer title="Confirmations" rows={confirmations} empty="No Module 3 confirmation evidence yet." />
+      <Module2RuleLayer title="Safety Filters" rows={filters} empty="No Module 3 safety-filter evidence yet." />
     </Panel>
   );
 }
@@ -6526,6 +6528,7 @@ function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
     ["OPENING_DRIVE_STRONG", "Opening drive strength", "The opening drive must meet ATR range and candle body requirements."],
     ["VWAP_ALIGNMENT", "VWAP alignment", "Price must remain on the correct side of VWAP after the opening drive."],
     ["EMA_ALIGNMENT", "20 EMA alignment", "EMA alignment supports the continuation context."],
+    ["PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", "A valid VWAP/EMA value zone must exist before pullback entry."],
     ["PULLBACK_ZONE_TOUCHED", "Pullback zone touched", "Price must pull back into the VWAP/EMA value zone."],
     ["CONFIRMATION_CANDLE", "Confirmation candle", "A completed candle must confirm continuation away from the pullback zone."],
     ["QUALITY_SPREAD", "Spread filter", "Spread must be acceptable for XAUUSD paper entry."],

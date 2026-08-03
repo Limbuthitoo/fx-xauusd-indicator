@@ -1355,8 +1355,12 @@ async function buildModule3QaSuite(tenantId: string | null) {
   const session = await ensureTodayModule3Session(tenantId);
   const cases = MODULE3_QA_CASES.map((testCase) => {
     const replay = buildModule3Replay(testCase.code, session);
+    const statusByRule = new Map<string, string>(replay.evaluations.map((row) => [String(row.ruleCode), String(row.status)]));
+    const hardRulesPassed = ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED"].every((code) => statusByRule.get(code) === "PASS");
+    const entryTriggerPassed = statusByRule.get("CONFIRMATION_CANDLE") === "PASS";
+    const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
     const blockingFailure = replay.evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
-    const paperEligible = ["LONG SETUP READY", "SHORT SETUP READY"].includes(replay.status) && replay.evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");
+    const paperEligible = ["LONG SETUP READY", "SHORT SETUP READY"].includes(replay.status) && hardRulesPassed && entryTriggerPassed && safetyRulesPassed;
     const passed =
       replay.scenario === testCase.expected &&
       replay.status === testCase.expectedStatus &&
@@ -1371,6 +1375,9 @@ async function buildModule3QaSuite(tenantId: string | null) {
       actualStatus: replay.status,
       expectedPaperEligible: testCase.opensPaperTrade,
       actualPaperEligible: paperEligible,
+      hardRulesPassed,
+      entryTriggerPassed,
+      safetyRulesPassed,
       status: passed ? "PASS" : "FAIL",
       failureRule: testCase.failureRule ?? null,
       blockingFailure,
@@ -1589,12 +1596,13 @@ function module3ReplayEvaluations(failure: string | null, replayCase: Module3Rep
     ["OPENING_DRIVE_STRONG", "Opening drive strength", true, true, "1.4 ATR", ">= 1 ATR", "The opening drive must meet ATR range and candle body requirements."],
     ["VWAP_ALIGNMENT", "VWAP alignment", true, true, "aligned", "aligned", "Price must remain on the correct side of VWAP after the opening drive."],
     ["EMA_ALIGNMENT", "20 EMA alignment", true, false, "aligned", "aligned", "EMA alignment supports continuation context."],
+    ["PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", true, true, "2349.80-2350.40", "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry."],
     ["PULLBACK_ZONE_TOUCHED", "Pullback zone touched", true, true, "touched", "VWAP/EMA zone", "Price must pull back into the VWAP/EMA value zone."],
     ["CONFIRMATION_CANDLE", "Confirmation candle", true, true, "confirmed", "direction candle", "A completed candle must confirm continuation away from the pullback zone."],
-    ["QUALITY_SPREAD", "Spread filter", true, false, 0.25, "<= 0.8", "Spread must be acceptable for XAUUSD paper entry."],
-    ["QUALITY_NEWS", "No high-impact news", true, false, "CLEAR", "CLEAR", "News filter must be clear for automation."],
+    ["QUALITY_SPREAD", "Spread filter", true, true, 0.25, "<= 0.8", "Spread must be acceptable for XAUUSD paper entry."],
+    ["QUALITY_NEWS", "No high-impact news", true, true, "CLEAR", "CLEAR", "News filter must be clear for automation."],
     ["QUALITY_RR", "Minimum RR 2:1", true, true, replayCase === "INVALID_RR" ? 1.2 : 2, ">= 2", "Reward-to-risk must meet the configured minimum."],
-    ["QUALITY_STOP_SIZE", "Maximum stop size", true, false, "1.1 ATR", "<= 1.35 ATR", "Stop distance must remain inside the configured ATR limit."],
+    ["QUALITY_STOP_SIZE", "Maximum stop size", true, true, "1.1 ATR", "<= 1.35 ATR", "Stop distance must remain inside the configured ATR limit."],
     ["SIGNAL_SCORE", "Minimum signal score", true, true, replayCase === "INVALID_RR" ? 76 : 92, ">= 80", "Module 3 requires a high-quality opening-drive pullback score."]
   ] as const;
   return defaults.map(([ruleCode, name, defaultPass, blocking, actualValue, requiredValue, explanation]) => {
