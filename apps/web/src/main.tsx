@@ -3353,16 +3353,17 @@ function CrossModuleCommandCenter({
   onRunRehearsal: (moduleCode: string) => Promise<void>;
 }) {
   const rows = modules.map((module: any) => commandModuleRow(state, module));
-  const readyCount = rows.filter((row) => row.rehearsalStatus === "GO" && row.auditStatus === "PASS").length;
+  const readyCount = rows.filter((row) => row.readiness === "READY").length;
   const activeTrades = rows.filter((row) => row.trade?.outcome === "ACTIVE").length;
   const buySellSignals = rows.filter((row) => ["BUY", "SELL"].includes(row.signalLabel)).length;
+  const blockedRows = rows.filter((row) => row.readiness === "BLOCKED").length;
   return (
     <>
       <Panel icon={<ShieldCheck />} title="Strategy Command Center">
         <div className="strategy-validation-hero">
           <div>
             <span>System posture</span>
-            <strong className={readyCount === rows.length && rows.length > 0 ? "good-text" : "warn-text"}>{readyCount}/{rows.length} MODULES READY</strong>
+            <strong className={blockedRows > 0 ? "bad-text" : readyCount === rows.length && rows.length > 0 ? "good-text" : "warn-text"}>{blockedRows > 0 ? `${blockedRows} BLOCKED` : `${readyCount}/${rows.length} READY`}</strong>
           </div>
           <em>{activeTrades} active paper trade{activeTrades === 1 ? "" : "s"}</em>
         </div>
@@ -3372,63 +3373,64 @@ function CrossModuleCommandCenter({
           <Metric label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} />
           <Metric label="Enabled modules" value={rows.length} />
           <Metric label="Buy/Sell signals" value={buySellSignals} />
-          <Metric label="Real orders" value="OFF" />
+          <Metric label="Twelve usage" value={`${state.productionReadiness?.data?.twelveData?.usedToday ?? 0}/800`} />
         </div>
-        <p className="reason">This screen compares modules only. Strategy logic, paper trades, journals, and checklists remain isolated per module; the shared part is the XAUUSD Twelve Data candle feed.</p>
+        <p className="reason">Command Center is the tenant control room. Candles are shared from Twelve Data, but each module keeps isolated setup logic, paper trades, journal, reports, and checklist evidence.</p>
       </Panel>
 
-      <Panel icon={<Layers />} title="Module Operations">
-        <div className="table-wrap">
-          <table className="data-table command-table">
-            <thead>
-              <tr>
-                <th>Module</th>
-                <th>Signal</th>
-                <th>Paper Trade</th>
-                <th>Confidence</th>
-                <th>Sample</th>
-                <th>Rehearsal</th>
-                <th>Audit</th>
-                <th>Next Action</th>
-                <th>Open</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.moduleCode} className={row.moduleCode === activeModuleCode ? "selected-row" : ""}>
-                  <td>
-                    <strong>{row.name}</strong>
-                    <span>{row.timeframe}m · {row.enabled ? "Enabled" : "Locked"}</span>
-                  </td>
-                  <td><span className={`status-pill ${row.signalTone}`}>{row.signalLabel}</span></td>
-                  <td>{row.trade ? `${row.trade.direction ?? "--"} · ${row.trade.outcome ?? "ACTIVE"}` : "NONE"}</td>
-                  <td>{row.confidenceLabel}</td>
-                  <td>{row.sampleSize}</td>
-                  <td><span className={`status-pill ${row.rehearsalStatus === "GO" ? "good" : "warn"}`}>{row.rehearsalStatus}</span></td>
-                  <td>{row.auditStatus}</td>
-                  <td>{row.nextAction}</td>
-                  <td>
-                    <div className="admin-actions inline-actions">
-                      <button onClick={() => onOpenModule(row.moduleCode)}>Chart</button>
-                      <button onClick={() => onRunRehearsal(row.moduleCode).catch(() => undefined)}>Rehearse</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {rows.length === 0 ? <tr><td colSpan={9}>No enabled strategy modules.</td></tr> : null}
-            </tbody>
-          </table>
+      <Panel icon={<Layers />} title="Strategy Center">
+        <div className="command-module-grid">
+          {rows.map((row) => (
+            <article className={`command-module-card ${row.moduleCode === activeModuleCode ? "active" : ""}`} key={row.moduleCode}>
+              <header>
+                <div>
+                  <span>{row.timeframe}</span>
+                  <strong>{row.name}</strong>
+                </div>
+                <em className={`status-pill ${row.readinessTone}`}>{row.readiness}</em>
+              </header>
+              <div className="command-signal-row">
+                <div>
+                  <span>Signal</span>
+                  <strong className={row.signalTone === "good" ? "good-text" : row.signalTone === "bad" ? "bad-text" : "warn-text"}>{row.signalLabel}</strong>
+                </div>
+                <div>
+                  <span>Paper trade</span>
+                  <strong>{row.tradeLabel}</strong>
+                </div>
+              </div>
+              <div className="command-metrics">
+                <Metric label="Confidence" value={row.confidenceLabel} />
+                <Metric label="Samples" value={row.sampleSize} />
+                <Metric label="Rehearsal" value={row.rehearsalStatus} />
+                <Metric label="Audit" value={row.auditStatus} />
+              </div>
+              <div className="command-setup-plan">
+                <span>{row.setup?.scenario ? formatScenario(row.setup.scenario) : "Waiting for setup"}</span>
+                <strong>{row.setup?.direction ?? row.trade?.direction ?? "--"}</strong>
+                <em>{row.nextAction}</em>
+              </div>
+              <div className="admin-actions inline-actions">
+                <button onClick={() => onOpenModule(row.moduleCode)}>Open Chart</button>
+                <button onClick={() => onRunRehearsal(row.moduleCode).catch(() => undefined)}>Run Rehearsal</button>
+              </div>
+            </article>
+          ))}
+          {rows.length === 0 ? <p className="reason">No enabled strategy modules.</p> : null}
         </div>
       </Panel>
 
       <Panel icon={<FileText />} title="Action Queue">
         <div className="admin-list">
-          {rows.map((row) => (
-            <div className="admin-row" key={row.moduleCode}>
-              <strong>{row.name}</strong>
-              <span>{row.nextAction}</span>
-            </div>
-          ))}
+          {rows
+            .slice()
+            .sort((left, right) => commandPriority(right) - commandPriority(left))
+            .map((row) => (
+              <div className="admin-row" key={row.moduleCode}>
+                <strong>{row.name}</strong>
+                <span>{row.nextAction} · {row.readiness} · {row.signalLabel}</span>
+              </div>
+            ))}
         </div>
       </Panel>
     </>
@@ -3593,17 +3595,21 @@ function ProductionHealthDashboard({
 function commandModuleRow(state: PanelState, module: any) {
   const moduleCode = module.code;
   const snapshot = (state.moduleCommand ?? []).find((item: any) => item.moduleCode === moduleCode) ?? {};
-  const setup = snapshot.setup;
-  const trade = snapshot.trade;
+  const readinessModule = (state.productionReadiness?.modules ?? []).find((row: any) => row.moduleCode === moduleCode) ?? {};
+  const setup = snapshot.setup ?? readinessModule.latestSetup;
+  const trade = snapshot.trade ?? readinessModule.latestTrade;
   const confidence = (state.strategyConfidence?.modules ?? []).find((row: any) => row.moduleCode === moduleCode);
   const rehearsals = moduleCode === "orb_max_options" ? state.orbRehearsals : moduleCode === "high_probability_strategy_2" ? state.module2Rehearsals : state.module3Rehearsals;
   const latestRehearsal = rehearsals?.[0];
-  const rehearsalStatus = latestRehearsal?.finalStatus ?? latestRehearsal?.final_status ?? "WAIT";
-  const auditStatus = confidence?.audit?.summary?.status ?? latestRehearsal?.audit?.status ?? latestRehearsal?.audit_json?.status ?? "WAIT";
+  const rehearsalStatus = readinessModule.rehearsal?.final_status ?? latestRehearsal?.finalStatus ?? latestRehearsal?.final_status ?? "WAIT";
+  const auditStatus = readinessModule.audit?.status ?? confidence?.audit?.summary?.status ?? latestRehearsal?.audit?.status ?? latestRehearsal?.audit_json?.status ?? "WAIT";
   const signal = getSignal(setup, trade);
   const confidenceLabel = confidence?.confidence?.label ?? "Do not trust yet";
   const sampleSize = confidence?.confidence?.sampleSize ?? 0;
-  const nextAction = commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confidence });
+  const readiness = readinessModule.status ?? moduleReadinessLabel(state, moduleCode).label;
+  const readinessTone = readiness === "READY" ? "good" : readiness === "BLOCKED" ? "bad" : "warn";
+  const tradeLabel = trade ? `${trade.direction ?? "--"} · ${trade.outcome ?? "ACTIVE"}` : "NONE";
+  const nextAction = readinessModule.nextAction ?? commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confidence });
   return {
     moduleCode,
     name: moduleShortName(moduleCode, module.name),
@@ -3617,8 +3623,20 @@ function commandModuleRow(state: PanelState, module: any) {
     sampleSize,
     rehearsalStatus,
     auditStatus,
+    readiness,
+    readinessTone,
+    tradeLabel,
     nextAction
   };
+}
+
+function commandPriority(row: any) {
+  if (row.trade?.outcome === "ACTIVE") return 50;
+  if (row.signalLabel === "BUY" || row.signalLabel === "SELL") return 45;
+  if (row.readiness === "BLOCKED") return 40;
+  if (row.rehearsalStatus !== "GO") return 30;
+  if (row.auditStatus !== "PASS") return 20;
+  return 10;
 }
 
 function productionModuleRow(state: PanelState, module: any) {

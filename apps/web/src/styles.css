@@ -1533,6 +1533,90 @@ button:hover,
   min-width: 150px;
 }
 
+.command-module-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.command-module-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #24342b;
+  border-radius: 8px;
+  background: #101612;
+}
+
+.command-module-card.active {
+  border-color: #23c483;
+  background: #102019;
+}
+
+.command-module-card header,
+.command-signal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.command-module-card header div,
+.command-signal-row div,
+.command-setup-plan {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.command-module-card span,
+.command-signal-row span,
+.command-setup-plan span,
+.command-setup-plan em {
+  color: #8f9d94;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.command-module-card header strong {
+  color: #edf4ef;
+  font-size: 15px;
+}
+
+.command-signal-row strong {
+  color: #edf4ef;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.command-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #253027;
+}
+
+.command-metrics .metric {
+  border: 0;
+  border-radius: 0;
+}
+
+.command-setup-plan {
+  padding: 9px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: #0d1511;
+}
+
+.command-setup-plan strong {
+  color: #edf4ef;
+  font-size: 16px;
+}
+
 .command-table td:first-child {
   display: grid;
   gap: 3px;
@@ -3067,6 +3151,7 @@ aside {
   .platform-metrics,
   .platform-overview,
   .overview-primary,
+  .command-module-grid,
   .usage-strip,
   .tenant-row,
   .automation-row,
@@ -3103,6 +3188,8 @@ aside {
   .cockpit-hero,
   .cockpit-grid,
   .cockpit-checklists,
+  .command-signal-row,
+  .command-metrics,
   .guidance-banner,
   .session-cards,
   .auto-status-strip,
