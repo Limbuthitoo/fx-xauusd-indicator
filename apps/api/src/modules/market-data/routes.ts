@@ -2178,7 +2178,7 @@ async function syncTwelveDataCandlesLocked(options: {
 
   const providerSymbol = options.providerSymbol || "XAU/USD";
   const interval = options.interval || timeframeToTwelveInterval(options.timeframeMinutes);
-  const count = Math.min(Math.max(options.count, 1), 100);
+  const count = Math.min(Math.max(options.count, 1), 5000);
   const params = new URLSearchParams({
     symbol: providerSymbol,
     interval,
@@ -2243,6 +2243,9 @@ async function syncTwelveDataCandlesLocked(options: {
     usageReason: options.usageReason ?? policy.message,
     forced: options.force === true
   });
+  if (settings.feed.rawCandleStorage) {
+    await pruneStoredCandles(options.symbol, options.timeframeMinutes, settings.feed.cacheDays);
+  }
   for (const candle of savedCandles) {
     broadcastLiveEvent({
       type: "candle",
@@ -2520,6 +2523,18 @@ async function upsertCandle(
     source: saved.source,
     receivedAt: saved.created_at
   };
+}
+
+async function pruneStoredCandles(symbol: string, timeframe: number, cacheDays: number) {
+  const retentionDays = Math.max(Math.min(Number(cacheDays) || LIVE_CANDLE_CACHE_DAYS, 30), 1);
+  await query(
+    `DELETE FROM candles
+     WHERE symbol = $1
+       AND timeframe_minutes = $2
+       AND source LIKE 'TWELVE_DATA%'
+       AND timestamp_utc < now() - ($3::text || ' days')::interval`,
+    [symbol, timeframe, retentionDays]
+  ).catch(() => undefined);
 }
 
 function normalizeToTimeframe(timestamp: string, timeframeMinutes: number) {
