@@ -16,6 +16,7 @@
     "dev:mobile": "npm run start -w @orb-guide/mobile",
     "dev:web": "npm run dev -w @orb-guide/web",
     "dev:quant": "uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir apps/quant",
+    "postinstall": "patch-package",
     "build:packages": "npm run build -w @orb-guide/shared-types && npm run build -w @orb-guide/rule-engine && npm run build -w @orb-guide/risk-engine && npm run build -w @orb-guide/strategy-engine && npm run build -w @orb-guide/liquidity-sweep-engine",
     "build:api": "npm run build:packages && npm run build -w @orb-guide/api",
     "build:web": "npm run build -w @orb-guide/web",
@@ -54,6 +55,7 @@
     "metro-transform-worker": "0.80.12"
   },
   "devDependencies": {
+    "patch-package": "^8.0.1",
     "pm2": "^7.0.3",
     "react-native": "0.74.5"
   }

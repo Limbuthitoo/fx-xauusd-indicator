@@ -4,7 +4,7 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Component, ReactNode, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -146,7 +146,47 @@ const mobileTabs: Array<{ key: MobileTab; label: string }> = [
   { key: "more", label: "More" }
 ];
 
+type ErrorBoundaryState = { message: string | null };
+
+class MobileErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { message: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { message: error.message || "The mobile app hit an unexpected error." };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("Mobile app crash boundary", error);
+  }
+
+  render() {
+    if (!this.state.message) return this.props.children;
+    return (
+      <SafeAreaView style={styles.screen}>
+        <StatusBar style="light" />
+        <View style={styles.loginWrap}>
+          <Image source={BRAND_LOGO} style={styles.loginLogo} resizeMode="contain" />
+          <Text style={styles.eyebrow}>APP RECOVERY</Text>
+          <Text style={styles.loginTitle}>XAUUSD Signal</Text>
+          <Text style={styles.loginCopy}>{this.state.message}</Text>
+          <Pressable style={styles.loginButton} onPress={() => this.setState({ message: null })}>
+            <Text style={styles.loginButtonText}>Try Again</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+}
+
 export default function App() {
+  return (
+    <MobileErrorBoundary>
+      <AppContent />
+    </MobileErrorBoundary>
+  );
+}
+
+function AppContent() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [token, setToken] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -179,12 +219,17 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    loadDashboard(token, false, true);
+    loadDashboard(token, false, true).catch((error) => {
+      setLoading(false);
+      setPushStatus((error as Error).message || "Dashboard sync failed");
+    });
   }, [token, apiBaseUrl]);
 
   useEffect(() => {
     if (!token || !selectedModuleCode) return;
-    loadChart(selectedModuleCode, token).catch(() => undefined);
+    loadChart(selectedModuleCode, token).catch((error) => {
+      setPushStatus((error as Error).message || "Chart sync failed");
+    });
   }, [token, apiBaseUrl, selectedModuleCode]);
 
   useEffect(() => {
@@ -196,7 +241,12 @@ export default function App() {
     function connect() {
       if (stopped) return;
       setSocketStatus("Socket connecting");
-      socket = new WebSocket(apiWebSocketUrl(apiBaseUrl, "/api/live/ws"));
+      const wsUrl = apiWebSocketUrl(apiBaseUrl, "/api/live/ws");
+      if (!wsUrl) {
+        setSocketStatus("Invalid API URL");
+        return;
+      }
+      socket = new WebSocket(wsUrl);
       socket.onopen = () => setSocketStatus("Live socket");
       socket.onmessage = (event) => {
         try {
@@ -240,7 +290,12 @@ export default function App() {
       AsyncStorage.getItem(PUSH_TOKEN_KEY),
       AsyncStorage.getItem(PUSH_SYNC_KEY)
     ]);
-    if (savedApi) setApiBaseUrl(savedApi);
+    const nextApiBaseUrl = normalizeApiBaseUrl(savedApi);
+    if (nextApiBaseUrl) {
+      setApiBaseUrl(nextApiBaseUrl);
+    } else if (savedApi) {
+      await AsyncStorage.removeItem(API_URL_KEY);
+    }
     setPushDiagnostics((previous) => ({
       ...previous,
       expoPushToken: savedPushToken,
@@ -1538,15 +1593,33 @@ function formatPercent(value: unknown) {
 
 function formatTime(value: string) {
   if (!value) return "--";
-  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "--";
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 function apiWebSocketUrl(apiBaseUrl: string, path: string) {
-  const base = new URL(apiBaseUrl);
-  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
+  const base = normalizeApiBaseUrl(apiBaseUrl);
+  if (!base) return null;
+  const url = new URL(base);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
+}
+
+function normalizeApiBaseUrl(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
 }
 
 function normalizeCandles(candles: ChartCandle[]) {
