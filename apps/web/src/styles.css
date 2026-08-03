@@ -192,6 +192,12 @@ main {
   color: #ff8a8a !important;
 }
 
+.secondary-button {
+  border-color: #2f3d34;
+  background: #111612;
+  color: #d6e1db;
+}
+
 .topbar {
   display: flex;
   align-items: center;

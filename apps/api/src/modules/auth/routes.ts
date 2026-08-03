@@ -23,6 +23,7 @@ type AdminSession = {
   tenantId: string | null;
   platformSuperAdmin: boolean;
   permissions: string[];
+  passwordChangeRequired?: boolean;
   sid?: string;
   exp: number;
 };
@@ -122,6 +123,7 @@ export async function authRoutes(app: FastifyInstance) {
       tenantId: admin.tenant_id ?? null,
       platformSuperAdmin: admin.platform_super_admin === true,
       permissions,
+      passwordChangeRequired: admin.password_change_required === true,
       sid: sessionId,
       exp: Date.now() + TOKEN_TTL_MS
     };
@@ -193,6 +195,52 @@ export async function authRoutes(app: FastifyInstance) {
       metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
     });
     return { status: "ok" };
+  });
+
+  app.post("/api/auth/change-password", async (request, reply) => {
+    const session = requireAdmin(request);
+    const body = request.body as { currentPassword?: string; newPassword?: string };
+    const currentPassword = String(body.currentPassword ?? "");
+    const newPassword = String(body.newPassword ?? "");
+    const passwordError = validateStrongPassword(newPassword);
+    if (passwordError) return reply.code(400).send({ message: passwordError });
+    if (currentPassword === newPassword) return reply.code(400).send({ message: "New password must be different from the temporary password." });
+    const { rows } = await query("SELECT password_hash, email FROM admin_users WHERE id = $1 AND status = 'ACTIVE' LIMIT 1", [session.sub]);
+    const admin = rows[0];
+    if (!admin || !(await verifyPassword(currentPassword, admin.password_hash))) {
+      await recordSecurityEvent({
+        adminUserId: session.sub,
+        eventType: "AUTH_PASSWORD_CHANGE_FAILED",
+        email: session.email,
+        request,
+        metadata: { reason: "CURRENT_PASSWORD_INVALID" }
+      });
+      return reply.code(401).send({ message: "Current password is incorrect." });
+    }
+    const passwordHash = await hashPassword(newPassword);
+    await query(
+      `UPDATE admin_users
+       SET password_hash = $2,
+           password_change_required = false,
+           password_changed_at = now(),
+           updated_at = now()
+       WHERE id = $1`,
+      [session.sub, passwordHash]
+    );
+    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND sid <> $2 AND revoked_at IS NULL", [session.sub, session.sid ?? ""]);
+    const refreshed: AdminSession = { ...session, passwordChangeRequired: false, exp: Date.now() + TOKEN_TTL_MS };
+    const token = signSession(refreshed);
+    await persistAdminSession(refreshed, token, request);
+    setAuthCookie(reply, token, refreshed.exp);
+    await writeAudit(session.sub, "AUTH_PASSWORD_CHANGED", "admin_user", session.sub, null, { email: session.email, passwordChangeRequired: false });
+    await recordSecurityEvent({
+      adminUserId: session.sub,
+      eventType: "AUTH_PASSWORD_CHANGED",
+      email: session.email,
+      request,
+      metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId, sessionsRevoked: true }
+    });
+    return { token, user: refreshed };
   });
 
   app.post("/api/auth/mfa/setup", async (request) => {
@@ -447,6 +495,12 @@ export function requireAdmin(request: FastifyRequest) {
     error.statusCode = 401;
     throw error;
   }
+  if (session.passwordChangeRequired === true && !passwordChangeAllowedPath(request.url)) {
+    const error = new Error("Password change required before accessing the dashboard.") as Error & { statusCode?: number; code?: string };
+    error.statusCode = 403;
+    error.code = "PASSWORD_CHANGE_REQUIRED";
+    throw error;
+  }
   return session;
 }
 
@@ -631,6 +685,11 @@ function tokenFromRequest(request: FastifyRequest) {
     if (rawName === AUTH_COOKIE_NAME) return decodeURIComponent(rawValue.join("="));
   }
   return null;
+}
+
+function passwordChangeAllowedPath(url: string) {
+  const path = url.split("?")[0];
+  return path === "/api/auth/change-password" || path === "/api/auth/logout" || path === "/api/auth/logout-all" || path === "/api/auth/me";
 }
 
 function setAuthCookie(reply: any, token: string, exp: number) {

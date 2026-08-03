@@ -534,11 +534,14 @@ export async function adminRoutes(app: FastifyInstance) {
     const passwordHash = await hashPassword(password);
     const { rows } = await query(
       `UPDATE admin_users
-       SET password_hash = $2, updated_at = now()
+       SET password_hash = $2,
+           password_change_required = true,
+           updated_at = now()
        WHERE id = $1
-       RETURNING id, email, display_name, status, tenant_id, updated_at`,
+       RETURNING id, email, display_name, status, tenant_id, password_change_required, updated_at`,
       [before.rows[0].id, passwordHash]
     );
+    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND revoked_at IS NULL", [before.rows[0].id]);
     await writeAudit(session.sub, "SUBSCRIBER_PASSWORD_RESET", "admin_user", before.rows[0].id, { email: before.rows[0].email }, { email: rows[0].email, temporaryPasswordSet: true });
     return rows[0];
   });
@@ -1239,18 +1242,20 @@ async function upsertSubscriberLogin(
   await assertTenantAdminLimit(tenantId, input.email);
   const passwordHash = await hashPassword(input.password);
   const { rows } = await query(
-    `INSERT INTO admin_users (email, display_name, password_hash, tenant_id, platform_super_admin, status)
-     VALUES ($1,$2,$3,$4,false,'ACTIVE')
+    `INSERT INTO admin_users (email, display_name, password_hash, tenant_id, platform_super_admin, status, password_change_required)
+     VALUES ($1,$2,$3,$4,false,'ACTIVE',true)
      ON CONFLICT (email) DO UPDATE SET
        display_name = EXCLUDED.display_name,
        password_hash = EXCLUDED.password_hash,
        tenant_id = EXCLUDED.tenant_id,
        platform_super_admin = false,
        status = 'ACTIVE',
+       password_change_required = true,
        updated_at = now()
-     RETURNING id, email, display_name, status, tenant_id, platform_super_admin, created_at, updated_at, last_login_at`,
+     RETURNING id, email, display_name, status, tenant_id, platform_super_admin, password_change_required, created_at, updated_at, last_login_at`,
     [input.email, input.displayName, passwordHash, tenantId]
   );
+  await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND revoked_at IS NULL", [rows[0].id]);
   await query(
     `INSERT INTO admin_user_roles (user_id, role_id)
      SELECT $1, id FROM admin_roles WHERE code = $2

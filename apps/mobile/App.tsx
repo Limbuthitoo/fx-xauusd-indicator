@@ -66,6 +66,14 @@ type Dashboard = {
   supportInfo?: any;
 };
 
+type AuthUser = {
+  displayName: string;
+  email: string;
+  tenantId?: string | null;
+  platformSuperAdmin?: boolean;
+  passwordChangeRequired?: boolean;
+};
+
 type PushDiagnostics = {
   permission: string;
   expoPushToken: string | null;
@@ -216,6 +224,7 @@ export default function App() {
 function AppContent() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [token, setToken] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [selectedModuleCode, setSelectedModuleCode] = useState<string | null>(null);
   const [chart, setChart] = useState<ChartPayload | null>(null);
@@ -265,22 +274,22 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || authUser?.passwordChangeRequired) return;
     loadDashboard(token, false, true).catch((error) => {
       setLoading(false);
       setPushStatus((error as Error).message || "Dashboard sync failed");
     });
-  }, [token, apiBaseUrl]);
+  }, [token, apiBaseUrl, authUser?.passwordChangeRequired]);
 
   useEffect(() => {
-    if (!token || !selectedModuleCode) return;
+    if (!token || authUser?.passwordChangeRequired || !selectedModuleCode) return;
     loadChart(selectedModuleCode, token).catch((error) => {
       setPushStatus((error as Error).message || "Chart sync failed");
     });
-  }, [token, apiBaseUrl, selectedModuleCode]);
+  }, [token, apiBaseUrl, selectedModuleCode, authUser?.passwordChangeRequired]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || authUser?.passwordChangeRequired) return;
     let stopped = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -328,7 +337,7 @@ function AppContent() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [token, apiBaseUrl]);
+  }, [token, apiBaseUrl, authUser?.passwordChangeRequired]);
 
   async function restoreSession() {
     const [savedToken, savedApi, savedPushToken, savedPushSyncedAt] = await Promise.all([
@@ -348,7 +357,15 @@ function AppContent() {
       expoPushToken: savedPushToken,
       lastSyncedAt: savedPushSyncedAt
     }));
-    if (savedToken) setToken(savedToken);
+    if (savedToken) {
+      const restoredUser = await loadMe(savedToken, nextApiBaseUrl ?? apiBaseUrl).catch(() => null);
+      if (restoredUser) {
+        setAuthUser(restoredUser);
+        setToken(savedToken);
+      } else {
+        await clearSecureToken();
+      }
+    }
     setLoading(false);
   }
 
@@ -359,11 +376,39 @@ function AppContent() {
       body: JSON.stringify({ email, password })
     });
     if (!response.ok) throw new Error("Invalid tenant login.");
-    const payload = await response.json() as { token: string };
+    const payload = await response.json() as { token: string; user: AuthUser };
     await Promise.all([
       writeSecureToken(payload.token),
       AsyncStorage.setItem(API_URL_KEY, apiBaseUrl)
     ]);
+    setAuthUser(payload.user);
+    setToken(payload.token);
+    if (payload.user?.passwordChangeRequired) return;
+    await registerPush(payload.token);
+    await loadDashboard(payload.token, true);
+    await loadPushDiagnostics(payload.token);
+  }
+
+  async function loadMe(authToken: string, baseUrl = apiBaseUrl) {
+    const response = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { authorization: `Bearer ${authToken}` }
+    });
+    if (!response.ok) throw new Error("Session expired.");
+    const payload = await response.json() as { user: AuthUser };
+    return payload.user;
+  }
+
+  async function changeOwnPassword(currentPassword: string, newPassword: string) {
+    if (!token) return;
+    const response = await fetch(`${apiBaseUrl}/api/auth/change-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ currentPassword, newPassword })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const payload = await response.json() as { token: string; user: AuthUser };
+    await writeSecureToken(payload.token);
+    setAuthUser(payload.user);
     setToken(payload.token);
     await registerPush(payload.token);
     await loadDashboard(payload.token, true);
@@ -380,6 +425,7 @@ function AppContent() {
     }
     await clearSecureToken();
     setToken(null);
+    setAuthUser(null);
     setDashboard(null);
     setChart(null);
     setPushDiagnostics({
@@ -611,6 +657,10 @@ function AppContent() {
     return <LoginScreen onLogin={login} />;
   }
 
+  if (authUser?.passwordChangeRequired) {
+    return <RequiredPasswordChangeScreen user={authUser} onChangePassword={changeOwnPassword} onLogout={logout} />;
+  }
+
   const activeSignals = dashboard?.modules.filter((module) => signalLabel(module).label !== "WAIT").length ?? 0;
   const latestAlert = dashboard?.notifications?.[0];
   if (selectedNotificationDetail) {
@@ -788,6 +838,59 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
           }}
         >
           <Text style={styles.loginButtonText}>{busy ? "Signing in..." : "Sign In"}</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function RequiredPasswordChangeScreen({
+  user,
+  onChangePassword,
+  onLogout
+}: {
+  user: AuthUser;
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  onLogout: () => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <SafeAreaView style={styles.screen}>
+      <StatusBar style="light" />
+      <View style={styles.loginWrap}>
+        <Image source={BRAND_LOGO} style={styles.loginLogo} resizeMode="contain" />
+        <Text style={styles.eyebrow}>FIRST LOGIN SECURITY</Text>
+        <Text style={styles.loginTitle}>Change Password</Text>
+        <Text style={styles.loginCopy}>A temporary password was created for {user.email}. Set your own password before opening the dashboard.</Text>
+        <TextInput style={styles.input} secureTextEntry value={currentPassword} onChangeText={setCurrentPassword} placeholder="Temporary password" placeholderTextColor="#6f7b75" />
+        <TextInput style={styles.input} secureTextEntry value={newPassword} onChangeText={setNewPassword} placeholder="New password" placeholderTextColor="#6f7b75" />
+        <TextInput style={styles.input} secureTextEntry value={confirmPassword} onChangeText={setConfirmPassword} placeholder="Confirm new password" placeholderTextColor="#6f7b75" />
+        <Text style={styles.passwordHint}>Use at least 12 characters with uppercase, lowercase, number, and symbol.</Text>
+        <Pressable
+          style={styles.loginButton}
+          disabled={busy}
+          onPress={async () => {
+            if (newPassword !== confirmPassword) {
+              Alert.alert("Password mismatch", "New password and confirmation do not match.");
+              return;
+            }
+            setBusy(true);
+            try {
+              await onChangePassword(currentPassword, newPassword);
+            } catch (error) {
+              Alert.alert("Password change failed", cleanErrorMessage((error as Error).message));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Text style={styles.loginButtonText}>{busy ? "Changing..." : "Change Password"}</Text>
+        </Pressable>
+        <Pressable style={styles.secondaryButton} onPress={onLogout}>
+          <Text style={styles.secondaryButtonText}>Logout</Text>
         </Pressable>
       </View>
     </SafeAreaView>
@@ -1882,6 +1985,15 @@ function formatDetailValue(value: unknown) {
   return String(value);
 }
 
+function cleanErrorMessage(message: string) {
+  try {
+    const parsed = JSON.parse(message);
+    return parsed.message ?? parsed.error ?? message;
+  } catch {
+    return message;
+  }
+}
+
 function formatPrice(value: unknown) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(2) : "--";
@@ -2435,6 +2547,7 @@ const styles = StyleSheet.create({
   loginWrap: { flex: 1, justifyContent: "center", padding: 22 },
   loginTitle: { color: "#f4f7f4", fontSize: 40, fontWeight: "900", marginTop: 8 },
   loginCopy: { color: "#9ca7a0", fontSize: 15, lineHeight: 23, marginVertical: 20 },
+  passwordHint: { color: "#8d9791", fontSize: 12, lineHeight: 18, marginBottom: 10 },
   input: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#2a302d", borderRadius: 18, color: "#f4f7f4", paddingHorizontal: 16, paddingVertical: 14, marginBottom: 10 },
   loginButton: { backgroundColor: "#2fe6a8", borderRadius: 22, paddingVertical: 15, alignItems: "center", marginTop: 6 },
   loginButtonText: { color: "#050706", fontWeight: "900", fontSize: 15 }

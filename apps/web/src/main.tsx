@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
-import { API_BASE_URL, api, clearAuthToken } from "./shared/api";
+import { API_BASE_URL, api, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
@@ -95,6 +95,7 @@ type AdminUser = {
   role: string;
   tenantId?: string | null;
   platformSuperAdmin?: boolean;
+  passwordChangeRequired?: boolean;
   permissions: string[];
 };
 
@@ -353,7 +354,18 @@ function App() {
     clearAuthToken();
     setUser(result.user);
     setMessage("Admin dashboard unlocked.");
-    refresh().catch(() => setMessage("API offline. Start PostgreSQL and the API server."));
+    if (!result.user.passwordChangeRequired) refresh().catch(() => setMessage("API offline. Start PostgreSQL and the API server."));
+  }
+
+  async function changeOwnPassword(currentPassword: string, newPassword: string) {
+    const result = await api<{ token: string; user: AdminUser }>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword })
+    });
+    setAuthToken(result.token);
+    setUser(result.user);
+    setMessage("Password changed. Your dashboard is now unlocked.");
+    await refresh();
   }
 
   function logout() {
@@ -897,6 +909,10 @@ function App() {
     return <LoginScreen mode={isPlatformAdminRoute ? "platform" : "tenant"} onLogin={login} />;
   }
 
+  if (user.passwordChangeRequired && !user.platformSuperAdmin) {
+    return <RequiredPasswordChangeScreen user={user} onChangePassword={changeOwnPassword} logout={logout} />;
+  }
+
   if (isPlatformAdminRoute) {
     return (
       <PlatformAdminApp
@@ -1391,6 +1407,65 @@ function NavButton({ icon, label, active, onClick }: { icon: React.ReactNode; la
       {React.cloneElement(icon as React.ReactElement, { size: 17 })}
       <span>{label}</span>
     </button>
+  );
+}
+
+function RequiredPasswordChangeScreen({
+  user,
+  onChangePassword,
+  logout
+}: {
+  user: AdminUser;
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  logout: () => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (newPassword !== confirmPassword) {
+      setError("New password and confirmation do not match.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await onChangePassword(currentPassword, newPassword);
+    } catch (error) {
+      setError((error as Error).message || "Password change failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="login-screen">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-mark"><img src={WEB_BRAND_MARK} alt="" /></div>
+        <h1>Change Password</h1>
+        <p>Platform admin created a temporary password for {user.email}. Set your own password before opening the dashboard.</p>
+        <label>
+          Temporary password
+          <input value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} type="password" autoFocus />
+        </label>
+        <label>
+          New password
+          <input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" />
+        </label>
+        <label>
+          Confirm new password
+          <input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" />
+        </label>
+        <p className="reason">Use at least 12 characters with uppercase, lowercase, number, and symbol.</p>
+        {error ? <p className="form-error">{error}</p> : null}
+        <button disabled={loading}>{loading ? "Changing..." : "Change Password"}</button>
+        <button type="button" className="secondary-button" onClick={logout}>Logout</button>
+      </form>
+    </main>
   );
 }
 
