@@ -64,7 +64,7 @@ export async function mobileRoutes(app: FastifyInstance) {
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const symbol = search.symbol ?? "XAUUSD";
     const timeframe = 5;
-    const limit = Math.min(Math.max(Number(search.limit ?? 80), 20), 180);
+    const limit = Math.min(Math.max(Number(search.limit ?? 120), 40), 300);
     const moduleAccess = await query(
       `SELECT 1
        FROM tenant_modules tm
@@ -116,11 +116,8 @@ export async function mobileRoutes(app: FastifyInstance) {
       )
     ]);
     const latestSetup = setup.rows[0] ?? null;
-    return {
-      symbol,
-      moduleCode,
-      timeframeMinutes: timeframe,
-      candles: candles.rows.reverse().map((row: any) => ({
+    const chartCandles = candles.rows.reverse()
+      .map((row: any) => ({
         timestampUtc: row.timestamp_utc,
         open: Number(row.open),
         high: Number(row.high),
@@ -128,7 +125,16 @@ export async function mobileRoutes(app: FastifyInstance) {
         close: Number(row.close),
         volume: row.volume == null ? null : Number(row.volume),
         spread: row.spread == null ? null : Number(row.spread)
-      })),
+      }))
+      .filter((row: any) => row.timestampUtc && [row.open, row.high, row.low, row.close].every(Number.isFinite));
+    return {
+      symbol,
+      moduleCode,
+      timeframeMinutes: timeframe,
+      provider: "TWELVE_DATA",
+      status: chartCandles.length > 0 ? "CACHE_READY" : "EMPTY_CACHE",
+      latestCandleAt: chartCandles[chartCandles.length - 1]?.timestampUtc ?? null,
+      candles: chartCandles,
       setup: latestSetup,
       trade: trade.rows[0] ?? null,
       levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRange.rows[0] ?? null)

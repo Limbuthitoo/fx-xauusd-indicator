@@ -209,6 +209,9 @@ type ChartPayload = {
   timeframeMinutes: number;
   candles: ChartCandle[];
   levels: ChartLevel[];
+  latestCandleAt?: string | null;
+  provider?: string;
+  status?: string;
 };
 
 type LiveEvent =
@@ -281,7 +284,9 @@ function AppContent() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [selectedModuleCode, setSelectedModuleCode] = useState<string | null>(null);
   const [chart, setChart] = useState<ChartPayload | null>(null);
+  const [chartsByModule, setChartsByModule] = useState<Record<string, ChartPayload>>({});
   const [selectedCandle, setSelectedCandle] = useState<ChartCandle | null>(null);
+  const [chartLoadingModule, setChartLoadingModule] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pushStatus, setPushStatus] = useState("Push not registered");
@@ -385,6 +390,18 @@ function AppContent() {
               ...previous,
               candles: normalizeCandles([...previous.candles, payload.candle]).slice(-90)
             };
+          });
+          setChartsByModule((previous) => {
+            const next = { ...previous };
+            for (const [moduleCode, moduleChart] of Object.entries(previous)) {
+              if (moduleChart.timeframeMinutes !== payload.timeframeMinutes) continue;
+              next[moduleCode] = {
+                ...moduleChart,
+                latestCandleAt: payload.candle.timestampUtc,
+                candles: normalizeCandles([...moduleChart.candles, payload.candle]).slice(-90)
+              };
+            }
+            return next;
           });
           if (payload.automation) {
             loadDashboard(token, false, true).catch(() => undefined);
@@ -576,6 +593,7 @@ function AppContent() {
     setAuthUser(null);
     setDashboard(null);
     setChart(null);
+    setChartsByModule({});
     setPushDiagnostics({
       permission: "unknown",
       expoPushToken: null,
@@ -644,13 +662,19 @@ function AppContent() {
 
   async function loadChart(moduleCode: string, authToken = token) {
     if (!authToken) return;
+    setChartLoadingModule(moduleCode);
     const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=90`, {
       headers: { authorization: `Bearer ${authToken}` }
     });
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json() as ChartPayload;
-    setChart(data);
-    setSelectedCandle(data.candles[data.candles.length - 1] ?? null);
+    try {
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json() as ChartPayload;
+      setChart(data);
+      setChartsByModule((previous) => ({ ...previous, [moduleCode]: data }));
+      setSelectedCandle(data.candles[data.candles.length - 1] ?? null);
+    } finally {
+      setChartLoadingModule((current) => current === moduleCode ? null : current);
+    }
   }
 
   async function loadModuleLearning(moduleCode: string, authToken = token) {
@@ -970,7 +994,8 @@ function AppContent() {
             selectedModule={selectedModule}
             learning={selectedModule ? learningByModule[selectedModule.code] : undefined}
             learningBusy={selectedModule ? learningLoadingModule === selectedModule.code : false}
-            chart={chart?.moduleCode === selectedModule?.code ? chart : null}
+            chart={selectedModule ? (chart?.moduleCode === selectedModule.code ? chart : chartsByModule[selectedModule.code] ?? null) : null}
+            chartLoading={selectedModule ? chartLoadingModule === selectedModule.code : false}
             selectedCandle={selectedCandle}
             setSelectedCandle={setSelectedCandle}
             onRunLearning={(moduleCode) => runModuleLearning(moduleCode).catch((error) => Alert.alert("Learning failed", error.message))}
@@ -1324,6 +1349,7 @@ function ChartScreen({
   learning,
   learningBusy,
   chart,
+  chartLoading,
   selectedCandle,
   setSelectedCandle,
   onRunLearning,
@@ -1334,6 +1360,7 @@ function ChartScreen({
   learning?: ModuleLearningSnapshot;
   learningBusy: boolean;
   chart: ChartPayload | null;
+  chartLoading: boolean;
   selectedCandle: ChartCandle | null;
   setSelectedCandle: (candle: ChartCandle) => void;
   onRunLearning: (moduleCode: string) => void;
@@ -1354,7 +1381,7 @@ function ChartScreen({
         ))}
       </ScrollView>
       {selectedModule ? (
-        <MobileCandlestickChart chart={chart} selectedCandle={selectedCandle} onSelectCandle={setSelectedCandle} />
+        <MobileCandlestickChart chart={chart} loading={chartLoading} selectedCandle={selectedCandle} onSelectCandle={setSelectedCandle} />
       ) : (
         <EmptyCard text="No strategy module is selected." />
       )}
@@ -2014,14 +2041,16 @@ function PushToggleRow({
 
 function MobileCandlestickChart({
   chart,
+  loading,
   selectedCandle,
   onSelectCandle
 }: {
   chart: ChartPayload | null;
+  loading?: boolean;
   selectedCandle: ChartCandle | null;
   onSelectCandle: (candle: ChartCandle) => void;
 }) {
-  if (!chart) return <EmptyCard text="Loading XAUUSD chart from server cache..." />;
+  if (!chart) return <EmptyCard text={loading ? "Loading XAUUSD chart from server cache..." : "Select a module to load its XAUUSD chart."} />;
   if (chart.candles.length === 0) return <EmptyCard text="No cached XAUUSD candles are available yet." />;
 
   const plotHeight = 184;
@@ -2039,14 +2068,17 @@ function MobileCandlestickChart({
   const range = Math.max(maxPrice - minPrice, 0.01);
   const priceToY = (price: number) => topPad + ((maxPrice - price) / range) * plotHeight;
   const latest = chart.candles[chart.candles.length - 1];
-  const info = selectedCandle ?? latest;
+  const selectedInChart = selectedCandle && chart.candles.some((candle) => candle.timestampUtc === selectedCandle.timestampUtc)
+    ? selectedCandle
+    : null;
+  const info = selectedInChart ?? latest;
 
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartHeader}>
         <View>
           <Text style={styles.cardTitle}>{chart.symbol}</Text>
-          <Text style={styles.muted}>{chart.timeframeMinutes}m live chart · {chart.candles.length} candles</Text>
+          <Text style={styles.muted}>{chart.timeframeMinutes}m live chart · {chart.candles.length} candles · {chart.status ?? "CACHE"}</Text>
         </View>
         <View style={styles.priceBox}>
           <Text style={styles.priceLabel}>Last</Text>
@@ -2075,7 +2107,7 @@ function MobileCandlestickChart({
             const bodyTop = priceToY(Math.max(candle.open, candle.close));
             const bodyBottom = priceToY(Math.min(candle.open, candle.close));
             const bodyHeight = Math.max(bodyBottom - bodyTop, 2);
-            const isSelected = selectedCandle?.timestampUtc === candle.timestampUtc;
+            const isSelected = selectedInChart?.timestampUtc === candle.timestampUtc;
             return (
               <Pressable
                 key={candle.timestampUtc}
