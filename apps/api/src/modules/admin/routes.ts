@@ -4,7 +4,7 @@ import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { config } from "../../infrastructure/config.js";
 import { poolStats, query } from "../../infrastructure/db/client.js";
-import { redisHealth } from "../../infrastructure/redis/client.js";
+import { redisClient, redisHealth } from "../../infrastructure/redis/client.js";
 import { hashPassword, requireAdmin, requirePermission, requireTenantModule, writeAudit } from "../auth/routes.js";
 import { handleBillingWebhook } from "../billing/provider.js";
 import { pushProviderHealth, sendTenantPush } from "../notifications/push.js";
@@ -238,6 +238,7 @@ export async function adminRoutes(app: FastifyInstance) {
       [platform, result.rows[0].id]
     );
     await removeSupersededApkFiles(previousActive.rows.map((row: any) => row.storage_path), storagePath);
+    await redisClient()?.del("platform:bundle:v1").catch(() => undefined);
     await writeAudit(session.sub, "MOBILE_APP_RELEASE_UPLOADED", "mobile_app_release", result.rows[0].id, null, {
       versionName,
       versionCode: Number.isFinite(versionCode) ? versionCode : null,

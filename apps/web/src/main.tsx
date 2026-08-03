@@ -163,6 +163,7 @@ function App() {
         platformBusinessSettings: bundle?.platformBusinessSettings,
         platformPushOverview: bundle?.platformPushOverview,
         platformTickets: bundle?.platformTickets ?? [],
+        platformAppReleases: bundle?.platformAppReleases ?? [],
         platformRequestLoad: bundle?.requestLoad
       }));
       return;
