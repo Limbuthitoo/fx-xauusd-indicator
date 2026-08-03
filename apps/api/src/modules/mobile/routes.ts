@@ -1,10 +1,54 @@
 import type { FastifyInstance } from "fastify";
+import { createReadStream } from "node:fs";
 import { clocks } from "../../infrastructure/time.js";
 import { query } from "../../infrastructure/db/client.js";
 import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
 
 export async function mobileRoutes(app: FastifyInstance) {
+  app.get("/api/mobile/app-update", async (request) => {
+    const search = request.query as { platform?: string; currentVersion?: string; currentCode?: string };
+    const platform = String(search.platform ?? "android").toLowerCase() === "android" ? "android" : "android";
+    const { rows } = await query(
+      `SELECT id, platform, version_name, version_code, file_name, download_path, file_size_bytes, sha256, changelog, created_at
+       FROM mobile_app_releases
+       WHERE platform = $1 AND status = 'ACTIVE'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [platform]
+    );
+    const latest = rows[0] ?? null;
+    if (!latest) return { updateAvailable: false, latest: null };
+    const updateAvailable = isNewerRelease(latest.version_name, latest.version_code, search.currentVersion, search.currentCode);
+    return {
+      updateAvailable,
+      latest: {
+        ...latest,
+        downloadUrl: absoluteApiUrl(latest.download_path)
+      }
+    };
+  });
+
+  app.get("/api/mobile/app-releases/:fileName", async (request, reply) => {
+    const params = request.params as { fileName: string };
+    const { rows } = await query(
+      `SELECT *
+       FROM mobile_app_releases
+       WHERE download_path = $1 AND status = 'ACTIVE'
+       LIMIT 1`,
+      [`/api/mobile/app-releases/${params.fileName}`]
+    );
+    const release = rows[0];
+    if (!release) {
+      reply.code(404);
+      return "APK release not found.";
+    }
+    reply.header("content-type", "application/vnd.android.package-archive");
+    reply.header("content-disposition", `attachment; filename="${release.file_name}"`);
+    reply.header("content-length", String(release.file_size_bytes));
+    return reply.send(createReadStream(release.storage_path));
+  });
+
   app.get("/api/mobile/chart", async (request) => {
     const session = requireAdmin(request);
     if (!session.tenantId) {
@@ -339,6 +383,31 @@ export async function mobileRoutes(app: FastifyInstance) {
     );
     return { disabled: rows.length };
   });
+}
+
+function absoluteApiUrl(path: string) {
+  const base = process.env.PUBLIC_API_BASE_URL || process.env.PUBLIC_WEB_BASE_URL || "";
+  return base ? `${base.replace(/\/$/, "")}${path}` : path;
+}
+
+function isNewerRelease(latestVersion: string, latestCode: number | null, currentVersion?: string, currentCode?: string) {
+  const latestCodeNumber = Number(latestCode);
+  const currentCodeNumber = Number(currentCode);
+  if (Number.isFinite(latestCodeNumber) && Number.isFinite(currentCodeNumber)) return latestCodeNumber > currentCodeNumber;
+  if (!currentVersion) return true;
+  return compareVersions(latestVersion, currentVersion) > 0;
+}
+
+function compareVersions(left: string, right: string) {
+  const leftParts = String(left).split(/[.+-]/).map((part) => Number(part));
+  const rightParts = String(right).split(/[.+-]/).map((part) => Number(part));
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = Number.isFinite(leftParts[index]) ? leftParts[index] : 0;
+    const rightValue = Number.isFinite(rightParts[index]) ? rightParts[index] : 0;
+    if (leftValue !== rightValue) return leftValue > rightValue ? 1 : -1;
+  }
+  return 0;
 }
 
 async function modulePerformance(tenantId: string, moduleCode: string, period: "week" | "month") {

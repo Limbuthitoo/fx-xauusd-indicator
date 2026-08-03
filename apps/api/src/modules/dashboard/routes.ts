@@ -141,7 +141,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const client = redisClient();
     const cached = client ? await client.get(cacheKey).catch(() => null) : null;
     if (cached) return JSON.parse(cached);
-    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, requestLoad] = await Promise.all([
+    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, requestLoad] = await Promise.all([
       injectJson(app, request, "GET", "/api/platform/overview", undefined),
       injectJson(app, request, "GET", "/api/platform/automation/status", undefined, []),
       injectJson(app, request, "GET", "/api/platform/usage/twelve-data", undefined),
@@ -152,9 +152,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       injectJson(app, request, "GET", "/api/platform/business-settings", undefined),
       injectJson(app, request, "GET", "/api/platform/push/overview", undefined),
       injectJson(app, request, "GET", "/api/platform/support-tickets", undefined, []),
+      injectJson(app, request, "GET", "/api/platform/mobile-app/releases", undefined, []),
       platformRequestLoad()
     ]);
-    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, requestLoad, cachedAt: new Date().toISOString() };
+    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, requestLoad, cachedAt: new Date().toISOString() };
     if (client) await client.set(cacheKey, JSON.stringify(payload), "EX", 5).catch(() => undefined);
     return payload;
   });

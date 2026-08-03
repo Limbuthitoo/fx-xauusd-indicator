@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { config } from "../../infrastructure/config.js";
 import { poolStats, query } from "../../infrastructure/db/client.js";
@@ -151,6 +151,85 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/api/platform/push/overview", async (request) => {
     requirePlatformSuperAdmin(request);
     return platformPushOverview();
+  });
+
+  app.get("/api/platform/mobile-app/releases", async (request) => {
+    requirePlatformSuperAdmin(request);
+    const { rows } = await query(
+      `SELECT *
+       FROM mobile_app_releases
+       ORDER BY created_at DESC
+       LIMIT 20`
+    );
+    return rows;
+  });
+
+  app.post("/api/platform/mobile-app/releases", { bodyLimit: 220 * 1024 * 1024 }, async (request) => {
+    const session = requirePlatformSuperAdmin(request);
+    const body = request.body as {
+      fileName?: string;
+      contentBase64?: string;
+      changelog?: string;
+      versionName?: string;
+      versionCode?: number | string | null;
+      platform?: string;
+    };
+    const fileName = safeApkFileName(body.fileName);
+    if (!fileName || !body.contentBase64) {
+      const error = new Error("APK file is required.") as Error & { statusCode?: number };
+      error.statusCode = 400;
+      throw error;
+    }
+    const buffer = Buffer.from(body.contentBase64, "base64");
+    if (!buffer.length || buffer.subarray(0, 2).toString("utf8") !== "PK") {
+      const error = new Error("Uploaded file must be a valid APK archive.") as Error & { statusCode?: number };
+      error.statusCode = 400;
+      throw error;
+    }
+    const detected = detectApkVersion(buffer, fileName);
+    const versionName = String(body.versionName ?? detected.versionName ?? "").trim();
+    if (!versionName) {
+      const error = new Error("Version could not be detected. Enter the version manually.") as Error & { statusCode?: number };
+      error.statusCode = 400;
+      throw error;
+    }
+    const versionCode = Number(body.versionCode ?? detected.versionCode);
+    const platform = String(body.platform ?? "android").toLowerCase() === "android" ? "android" : "android";
+    const sha256 = createHash("sha256").update(buffer).digest("hex");
+    const releasesDir = resolve(process.cwd(), "../../data/mobile-releases");
+    await mkdir(releasesDir, { recursive: true });
+    const storedFileName = `${Date.now()}-${versionName.replace(/[^a-zA-Z0-9._-]/g, "_")}-${fileName}`;
+    const storagePath = resolve(releasesDir, storedFileName);
+    await writeFile(storagePath, buffer, { mode: 0o640 });
+    const downloadPath = `/api/mobile/app-releases/${storedFileName}`;
+    const result = await query(
+      `INSERT INTO mobile_app_releases (
+         platform, version_name, version_code, file_name, storage_path, download_path,
+         file_size_bytes, sha256, changelog, uploaded_by_admin_user_id
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [
+        platform,
+        versionName,
+        Number.isFinite(versionCode) ? versionCode : null,
+        fileName,
+        storagePath,
+        downloadPath,
+        buffer.length,
+        sha256,
+        body.changelog ?? "",
+        session.sub
+      ]
+    );
+    await writeAudit(session.sub, "MOBILE_APP_RELEASE_UPLOADED", "mobile_app_release", result.rows[0].id, null, {
+      versionName,
+      versionCode: Number.isFinite(versionCode) ? versionCode : null,
+      fileName,
+      bytes: buffer.length,
+      sha256
+    });
+    return result.rows[0];
   });
 
   app.post("/api/platform/push/test", async (request) => {
@@ -952,6 +1031,28 @@ async function platformPushOverview() {
     devices: devices.rows[0] ?? {},
     delivery: delivery.rows,
     latest: latest.rows
+  };
+}
+
+function safeApkFileName(value?: string) {
+  const fileName = String(value ?? "").split(/[\\/]/).pop()?.replace(/[^a-zA-Z0-9._-]/g, "_") ?? "";
+  if (!fileName.toLowerCase().endsWith(".apk")) return "";
+  return fileName;
+}
+
+function detectApkVersion(buffer: Buffer, fileName: string) {
+  const ascii = buffer.toString("latin1");
+  const fileVersion = fileName.match(/(?:^|[-_v])(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9._-]+)?)(?:[-_.]|$)/)?.[1];
+  const textVersion =
+    ascii.match(/versionName[^\d]{0,32}(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9._-]+)?)/i)?.[1] ??
+    ascii.match(/expo\.version[^\d]{0,32}(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9._-]+)?)/i)?.[1] ??
+    fileVersion;
+  const textCode =
+    ascii.match(/versionCode[^\d]{0,32}(\d{1,10})/i)?.[1] ??
+    fileName.match(/(?:code|vc)[-_]?(\d{1,10})/i)?.[1];
+  return {
+    versionName: textVersion,
+    versionCode: textCode ? Number(textCode) : null
   };
 }
 

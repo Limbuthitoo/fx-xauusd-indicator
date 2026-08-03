@@ -2183,6 +2183,16 @@ aside {
   gap: 10px;
 }
 
+.app-update-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.app-update-form label:first-child,
+.app-update-form label:nth-child(4),
+.app-update-form .wide {
+  grid-column: 1 / -1;
+}
+
 .platform-form label,
 .module-checklist label {
   display: grid;
@@ -2432,6 +2442,27 @@ aside {
   border-radius: 6px;
   padding: 10px;
   background: #0f1311;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #2d5542;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #132019;
+  color: #dcebe1;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.button-link:hover {
+  border-color: #23c483;
+  color: #ffffff;
 }
 
 .platform-row {

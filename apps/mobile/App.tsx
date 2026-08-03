@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -33,10 +34,12 @@ const TOKEN_KEY = "orb_mobile_token";
 const API_URL_KEY = "orb_mobile_api_url";
 const PUSH_TOKEN_KEY = "orb_mobile_push_token";
 const PUSH_SYNC_KEY = "orb_mobile_push_synced_at";
+const UPDATE_PROMPT_KEY = "orb_mobile_update_prompted_version";
 const DEFAULT_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ??
   "http://localhost:7073";
+const APP_VERSION = Constants.expoConfig?.version ?? "0.0.0";
 const BRAND_LOGO = require("./assets/brand-logo.png");
 const BRAND_MARK = require("./assets/brand-mark.png");
 
@@ -401,7 +404,28 @@ function AppContent() {
     const nextModuleCode = selectedModuleCode ?? data.modules[0]?.code ?? null;
     if (!selectedModuleCode && nextModuleCode) setSelectedModuleCode(nextModuleCode);
     if (syncChart && nextModuleCode) await loadChart(nextModuleCode, authToken);
+    checkAppUpdate().catch(() => undefined);
     setLoading(false);
+  }
+
+  async function checkAppUpdate() {
+    if (Platform.OS !== "android") return;
+    const response = await fetch(`${apiBaseUrl}/api/mobile/app-update?platform=android&currentVersion=${encodeURIComponent(APP_VERSION)}`);
+    if (!response.ok) return;
+    const payload = await response.json() as { updateAvailable?: boolean; latest?: any };
+    const latest = payload.latest;
+    if (!payload.updateAvailable || !latest?.downloadUrl || !latest?.version_name) return;
+    const prompted = await AsyncStorage.getItem(UPDATE_PROMPT_KEY);
+    if (prompted === latest.version_name) return;
+    await AsyncStorage.setItem(UPDATE_PROMPT_KEY, latest.version_name);
+    Alert.alert(
+      `Update ${latest.version_name} available`,
+      latest.changelog ? String(latest.changelog) : "A newer XAUUSD Signal APK is available.",
+      [
+        { text: "Later", style: "cancel" },
+        { text: "Install", onPress: () => Linking.openURL(latest.downloadUrl).catch(() => undefined) }
+      ]
+    );
   }
 
   async function loadChart(moduleCode: string, authToken = token) {

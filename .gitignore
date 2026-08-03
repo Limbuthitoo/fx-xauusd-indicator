@@ -4,6 +4,7 @@ build/
 .env
 .env.production
 *.log
+*.apk
 .expo/
 backups/postgres/*.dump
 firebase-service-account*.json

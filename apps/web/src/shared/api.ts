@@ -24,7 +24,8 @@ export function apiWebSocketUrl(path: string) {
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 10_000);
+  const timeoutMs = path.includes("/mobile-app/releases") && options.method === "POST" ? 120_000 : 10_000;
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,

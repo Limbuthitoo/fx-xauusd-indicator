@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Bell, CheckCircle2, Clock, CreditCard, Database, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Trash2, Users, XCircle } from "lucide-react";
+import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
-import { api, clearAuthToken } from "./shared/api";
+import { API_BASE_URL, api, clearAuthToken } from "./shared/api";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
@@ -20,7 +20,7 @@ const DEFAULT_PUSH_PREFERENCES = {
 };
 
 type ActiveSection = "command" | "live" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
-type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "billing" | "automation" | "usage" | "system" | "settings";
+type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
   clocks?: { utc: string; newYork: string; nepal: string };
@@ -82,6 +82,7 @@ type PanelState = {
   platformBusinessSettings?: any;
   platformPushOverview?: any;
   platformTickets?: any[];
+  platformAppReleases?: any[];
   tenantPushStatus?: any;
   tenantContext?: any;
 };
@@ -855,6 +856,22 @@ function App() {
     await refresh();
   }
 
+  async function uploadMobileAppRelease(input: { file: File; changelog: string; versionName?: string; versionCode?: string }) {
+    const contentBase64 = await fileToBase64(input.file);
+    const result = await api<any>("/api/platform/mobile-app/releases", {
+      method: "POST",
+      body: JSON.stringify({
+        fileName: input.file.name,
+        contentBase64,
+        changelog: input.changelog,
+        versionName: input.versionName,
+        versionCode: input.versionCode
+      })
+    });
+    setMessage(`Mobile APK ${result.version_name} uploaded. Android users will see the update prompt from the app.`);
+    await refresh();
+  }
+
   async function updateTenantPushPreferences(preferences: any) {
     await api<any>("/api/mobile/push-preferences", {
       method: "PUT",
@@ -900,6 +917,7 @@ function App() {
         updateSupportTicket={updateSupportTicket}
         updatePlatformBusinessSettings={updatePlatformBusinessSettings}
         sendPlatformPushTest={sendPlatformPushTest}
+        uploadMobileAppRelease={uploadMobileAppRelease}
       />
     );
   }
@@ -1393,7 +1411,8 @@ function PlatformAdminApp({
   updateManualInvoiceStatus,
   updateSupportTicket,
   updatePlatformBusinessSettings,
-  sendPlatformPushTest
+  sendPlatformPushTest,
+  uploadMobileAppRelease
 }: {
   state: PanelState;
   user: AdminUser;
@@ -1414,6 +1433,7 @@ function PlatformAdminApp({
   updateSupportTicket: (ticketId: string, status: string, priority?: string) => Promise<void>;
   updatePlatformBusinessSettings: (value: any) => Promise<void>;
   sendPlatformPushTest: () => Promise<void>;
+  uploadMobileAppRelease: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<void>;
 }) {
   const [platformSection, setPlatformSectionState] = useState<PlatformSection>(() => platformSectionFromPath(window.location.pathname));
   const [selectedSubscriberId, setSelectedSubscriberId] = useState<string | null>(null);
@@ -1460,6 +1480,7 @@ function PlatformAdminApp({
           <PlatformNavGroup label="Product">
             <PlatformNavButton icon={<Layers />} label="Strategy Modules" active={platformSection === "modules"} onClick={() => setPlatformSection("modules")} />
             <PlatformNavButton icon={<KeyRound />} label="Plans & Access" active={platformSection === "plans"} onClick={() => setPlatformSection("plans")} />
+            <PlatformNavButton icon={<Smartphone />} label="App Updates" active={platformSection === "app-updates"} onClick={() => setPlatformSection("app-updates")} />
             <PlatformNavButton icon={<Database />} label="Usage & Data" active={platformSection === "usage"} onClick={() => setPlatformSection("usage")} />
           </PlatformNavGroup>
           <PlatformNavGroup label="Operations">
@@ -1523,6 +1544,7 @@ function PlatformAdminApp({
           {platformSection === "tickets" ? <PlatformTicketsPanel tickets={state.platformTickets ?? []} onUpdate={updateSupportTicket} /> : null}
           {platformSection === "modules" ? <PlatformModulesPanel modules={modules} /> : null}
           {platformSection === "plans" ? <PlatformPlansPanel plans={plans} /> : null}
+          {platformSection === "app-updates" ? <PlatformAppUpdatesPanel releases={state.platformAppReleases ?? []} onUpload={uploadMobileAppRelease} /> : null}
           {platformSection === "billing" ? <PlatformBillingPanel billing={platform.billing} onInvoiceStatus={updateManualInvoiceStatus} /> : null}
           {platformSection === "automation" ? <PlatformAutomationPanel rows={state.platformAutomation ?? []} usage={usage} onRunNow={runAutomationNow} onForceSync={forceSyncNow} onToggle={updateTenantAutomation} /> : null}
           {platformSection === "usage" ? <PlatformUsagePanel usage={usage} onForceSync={forceSyncNow} /> : null}
@@ -1889,6 +1911,100 @@ function PlatformPlansPanel({ plans }: { plans: any[] }) {
           </div>
         ))}
         {plans.length === 0 ? <p className="reason">No subscription plans are configured yet.</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function PlatformAppUpdatesPanel({
+  releases,
+  onUpload
+}: {
+  releases: any[];
+  onUpload: (input: { file: File; changelog: string; versionName?: string; versionCode?: string }) => Promise<void>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [changelog, setChangelog] = useState("");
+  const [versionName, setVersionName] = useState("");
+  const [versionCode, setVersionCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const detectedVersion = useMemo(() => file ? detectVersionFromFileName(file.name) : "", [file]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!file) {
+      window.alert("Browse and select an APK file first.");
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".apk")) {
+      window.alert("Only Android APK files are supported here.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onUpload({
+        file,
+        changelog,
+        versionName: versionName.trim() || detectedVersion || undefined,
+        versionCode: versionCode.trim() || undefined
+      });
+      setFile(null);
+      setChangelog("");
+      setVersionName("");
+      setVersionCode("");
+      const input = document.getElementById("platform-apk-upload") as HTMLInputElement | null;
+      if (input) input.value = "";
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="platform-panel platform-wide">
+      <div className="panel-title-row">
+        <div>
+          <h2><Smartphone size={18} />Mobile App Updates</h2>
+          <p className="reason">Upload production APK builds for Android users. The app checks this release feed and prompts users to install newer builds.</p>
+        </div>
+        <div className="overview-kpis compact">
+          <Metric label="Latest version" value={releases[0]?.version_name ?? "--"} />
+          <Metric label="Releases" value={releases.length} />
+        </div>
+      </div>
+
+      <form className="platform-form app-update-form" onSubmit={submit}>
+        <label>
+          APK file
+          <input id="platform-apk-upload" type="file" accept=".apk,application/vnd.android.package-archive" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <label>
+          Version fallback
+          <input placeholder={detectedVersion ? `Detected ${detectedVersion}` : "Optional if APK or filename has version"} value={versionName} onChange={(event) => setVersionName(event.target.value)} />
+        </label>
+        <label>
+          Version code fallback
+          <input placeholder="Optional Android versionCode" value={versionCode} onChange={(event) => setVersionCode(event.target.value)} />
+        </label>
+        <label>
+          Change logs
+          <textarea rows={5} placeholder="What changed in this APK?" value={changelog} onChange={(event) => setChangelog(event.target.value)} />
+        </label>
+        <button className="wide" disabled={busy}><UploadCloud size={16} />{busy ? "Uploading APK..." : "Upload APK Release"}</button>
+      </form>
+
+      <div className="platform-list">
+        {releases.map((release) => (
+          <div className="platform-row" key={release.id}>
+            <div>
+              <strong>{release.version_name} · {formatFileSize(release.file_size_bytes)}</strong>
+              <span>{release.file_name} · {formatNepalTime(release.created_at)}</span>
+              <em>{release.changelog || "No changelog provided."}</em>
+              <em>SHA256 {String(release.sha256 ?? "").slice(0, 16)}...</em>
+            </div>
+            <a className="button-link" href={absoluteApiDownloadUrl(release.download_path)} target="_blank" rel="noreferrer"><Download size={15} />Download</a>
+          </div>
+        ))}
+        {releases.length === 0 ? <p className="reason">No APK releases uploaded yet.</p> : null}
       </div>
     </section>
   );
@@ -6294,6 +6410,7 @@ function platformSectionTitle(section: PlatformSection) {
     tickets: "Support Tickets",
     modules: "Strategy Modules",
     plans: "Plans & Access",
+    "app-updates": "Mobile App Updates",
     billing: "Manual Billing",
     automation: "Automation Control",
     usage: "Usage & Data",
@@ -6310,6 +6427,7 @@ function platformSectionFromPath(pathname: string): PlatformSection {
     section === "tickets" ||
     section === "modules" ||
     section === "plans" ||
+    section === "app-updates" ||
     section === "billing" ||
     section === "automation" ||
     section === "usage" ||
@@ -6328,6 +6446,7 @@ function platformSectionSubtitle(section: PlatformSection) {
     tickets: "Review tenant-created tickets, prioritize requests, and move them through resolution.",
     modules: "Control the strategy module catalog available to subscriber plans.",
     plans: "Review subscription plans, included modules, account limits, and automation access.",
+    "app-updates": "Upload Android APK releases and manage the update feed used by the mobile app.",
     billing: "Track manual payment requests, invoices, revenue, and billing audit activity.",
     automation: "Monitor shared Twelve Data ingestion and per-subscriber module automation.",
     usage: "Inspect Twelve Data credits, grouped calls, imported candles, and recent provider events.",
@@ -6335,6 +6454,35 @@ function platformSectionSubtitle(section: PlatformSection) {
     settings: "Manage business contact, support, and help information shown to subscribers."
   };
   return subtitles[section];
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read APK file."));
+    reader.onload = () => {
+      const value = String(reader.result ?? "");
+      resolve(value.includes(",") ? value.split(",")[1] : value);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function detectVersionFromFileName(fileName: string) {
+  return fileName.match(/(?:^|[-_v])(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9._-]+)?)(?:[-_.]|$)/)?.[1] ?? "";
+}
+
+function formatFileSize(value: unknown) {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "--";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function absoluteApiDownloadUrl(path: string) {
+  if (!path) return "#";
+  if (path.startsWith("http")) return path;
+  return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
 }
 
 function settingValue<T>(settings: any[] | undefined, key: string, fallback: T): T {
