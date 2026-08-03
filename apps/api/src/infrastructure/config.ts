@@ -36,7 +36,7 @@ export const config = {
   quantBaseUrl: process.env.QUANT_BASE_URL ?? "http://localhost:8000",
   twelveDataApiKey: process.env.TWELVE_DATA_API_KEY ?? "",
   twelveDataSymbol: process.env.TWELVE_DATA_SYMBOL ?? "XAU/USD",
-  twelveDataInterval: process.env.TWELVE_DATA_INTERVAL ?? "15min",
+  twelveDataInterval: process.env.TWELVE_DATA_INTERVAL ?? "5min",
   twelveDataPollSeconds: Number(process.env.TWELVE_DATA_POLL_SECONDS ?? 60),
   autoRunSupervisorSeconds: Math.max(Number(process.env.AUTO_RUN_SUPERVISOR_SECONDS ?? 60), 30),
   embeddedMarketDataWorker: booleanEnv(process.env.EMBEDDED_MARKET_DATA_WORKER, false),

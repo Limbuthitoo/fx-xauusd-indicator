@@ -145,6 +145,7 @@ const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 100;
 const TWELVE_DATA_LIVE_POLL_COUNT = 2;
 const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
+const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
 let runtimeSettings: RuntimeSettings | null = null;
 const tenantAutomationStates = new Map<string, TenantAutoRunState>();
 
@@ -187,8 +188,8 @@ const twelveDataState: TwelveDataWorkerState = {
   configured: Boolean(config.twelveDataApiKey),
   symbol: "XAUUSD",
   providerSymbol: config.twelveDataSymbol,
-  timeframeMinutes: 15,
-  interval: config.twelveDataInterval,
+  timeframeMinutes: DEFAULT_TWELVE_DATA_TIMEFRAME,
+  interval: timeframeToTwelveInterval(DEFAULT_TWELVE_DATA_TIMEFRAME),
   pollSeconds: Math.max(config.twelveDataPollSeconds, 60),
   count: 200,
   startedAt: null,
@@ -207,7 +208,7 @@ const autoRunState: AutoRunState = {
   running: false,
   phase: "STARTING",
   symbol: "XAUUSD",
-  timeframeMinutes: 15,
+  timeframeMinutes: DEFAULT_TWELVE_DATA_TIMEFRAME,
   provider: "TWELVE_DATA",
   startLeadMinutes: AUTO_API_START_LEAD_MINUTES,
   lastCheckedAt: null,
@@ -2336,7 +2337,7 @@ function timeframeToTwelveInterval(timeframeMinutes: number) {
   const supported = new Set([1, 5, 15, 30, 45]);
   if (supported.has(timeframeMinutes)) return `${timeframeMinutes}min`;
   if (timeframeMinutes === 60) return "1h";
-  return "15min";
+  return "5min";
 }
 
 function preferredTwelveDataSourceTimeframe(timeframeMinutes: number) {
