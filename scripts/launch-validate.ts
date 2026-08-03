@@ -20,6 +20,7 @@ const apiBase = process.env.API_BASE_URL ?? "http://localhost:7073";
 const webBase = process.env.WEB_BASE_URL ?? "http://localhost:3000";
 const adminEmail = process.env.ADMIN_EMAIL ?? "admin@orb.local";
 const adminPassword = process.env.ADMIN_PASSWORD ?? process.env.LOCAL_PIN ?? "1234";
+const requestTimeoutMs = Number(process.env.LAUNCH_VALIDATE_TIMEOUT_MS ?? 5_000);
 
 const failures: string[] = [];
 
@@ -38,7 +39,7 @@ if (failures.length > 0) {
 console.log("\nLaunch validation PASS. System is operationally ready for paper-trading observation.");
 
 async function checkApiHealth() {
-  const response = await fetch(`${apiBase}/api/health`).catch((error) => {
+  const response = await timedFetch(`${apiBase}/api/health`).catch((error) => {
     failures.push(`API health request failed: ${(error as Error).message}`);
     return null;
   });
@@ -47,7 +48,7 @@ async function checkApiHealth() {
 }
 
 async function checkWebShell() {
-  const response = await fetch(webBase).catch((error) => {
+  const response = await timedFetch(webBase).catch((error) => {
     failures.push(`Web dashboard request failed: ${(error as Error).message}`);
     return null;
   });
@@ -58,7 +59,7 @@ async function checkWebShell() {
 }
 
 async function login() {
-  const response = await fetch(`${apiBase}/api/auth/login`, {
+  const response = await timedFetch(`${apiBase}/api/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: adminEmail, password: adminPassword })
@@ -78,7 +79,7 @@ async function login() {
 
 async function checkProductionReadiness(token: string) {
   if (!token) return { status: "BLOCKED", checks: [], modules: [] } as ReadinessResponse;
-  const response = await fetch(`${apiBase}/api/analytics/production-readiness`, {
+  const response = await timedFetch(`${apiBase}/api/analytics/production-readiness`, {
     headers: { authorization: `Bearer ${token}` }
   }).catch((error) => {
     failures.push(`Production readiness request failed: ${(error as Error).message}`);
@@ -100,6 +101,16 @@ async function checkProductionReadiness(token: string) {
     if (module.rehearsal?.final_status !== "GO") failures.push(`${module.moduleName} latest rehearsal is not GO.`);
   }
   return readiness;
+}
+
+async function timedFetch(url: string, init: RequestInit = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${requestTimeoutMs}ms`)), requestTimeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function printReadiness(readiness: ReadinessResponse) {
