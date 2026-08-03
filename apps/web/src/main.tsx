@@ -7105,7 +7105,7 @@ function module2BacktestMetricMap(rows: any[]) {
   }, {});
 }
 
-function moduleChartPriceLines(moduleCode: string, setup?: any, openingRange?: any): ChartPriceLine[] | undefined {
+function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: any): ChartPriceLine[] | undefined {
   if (moduleCode === "orb_max_options") return undefined;
   const moduleSetup = setup?.module_code === moduleCode ? setup : null;
   if (!moduleSetup) return [];
@@ -7145,9 +7145,7 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, openingRange?: a
     { title: "Zone Low", price: zone.low, color: "#a78bfa" },
     { title: "Entry", price: moduleSetup.entry_price, color: "#16a46c" },
     { title: "Stop", price: moduleSetup.stop_price, color: "#e05252" },
-    { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" },
-    { title: "Range High", price: openingRange?.high, color: "#1f7a8c" },
-    { title: "Range Low", price: openingRange?.low, color: "#e05252" }
+    { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" }
   ];
 }
 
