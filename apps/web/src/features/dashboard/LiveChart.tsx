@@ -139,6 +139,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const isApplyingProgrammaticRangeRef = useRef(false);
   const userAdjustedRangeRef = useRef(false);
   const visibleLogicalRangeRef = useRef<LogicalRange | null>(null);
+  const lastChartInteractionAtRef = useRef(0);
   const barSpacingRef = useRef(CHART_BAR_SPACING);
   const [candles, setCandles] = useState<TwelveDataCandle[]>([]);
   const [indicators, setIndicators] = useState<IndicatorSnapshot | null>(null);
@@ -273,8 +274,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   }, [symbol, timeframeMinutes]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
+    const container = containerRef.current;
+    if (!container) return;
+    const chart = createChart(container, {
       autoSize: true,
       layout: {
         background: { color: "#111512" },
@@ -325,18 +327,26 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     ema20Ref.current = chart.addLineSeries({ color: lineColors.ema20, lineWidth: 2, priceLineVisible: false });
     ema50Ref.current = chart.addLineSeries({ color: lineColors.ema50, lineWidth: 2, priceLineVisible: false });
     ema200Ref.current = chart.addLineSeries({ color: lineColors.ema200, lineWidth: 2, priceLineVisible: false });
+    const markChartInteraction = () => {
+      lastChartInteractionAtRef.current = Date.now();
+    };
+    container.addEventListener("wheel", markChartInteraction, { passive: true });
+    container.addEventListener("pointerdown", markChartInteraction);
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       visibleLogicalRangeRef.current = range;
-      if (didSetInitialRangeRef.current && !isApplyingProgrammaticRangeRef.current && range) {
+      const followsUserInteraction = Date.now() - lastChartInteractionAtRef.current < 1_500;
+      if (didSetInitialRangeRef.current && !isApplyingProgrammaticRangeRef.current && range && followsUserInteraction) {
         userAdjustedRangeRef.current = true;
       }
-      if (range && userAdjustedRangeRef.current && Number(range.from) <= 25) {
+      if (range && followsUserInteraction && Number(range.from) <= 25) {
         loadOlderCandles().catch(() => undefined);
       }
       window.requestAnimationFrame(() => refreshOverlays(renderedCandlesRef.current));
     });
 
     return () => {
+      container.removeEventListener("wheel", markChartInteraction);
+      container.removeEventListener("pointerdown", markChartInteraction);
       chart.remove();
       chartRef.current = null;
     };
@@ -446,8 +456,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const storageLabel = feedStatus?.provider === "TWELVE_DATA" && feedStatus?.persistRawCandles === false ? "Live memory" : "PostgreSQL cache";
 
   function zoom(multiplier: number) {
+    lastChartInteractionAtRef.current = Date.now();
     userAdjustedRangeRef.current = true;
-    barSpacingRef.current = Math.min(18, Math.max(1, barSpacingRef.current * multiplier));
+    const currentSpacing = chartRef.current?.timeScale().options().barSpacing ?? barSpacingRef.current;
+    barSpacingRef.current = Math.min(18, Math.max(1, currentSpacing * multiplier));
     chartRef.current?.timeScale().applyOptions({ barSpacing: barSpacingRef.current });
   }
 
@@ -458,12 +470,11 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   }
 
   function applyCompactLatestRange(candleCount: number) {
-    if (!chartRef.current || !containerRef.current || candleCount === 0) return;
-    const width = Math.max(containerRef.current.clientWidth, 320);
-    const visibleBars = Math.floor(width / barSpacingRef.current);
+    if (!chartRef.current || candleCount === 0) return;
+    const visibleBars = Math.min(INITIAL_CHART_CANDLES, candleCount);
     const lastIndex = candleCount - 1;
     applyVisibleLogicalRange({
-      from: (lastIndex + CHART_RIGHT_OFFSET - visibleBars) as Logical,
+      from: (lastIndex - visibleBars + 0.5) as Logical,
       to: (lastIndex + CHART_RIGHT_OFFSET) as Logical
     });
   }
