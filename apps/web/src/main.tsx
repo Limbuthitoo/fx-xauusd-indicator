@@ -6833,6 +6833,7 @@ function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" 
                 <div>
                   <strong>{item.name}</strong>
                   <span>{item.explanation}</span>
+                  <small>{ruleLayerLabel(item)}</small>
                 </div>
                 <em>{item.status}</em>
               </div>
@@ -6842,6 +6843,14 @@ function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" 
       ))}
     </div>
   );
+}
+
+function ruleLayerLabel(item: any) {
+  const layer = item.ruleLayer ?? item.rule_layer;
+  const required = item.requiredForEntry ?? item.required_for_entry;
+  if (!layer) return required ? "Required for automatic paper entry" : "Strategy evidence";
+  const label = String(layer).replaceAll("_", " ").toLowerCase();
+  return required ? `${label} · required for paper entry` : label;
 }
 
 function groupedChecklistSections(moduleCode: string, rows: any[]) {

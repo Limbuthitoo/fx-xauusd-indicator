@@ -198,9 +198,95 @@ function retestState(candles: Candle[], openingRange: OpeningRange, direction: D
   const previousBreakout = prior.find((candle) => (direction === "LONG" ? candle.close > boundary : candle.close < boundary));
   const latest = candles.at(-1);
   if (!previousBreakout || !latest) return null;
-  const touchedZone = direction === "LONG" ? latest.low <= boundary + zone && latest.low >= openingRange.low : latest.high >= boundary - zone && latest.high <= openingRange.high;
+  const lowerEdge = boundary - zone;
+  const upperEdge = boundary + zone;
+  const touchedZone = latest.low <= upperEdge && latest.high >= lowerEdge;
   const reclaimed = direction === "LONG" ? latest.close > boundary : latest.close < boundary;
   return touchedZone && reclaimed ? "RETEST_CONFIRMED" : touchedZone ? "RETEST_IN_PROGRESS" : null;
+}
+
+function retestDetails(candles: Candle[], openingRange: OpeningRange, direction: Direction) {
+  if (openingRange.high == null || openingRange.low == null || openingRange.width == null) return null;
+  const boundary = direction === "LONG" ? openingRange.high : openingRange.low;
+  const zone = openingRange.width * 0.1;
+  const prior = candles.slice(0, -1);
+  const latest = candles.at(-1);
+  if (!latest) return null;
+  const breakoutIndex = prior.findIndex((candle) => (direction === "LONG" ? candle.close > boundary : candle.close < boundary));
+  if (breakoutIndex < 0) return null;
+  const touchedZone = latest.low <= boundary + zone && latest.high >= boundary - zone;
+  const reclaimed = direction === "LONG" ? latest.close > boundary : latest.close < boundary;
+  if (!touchedZone) return null;
+  return {
+    status: reclaimed ? ("RETEST_CONFIRMED" as const) : ("RETEST_IN_PROGRESS" as const),
+    boundary,
+    zone,
+    candle: latest
+  };
+}
+
+function roundPrice(value: number) {
+  return Number(value.toFixed(5));
+}
+
+function buildTradePlan(
+  context: RuleContext,
+  direction: Direction,
+  selection: ScenarioSelection,
+  retest: ReturnType<typeof retestDetails>,
+  priorFailedBreakout: ReturnType<typeof failedBreakoutDetails>
+) {
+  const { currentCandle, openingRange } = context;
+  const entry = currentCandle.close;
+  const width = openingRange.width ?? Math.abs((openingRange.high ?? entry) - (openingRange.low ?? entry));
+  const buffer = Math.max(width * 0.05, 0.1);
+  let stop = direction === "LONG" ? (openingRange.low ?? currentCandle.low) : (openingRange.high ?? currentCandle.high);
+  let stopLogic = direction === "LONG" ? "Default stop below the ORB low." : "Default stop above the ORB high.";
+
+  if (selection.scenario === "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED" && priorFailedBreakout?.candle) {
+    if (direction === "LONG") {
+      stop = Math.min(priorFailedBreakout.candle.low, openingRange.low ?? priorFailedBreakout.candle.low) - buffer;
+      stopLogic = "Fakeout reversal stop is placed beyond the failed low-side sweep.";
+    } else {
+      stop = Math.max(priorFailedBreakout.candle.high, openingRange.high ?? priorFailedBreakout.candle.high) + buffer;
+      stopLogic = "Fakeout reversal stop is placed beyond the failed high-side sweep.";
+    }
+  } else if (retest?.status === "RETEST_CONFIRMED") {
+    if (direction === "LONG") {
+      stop = Math.min(retest.candle.low, retest.boundary - buffer);
+      stopLogic = "Retest setup stop is placed beyond the reclaimed ORB high retest candle.";
+    } else {
+      stop = Math.max(retest.candle.high, retest.boundary + buffer);
+      stopLogic = "Retest setup stop is placed beyond the reclaimed ORB low retest candle.";
+    }
+  }
+
+  if (direction === "LONG" && stop >= entry) {
+    stop = Math.min(openingRange.low ?? currentCandle.low, currentCandle.low) - buffer;
+    stopLogic = "Fallback stop forced below entry because the scenario stop was invalid.";
+  }
+  if (direction === "SHORT" && stop <= entry) {
+    stop = Math.max(openingRange.high ?? currentCandle.high, currentCandle.high) + buffer;
+    stopLogic = "Fallback stop forced above entry because the scenario stop was invalid.";
+  }
+
+  const riskDistance = Math.abs(entry - stop);
+  const rewardToRisk = 2;
+  const target = direction === "LONG" ? entry + riskDistance * rewardToRisk : entry - riskDistance * rewardToRisk;
+  return {
+    entry: roundPrice(entry),
+    stop: roundPrice(stop),
+    target: roundPrice(target),
+    rewardToRisk,
+    entryLogic:
+      selection.scenario === "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED"
+        ? "Entry uses the completed opposite breakout confirmation after the ORB sweep failed."
+        : retest?.status === "RETEST_CONFIRMED"
+          ? "Entry uses the completed candle that retested and reclaimed the ORB boundary."
+          : "Entry uses the completed breakout candle close beyond the ORB boundary.",
+    stopLogic,
+    targetLogic: "Target is fixed at 2R from the scenario stop."
+  };
 }
 
 function candlesSinceOpeningRangeEnd(context: RuleContext) {
@@ -442,14 +528,10 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const unmatchedChecklistRules = evaluations.filter((evaluation) => !["PASS", "NOT_APPLICABLE"].includes(evaluation.status));
   const ready = unmatchedChecklistRules.length === 0;
   const mandatoryReady = orbMandatoryEntryReady(evaluations, direction);
-  const width = openingRange.width ?? 0;
-  const stopPrice = direction === "LONG" ? (openingRange.low ?? currentCandle.low) : (openingRange.high ?? currentCandle.high);
-  const entryPrice = currentCandle.close;
-  const riskDistance = Math.abs(entryPrice - stopPrice);
-  const targetPrice = direction === "LONG" ? entryPrice + riskDistance * 2 : entryPrice - riskDistance * 2;
   const score = favorability(context, direction, evaluations);
   const minimumScore = configuration.favorability?.minimumScoreForPaperTrade ?? 70;
   const retest = retestState(allCandles, openingRange, direction);
+  const retestInfo = retestDetails(allCandles, openingRange, direction);
   const overextended = evaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
   const lowFavorability = ready && score.score < minimumScore;
   const selection = overextended
@@ -464,6 +546,10 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
     : selectBreakoutScenario(context, direction, retest);
   const trendAlignedScenario =
     selection.scenario === "CLEAN_BREAKOUT_CONTINUATION" && score.flags.trendAligned ? "TREND_ALIGNED_CLEAN_BREAKOUT" : selection.scenario;
+  const tradePlan = buildTradePlan(context, direction, { ...selection, scenario: trendAlignedScenario }, retestInfo, priorFailedBreakout);
+  const entryPrice = tradePlan.entry;
+  const stopPrice = tradePlan.stop;
+  const targetPrice = tradePlan.target;
   const autoReady = ready && selection.autoEligible && !lowFavorability;
   const mandatoryOnlyReady = !autoReady && mandatoryReady;
   const blockedStatus = lowFavorability ? "BLOCKED" : selection.status ?? "WAIT FOR RETEST";
@@ -493,8 +579,10 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
       midpointCrossCount,
       failedBreakoutState,
       priorFailedBreakout,
-      orbWidth: width,
+      orbWidth: openingRange.width ?? 0,
       retest,
+      retestInfo,
+      tradePlan,
       breakoutProfile: breakoutProfile(context, direction),
       matrix: {
         priority: selection.priority,

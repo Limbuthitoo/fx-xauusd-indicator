@@ -63,6 +63,8 @@ export interface RuleEvaluation {
   status: RuleStatus;
   blocking: boolean;
   source: "AUTOMATIC" | "MANUAL";
+  ruleLayer?: "STATE" | "MANDATORY" | "CONFIRMATION" | "QUALITY" | "FINAL" | "EVIDENCE";
+  requiredForEntry?: boolean;
   actualValue?: string | number | boolean | null;
   requiredValue?: string | number | boolean | null;
   explanation: string;

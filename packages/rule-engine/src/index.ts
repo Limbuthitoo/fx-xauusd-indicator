@@ -5,6 +5,16 @@ const passFail = (passed: boolean, base: Omit<RuleEvaluation, "status">): RuleEv
   status: passed ? "PASS" : "FAIL"
 });
 
+function layer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | "requiredForEntry"> {
+  const mandatory = new Set(["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"]);
+  const confirmation = new Set(["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO"]);
+  const quality = new Set(["NEWS_FILTER"]);
+  if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
+  if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
+  return { ruleLayer: "EVIDENCE", requiredForEntry: false };
+}
+
 export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: Direction): RuleEvaluation[] {
   const range = context.openingRange;
   const candle = context.currentCandle;
@@ -28,6 +38,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     {
       ruleCode: "ORB_LOCKED",
       name: "Opening range is locked",
+      ...layer("ORB_LOCKED"),
       status: range.status === "LOCKED" ? "PASS" : "WAITING",
       blocking: true,
       source: "AUTOMATIC",
@@ -38,6 +49,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     {
       ruleCode: "INSIDE_SIGNAL_WINDOW",
       name: "Current time is inside allowed signal window",
+      ...layer("INSIDE_SIGNAL_WINDOW"),
       status:
         new Date(context.now) <= new Date(context.session.signalWindowEndAt) &&
         new Date(context.now) >= new Date(context.session.openingRangeEndAt)
@@ -52,6 +64,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     passFail(outsideClose, {
       ruleCode: direction === "LONG" ? "CLOSE_ABOVE_ORB_HIGH" : "CLOSE_BELOW_ORB_LOW",
       name: direction === "LONG" ? "Candle closes above ORB high" : "Candle closes below ORB low",
+      ...layer(direction === "LONG" ? "CLOSE_ABOVE_ORB_HIGH" : "CLOSE_BELOW_ORB_LOW"),
       blocking: true,
       source: "AUTOMATIC",
       actualValue: candle.close,
@@ -63,6 +76,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     passFail(bodyRatio >= config.minimumBodyRatio, {
       ruleCode: "BREAKOUT_BODY_RATIO",
       name: "Breakout candle body ratio",
+      ...layer("BREAKOUT_BODY_RATIO"),
       blocking: true,
       source: "AUTOMATIC",
       actualValue: Number(bodyRatio.toFixed(3)),
@@ -72,6 +86,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     passFail(closeLocationRatio >= config.minimumCloseLocationRatio, {
       ruleCode: "CLOSE_LOCATION_RATIO",
       name: "Breakout close location",
+      ...layer("CLOSE_LOCATION_RATIO"),
       blocking: true,
       source: "AUTOMATIC",
       actualValue: Number(closeLocationRatio.toFixed(3)),
@@ -84,6 +99,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     passFail(breakoutDistance <= extensionLimit || extensionLimit === 0, {
       ruleCode: "ENTRY_NOT_OVEREXTENDED",
       name: "Entry is not overextended",
+      ...layer("ENTRY_NOT_OVEREXTENDED"),
       blocking: true,
       source: "AUTOMATIC",
       actualValue: Number(breakoutDistance.toFixed(3)),
@@ -96,6 +112,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     {
       ruleCode: "NEWS_FILTER",
       name: "No blocked USD news",
+      ...layer("NEWS_FILTER"),
       status: !newsEnabled ? "NOT_APPLICABLE" : context.newsStatus === "CLEAR" || context.newsStatus === "UPCOMING_WARNING" ? "PASS" : "FAIL",
       blocking: context.configuration.newsFilter.mode === "BLOCK",
       source: "AUTOMATIC",
@@ -111,6 +128,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
     {
       ruleCode: "RISK_PERMISSION",
       name: "Risk engine permits the trade",
+      ...layer("RISK_PERMISSION"),
       status: context.riskStatus === "PERMITTED" ? "PASS" : "FAIL",
       blocking: true,
       source: "AUTOMATIC",

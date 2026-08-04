@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { evaluateLiquiditySweepSetup } from "@orb-guide/liquidity-sweep-engine";
 import { calculateRisk } from "@orb-guide/risk-engine";
-import type { Candle } from "@orb-guide/shared-types";
+import type { Candle, RuleContext } from "@orb-guide/shared-types";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
 import { query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
-import { runModule2LearningPython, runModule3LearningPython, runOrbLearningPython } from "../admin/learning.js";
+import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runModule3LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
@@ -573,6 +573,37 @@ export async function marketDataRoutes(app: FastifyInstance) {
     if (!session.tenantId) return { error: "Tenant account is required for Module 3 learning." };
     await runModule3LearningPython(session.tenantId);
     return latestModuleLearningSnapshot(session.tenantId, "strategy_lab_3");
+  });
+
+  app.get("/api/strategy-coach/latest", async (request) => {
+    const session = await requireTenantModule(request, "orb_max_options");
+    const search = request.query as { moduleCode?: string };
+    if (search.moduleCode) return latestModuleLearningSnapshot(session.tenantId, search.moduleCode);
+    return latestStrategyCoachSnapshots(session.tenantId);
+  });
+
+  app.post("/api/strategy-coach/run", async (request) => {
+    const session = await requireTenantModule(request, "orb_max_options");
+    if (!session.tenantId) return { error: "Tenant account is required for strategy coach learning." };
+    const body = request.body as { moduleCode?: string };
+    if (body.moduleCode) await requireTenantModule(request, body.moduleCode);
+    const result = await runDeterministicStrategyCoachPython(session.tenantId, body.moduleCode);
+    return { result, latest: body.moduleCode ? await latestModuleLearningSnapshot(session.tenantId, body.moduleCode) : await latestStrategyCoachSnapshots(session.tenantId) };
+  });
+
+  app.get("/api/main-brain/latest", async (request) => {
+    const session = await requireTenantModule(request, "orb_max_options");
+    const search = request.query as { moduleCode?: string };
+    return latestMainBrainDecisions(session.tenantId, search.moduleCode);
+  });
+
+  app.post("/api/main-brain/run", async (request) => {
+    const session = await requireTenantModule(request, "orb_max_options");
+    if (!session.tenantId) return { error: "Tenant account is required for main brain decisions." };
+    const body = request.body as { moduleCode?: string };
+    if (body.moduleCode) await requireTenantModule(request, body.moduleCode);
+    const result = await runMainBrainPython(session.tenantId, body.moduleCode);
+    return { result, latest: await latestMainBrainDecisions(session.tenantId, body.moduleCode) };
   });
 
   app.get("/api/module3/session-reports", async (request) => {
@@ -2385,8 +2416,9 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
           [symbol, timeframe, session.opening_range_end_at, current.timestamp_utc]
         );
   const saved = await evaluateAndSaveSetup(session, range, current, previousResult.rows);
+  const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options");
   let paperTrade = null;
-  if (saved?.setup?.status === "LONG SETUP READY" || saved?.setup?.status === "SHORT SETUP READY") {
+  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails("orb_max_options", saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -2409,7 +2441,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId);
 
-  return { sessionFound: true, rangeStatus: range.status, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, paperTrade, tradeLifecycle };
+  return { sessionFound: true, rangeStatus: range.status, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, paperTrade, tradeLifecycle, brainDecision };
 }
 
 async function processModuleLiveSession(moduleCode: string, symbol: string, timeframe: number, liveCandles = getCachedCandles(symbol, timeframe), tenantId?: string | null) {
@@ -2494,8 +2526,9 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
     configuration
   });
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
+  const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
+  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -2515,7 +2548,7 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
     }
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
-  return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.scenario, paperTrade, tradeLifecycle };
+  return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.scenario, paperTrade, tradeLifecycle, brainDecision };
 }
 
 export function evaluateVwapOpeningDrive(input: {
@@ -2535,6 +2568,7 @@ export function evaluateVwapOpeningDrive(input: {
     minimumDriveBodyPercent: 0.55,
     minimumVwapDistanceATR: 0.05,
     pullbackMaxBars: 12,
+    maximumBarsAfterPullbackTouch: 6,
     pullbackZoneAtr: 0.35,
     confirmationBodyPercent: 0.45,
     emaPeriod: 20,
@@ -2554,6 +2588,7 @@ export function evaluateVwapOpeningDrive(input: {
   const push = (ruleCode: string, name: string, passed: boolean, blocking: boolean, actual: unknown, required: unknown, explanation: string) => evaluations.push({
     ruleCode,
     name,
+    ...moduleRuleLayer("strategy_lab_3", ruleCode),
     status: passed ? "PASS" : "FAIL",
     blocking,
     source: "AUTOMATIC",
@@ -2600,16 +2635,18 @@ export function evaluateVwapOpeningDrive(input: {
   const direction = driveDirection;
   const vwapAligned = direction === "LONG" ? current.close > vwap + atr * config.minimumVwapDistanceATR : current.close < vwap - atr * config.minimumVwapDistanceATR;
   const trendAligned = direction === "LONG" ? current.close >= ema : current.close <= ema;
-  const pullbackRows = candles.filter((candle) => candle.timestampUtc > driveEnd).slice(-Number(config.pullbackMaxBars));
+  const pullbackRows = candles.filter((candle) => candle.timestampUtc > driveEnd);
   const zoneLow = direction === "LONG" ? Math.min(vwap, ema) - atr * config.pullbackZoneAtr : Math.min(vwap, ema);
   const zoneHigh = direction === "LONG" ? Math.max(vwap, ema) : Math.max(vwap, ema) + atr * config.pullbackZoneAtr;
   const pullbackZoneReady = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
-  const pullbackTouched = pullbackRows.some((candle) => candle.low <= zoneHigh && candle.high >= zoneLow);
+  const latestPullbackTouch = latestModule3PullbackTouch(pullbackRows, zoneLow, zoneHigh);
+  const barsAfterPullbackTouch = latestPullbackTouch ? pullbackRows.length - 1 - latestPullbackTouch.index : null;
+  const pullbackTouched = latestPullbackTouch != null && barsAfterPullbackTouch != null && barsAfterPullbackTouch <= Number(config.maximumBarsAfterPullbackTouch);
   const confirmation = confirmsModule3(current, direction, Number(config.confirmationBodyPercent));
   push("VWAP_ALIGNMENT", "VWAP alignment", vwapAligned, true, Number(current.close.toFixed(2)), direction === "LONG" ? `> ${vwap.toFixed(2)}` : `< ${vwap.toFixed(2)}`, "Price must be on the correct side of VWAP after the drive.");
   push("EMA_ALIGNMENT", "20 EMA alignment", trendAligned, false, Number(current.close.toFixed(2)), direction === "LONG" ? `>= ${ema.toFixed(2)}` : `<= ${ema.toFixed(2)}`, "EMA alignment confirms continuation context.");
   push("PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", pullbackZoneReady, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry.");
-  push("PULLBACK_ZONE_TOUCHED", "Pullback zone touched", pullbackTouched, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "VWAP/EMA zone", "Price must pull back into the VWAP/EMA value zone.");
+  push("PULLBACK_ZONE_TOUCHED", "Pullback zone touched", pullbackTouched, true, latestPullbackTouch ? `${newYorkClock(latestPullbackTouch.candle.timestampUtc)} · ${barsAfterPullbackTouch} bars ago` : `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, `touch within ${config.maximumBarsAfterPullbackTouch} bars`, "Price must pull back into the VWAP/EMA value zone and confirm before the touch becomes stale.");
   push("CONFIRMATION_CANDLE", "Confirmation candle", confirmation, true, current.close > current.open ? "BULLISH" : current.close < current.open ? "BEARISH" : "DOJI", direction, "A completed candle must confirm continuation away from the pullback zone.");
   const entry = current.close;
   const stop = direction === "LONG" ? Math.min(zoneLow, current.low) - atr * config.stopBufferATR : Math.max(zoneHigh, current.high) + atr * config.stopBufferATR;
@@ -2632,6 +2669,7 @@ export function evaluateVwapOpeningDrive(input: {
   flags.vwap = vwap;
   flags.ema = ema;
   flags.entryZone = { low: zoneLow, high: zoneHigh, midpoint: (zoneLow + zoneHigh) / 2, kind: "VWAP_PULLBACK_ZONE" };
+  flags.pullbackTouch = latestPullbackTouch ? { index: latestPullbackTouch.index, candle: latestPullbackTouch.candle, barsAgo: barsAfterPullbackTouch } : null;
   flags.riskReward = rr;
   flags.confidence = score;
   flags.tradeGrade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
@@ -2639,6 +2677,7 @@ export function evaluateVwapOpeningDrive(input: {
   flags.fullChecklistMatched = fullChecklistPassed && scoreOk;
   flags.setupTier = fullChecklistPassed && scoreOk ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
   flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "WAITING_FOR_PULLBACK_CONFIRMATION";
+  flags.checklistSummary = checklistSummary("strategy_lab_3", evaluations);
   if (!mandatoryEntryPassed) {
     return module3Decision("VWAP_PULLBACK_NOT_READY", direction, "WAIT", "Waiting for VWAP pullback checklist to fully match.", evaluations, flags, score);
   }
@@ -2710,6 +2749,14 @@ function module3Decision(scenario: string, direction: string | null, status: str
 function averageRange(candles: Candle[]) {
   if (candles.length === 0) return 0.01;
   return candles.reduce((sum, candle) => sum + Math.max(0.01, candle.high - candle.low), 0) / candles.length;
+}
+
+function latestModule3PullbackTouch(candles: Candle[], zoneLow: number, zoneHigh: number) {
+  for (let index = candles.length - 1; index >= 0; index -= 1) {
+    const candle = candles[index];
+    if (candle.low <= zoneHigh && candle.high >= zoneLow) return { index, candle };
+  }
+  return null;
 }
 
 function volumeWeightedAverage(candles: Candle[]) {
@@ -2841,10 +2888,11 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
     configSnapshot: configVersion
   };
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
+  const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
   await notifyModule2Stage(session, decision);
   await applyModule2SetupLifecycle(saved?.setup, decision, current);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, decision, saved?.risk)) {
+  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -2864,7 +2912,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
     }
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
-  return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.state, paperTrade, tradeLifecycle };
+  return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.state, paperTrade, tradeLifecycle, brainDecision };
 }
 
 async function buildModule2Readiness(tenantId: string | null, dryRun: boolean) {
@@ -3517,6 +3565,88 @@ async function latestModuleLearningSnapshot(tenantId: string | null, moduleCode:
   return { ...row, recommendations: recommendations.rows };
 }
 
+async function latestStrategyCoachSnapshots(tenantId: string | null) {
+  const modules = await query(
+    `SELECT m.code, m.name
+     FROM tenant_modules tm
+     JOIN platform_strategy_modules m ON m.id = tm.module_id
+     WHERE tm.tenant_id = $1 AND tm.status = 'ENABLED'
+     ORDER BY m.sort_order`,
+    [tenantId]
+  );
+  const snapshots = [];
+  for (const module of modules.rows as any[]) {
+    snapshots.push((await latestModuleLearningSnapshot(tenantId, module.code)) ?? { moduleCode: module.code, moduleName: module.name, status: "NOT_RUN", recommendations: [] });
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    tenantId,
+    modules: snapshots
+  };
+}
+
+async function latestMainBrainDecisions(tenantId: string | null, moduleCode?: string) {
+  const params: any[] = [tenantId];
+  const moduleFilter = moduleCode ? `AND metadata->>'moduleCode' = $${params.push(moduleCode)}` : "";
+  const rows = await query(
+    `SELECT id, severity, message, metadata, created_at
+     FROM operational_events
+     WHERE tenant_id = $1
+       AND event_type = 'MAIN_BRAIN_DECISION'
+       ${moduleFilter}
+     ORDER BY created_at DESC
+     LIMIT 20`,
+    params
+  );
+  const latestRun = await query(
+    `SELECT id, severity, message, metadata, created_at
+     FROM operational_events
+     WHERE tenant_id = $1
+       AND event_type = 'MAIN_BRAIN_RUN'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [tenantId]
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    tenantId,
+    latestRun: latestRun.rows[0] ?? null,
+    decisions: rows.rows
+  };
+}
+
+async function runProductionBrainSweep(tenantId: string | null, moduleCode: string) {
+  if (!tenantId) return { skipped: true, reason: "TENANT_REQUIRED" };
+  try {
+    const result = await runMainBrainPython(tenantId, moduleCode);
+    const decision = Array.isArray(result?.decisions) ? result.decisions[0] : null;
+    return {
+      status: "COMPLETED",
+      moduleCode,
+      decisionType: decision?.decisionType ?? null,
+      action: decision?.action ?? null,
+      shouldOpenPaperTrade: Boolean(decision?.shouldOpenPaperTrade),
+      entry: decision?.entry ?? null,
+      stop: decision?.stop ?? null,
+      target: decision?.target ?? null
+    };
+  } catch (error) {
+    await query(
+      `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
+       VALUES ('ERROR', 'SYSTEM', 'MAIN_BRAIN_FAILED', 'market-data-worker', $1, $2, $3::jsonb)`,
+      [
+        tenantId,
+        `Python main brain failed for ${moduleCode}.`,
+        JSON.stringify({
+          moduleCode,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      ]
+    );
+    return { status: "FAILED", moduleCode, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function moduleConfigSnapshot(tenantId: string | null, moduleCode: string, settingKey: string) {
   const setting = await query(
     `SELECT updated_at
@@ -3745,7 +3875,7 @@ function checkReadinessValue(readiness: any, code: string) {
 }
 
 function isProductionReadySetup(setup: any, decision: any, risk?: any) {
-  if (!setup || !["high_probability_strategy_2", "strategy_lab_3"].includes(setup.module_code)) return false;
+  if (!setup || !["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"].includes(setup.module_code)) return false;
   if (!["LONG SETUP READY", "SHORT SETUP READY"].includes(String(setup.status))) return false;
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
@@ -3759,12 +3889,95 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
 }
 
 function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
-  const required =
-    moduleCode === "strategy_lab_3"
-      ? ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
-      : ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
+  const required = requiredEntryRules(moduleCode);
   const byCode = new Map(evaluations.map((evaluation: any) => [evaluation.ruleCode ?? evaluation.rule_code, evaluation.status]));
+  if (moduleCode === "orb_max_options") {
+    const closePassed = byCode.get("CLOSE_ABOVE_ORB_HIGH") === "PASS" || byCode.get("CLOSE_BELOW_ORB_LOW") === "PASS";
+    return closePassed && required.every((code) => byCode.get(code) === "PASS");
+  }
   return required.every((code) => byCode.get(code) === "PASS");
+}
+
+function requiredEntryRules(moduleCode: string) {
+  if (moduleCode === "orb_max_options") {
+    return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"];
+  }
+  if (moduleCode === "strategy_lab_3") {
+    return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"];
+  }
+  return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
+}
+
+function moduleRuleLayer(moduleCode: string, ruleCode: string) {
+  const module1Confirmation = new Set(["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]);
+  const module1Quality = new Set(["NEWS_FILTER"]);
+  const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
+  const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
+  const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
+  const module3Mandatory = new Set(requiredEntryRules("strategy_lab_3"));
+  const module3Confirmation = new Set(["EMA_ALIGNMENT"]);
+  const module3Quality = new Set(["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]);
+  if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
+  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
+  if (moduleCode === "orb_max_options") {
+    const mandatory = requiredEntryRules(moduleCode);
+    const breakoutRule =
+      ruleCode === "CLOSE_ABOVE_ORB_HIGH" || ruleCode === "CLOSE_BELOW_ORB_LOW"
+        ? true
+        : false;
+    if (mandatory.includes(ruleCode) || breakoutRule) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+    if (module1Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
+    if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
+  }
+  if (moduleCode === "strategy_lab_3") {
+    if (module3Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+    if (module3Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
+    if (module3Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
+  }
+  if (module2Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
+  if (module2Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
+  return { ruleLayer: "EVIDENCE", requiredForEntry: false };
+}
+
+function withChecklistMetadata(moduleCode: string, decision: any) {
+  const evaluations = (decision.evaluations ?? []).map((evaluation: any) => ({
+    ...evaluation,
+    ...moduleRuleLayer(moduleCode, evaluation.ruleCode ?? evaluation.rule_code)
+  }));
+  const mandatoryMatched = moduleMandatoryEntryPassed(moduleCode, evaluations);
+  const fullMatched = evaluations.filter((evaluation: any) => evaluation.blocking).every((evaluation: any) => evaluation.status === "PASS");
+  const currentFlags = decision.scenarioFlags ?? {};
+  const setupTier = currentFlags.setupTier ?? (fullMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH");
+  return {
+    ...decision,
+    evaluations,
+    scenarioFlags: {
+      ...currentFlags,
+      mandatoryChecklistMatched: currentFlags.mandatoryChecklistMatched ?? mandatoryMatched,
+      fullChecklistMatched: currentFlags.fullChecklistMatched ?? fullMatched,
+      setupTier,
+      paperTradeEligible: ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status)) && mandatoryMatched,
+      checklistSummary: checklistSummary(moduleCode, evaluations)
+    }
+  };
+}
+
+function checklistSummary(moduleCode: string, evaluations: any[]) {
+  const normalized = evaluations.map((evaluation) => ({ ...evaluation, ...moduleRuleLayer(moduleCode, evaluation.ruleCode ?? evaluation.rule_code) }));
+  const count = (layer: string) => {
+    const rows = normalized.filter((evaluation) => evaluation.ruleLayer === layer);
+    return { passed: rows.filter((evaluation) => evaluation.status === "PASS").length, total: rows.length };
+  };
+  return {
+    moduleCode,
+    mandatory: count("MANDATORY"),
+    confirmations: count("CONFIRMATION"),
+    quality: count("QUALITY"),
+    final: count("FINAL"),
+    requiredEntryRules: requiredEntryRules(moduleCode),
+    blockingFailures: normalized.filter((evaluation) => evaluation.blocking && evaluation.status !== "PASS").map((evaluation) => evaluation.ruleCode ?? evaluation.rule_code)
+  };
 }
 
 async function applyModule2SetupLifecycle(setup: any, decision: any, currentRow: any) {
@@ -4107,7 +4320,7 @@ async function lockOpeningRangeForSession(session: any) {
   const liveCandles = getCachedCandles(session.symbol, timeframe);
   const cachedRows = cachedCandlesBetween(liveCandles, session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
   const candlesResult =
-    cachedRows.length > 0
+    cachedRows.length >= ORB_RANGE_SOURCE_CANDLES
       ? { rows: cachedRows }
       : await query(
           `SELECT timestamp_utc, open, high, low, close, volume, spread
@@ -4183,7 +4396,7 @@ async function calculateCanonicalOrbRange(session: any) {
   const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
   const cachedRows = cachedCandlesBetween(getCachedCandles(session.symbol, timeframe), session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
   const rows =
-    cachedRows.length > 0
+    cachedRows.length >= ORB_RANGE_SOURCE_CANDLES
       ? cachedRows
       : (
           await query(
@@ -4237,7 +4450,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   const stop = currentCandle.close > openingRange.high ? openingRange.low : openingRange.high;
   const entry = currentCandle.close;
   const target = entry > Number(stop) ? entry + Math.abs(entry - Number(stop)) * 2 : entry - Math.abs(entry - Number(stop)) * 2;
-  const risk = calculateRisk({
+  const initialRisk = calculateRisk({
     accountBalance: Number(row.account_balance),
     accountEquity: Number(row.account_equity),
     riskPerTradePercent: Number(row.risk_per_trade_percent),
@@ -4257,7 +4470,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
   });
   const configuration = await getTenantOrbStrategyConfiguration(session.tenant_id, session.configuration_json);
-  const decision = evaluateSetup({
+  const ruleContext: RuleContext = {
     now: currentCandle.timestampUtc,
     symbol: session.symbol,
     strategyVersionId: session.strategy_version_id,
@@ -4278,9 +4491,15 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     previousCandles: previousRows.map(toCandle),
     spread: currentCandle.spread ?? undefined,
     newsStatus: "CLEAR",
-    riskStatus: risk.status,
+    riskStatus: initialRisk.status,
     configuration: configuration as any
-  });
+  };
+  let decision = withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext));
+  let risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? initialRisk;
+  if (risk.status !== initialRisk.status) {
+    decision = withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status }));
+    risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? risk;
+  }
 	  const saved = await query(
 	    `INSERT INTO setup_candidates (
 	      tenant_id, module_code, session_id, strategy_version_id, symbol, scenario, direction, status, detected_at,
@@ -4336,6 +4555,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
 }
 
 async function saveModuleDecision(session: any, moduleCode: string, decision: any, currentRow: any) {
+  decision = withChecklistMetadata(moduleCode, decision);
   const risk = await calculateDecisionRisk(session, decision, currentRow);
   const saved = await query(
     `INSERT INTO setup_candidates (

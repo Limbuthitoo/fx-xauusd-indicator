@@ -66,3 +66,54 @@ export async function runStrategyModuleLearningPython(tenantId: string, moduleCo
   }
   return runGenericModuleLearningPython(tenantId, moduleCode);
 }
+
+export async function runStrategyIndicatorAuditPython(tenantId: string, moduleCode?: string) {
+  const args = [
+    "-m",
+    "apps.quant.app.learning.strategy_indicator_audit",
+    "--database-url",
+    config.databaseUrl,
+    "--tenant-id",
+    tenantId
+  ];
+  if (moduleCode) args.push("--module-code", moduleCode);
+  const { stdout } = await execFileAsync("python3", args, {
+    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+    timeout: 120_000
+  });
+  return JSON.parse(stdout);
+}
+
+export async function runDeterministicStrategyCoachPython(tenantId: string, moduleCode?: string) {
+  const args = [
+    "-m",
+    "apps.quant.app.learning.deterministic_strategy_coach",
+    "--database-url",
+    config.databaseUrl,
+    "--tenant-id",
+    tenantId
+  ];
+  if (moduleCode) args.push("--module-code", moduleCode);
+  const { stdout } = await execFileAsync("python3", args, {
+    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+    timeout: 180_000
+  });
+  return JSON.parse(stdout);
+}
+
+export async function runMainBrainPython(tenantId: string, moduleCode?: string) {
+  const args = [
+    "-m",
+    "apps.quant.app.brain.main_brain",
+    "--database-url",
+    config.databaseUrl,
+    "--tenant-id",
+    tenantId
+  ];
+  if (moduleCode) args.push("--module-code", moduleCode);
+  const { stdout } = await execFileAsync("python3", args, {
+    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+    timeout: 60_000
+  });
+  return JSON.parse(stdout);
+}

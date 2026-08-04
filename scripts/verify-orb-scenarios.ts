@@ -8,9 +8,9 @@ const configuration: StrategyConfiguration = {
   status: "RESEARCH",
   symbol: "XAUUSD",
   timezone: "America/New_York",
-  sessionStart: "09:30",
+  sessionStart: "09:15",
   openingRangeMinutes: 15,
-  signalTimeframeMinutes: 15,
+  signalTimeframeMinutes: 5,
   tradeWindowEnd: "16:00",
   enabledScenarios: {
     cleanBreakout: true,
@@ -56,18 +56,22 @@ const session: TradingSession = {
   symbol: "XAUUSD",
   strategyVersionId: "scenario-version",
   sessionDate: "2026-07-31",
-  sessionPreset: "NY_0930",
+  sessionPreset: "NY_0915",
   state: "WAITING_FOR_SETUP",
-  sessionStartAt: "2026-07-31T13:30:00Z",
-  openingRangeEndAt: "2026-07-31T13:45:00Z",
+  sessionStartAt: "2026-07-31T13:15:00Z",
+  openingRangeEndAt: "2026-07-31T13:30:00Z",
   signalWindowEndAt: "2026-07-31T20:00:00Z",
   dataStatus: "VALID"
 };
 
 const openingRange = buildOpeningRange(
-  [{ timestampUtc: "2026-07-31T13:30:00Z", open: 100, high: 110, low: 90, close: 104, spread: 0.2 }],
+  [
+    { timestampUtc: "2026-07-31T13:15:00Z", open: 100, high: 106, low: 94, close: 104, spread: 0.2 },
+    { timestampUtc: "2026-07-31T13:20:00Z", open: 104, high: 110, low: 98, close: 101, spread: 0.2 },
+    { timestampUtc: "2026-07-31T13:25:00Z", open: 101, high: 107, low: 90, close: 96, spread: 0.2 }
+  ],
   0.01,
-  1
+  3
 );
 
 const trendUp = Array.from({ length: 50 }, (_, index) =>
@@ -89,7 +93,7 @@ const cases = [
   {
     name: "opening drive clean breakout buys",
     previous: trendUp,
-    current: candle("2026-07-31T14:00:00Z", 107, 114, 106, 113),
+    current: candle("2026-07-31T13:35:00Z", 107, 114, 106, 113),
     scenario: "OPENING_DRIVE_CLEAN_BREAKOUT",
     status: "LONG SETUP READY"
   },
@@ -155,6 +159,18 @@ for (const testCase of cases) {
   assert.equal(decision.status, testCase.status, `${testCase.name}: status`);
   if (decision.status === "LONG SETUP READY" || decision.status === "SHORT SETUP READY") {
     assert.equal(Boolean((decision.scenarioFlags as any).matrix?.mandatoryChecklistMatched), true, `${testCase.name}: ready setup must match mandatory checklist`);
+    assert.equal(Number.isFinite(decision.entryPrice), true, `${testCase.name}: entry price`);
+    assert.equal(Number.isFinite(decision.stopPrice), true, `${testCase.name}: stop price`);
+    assert.equal(Number.isFinite(decision.targetPrice), true, `${testCase.name}: target price`);
+    assert.equal((decision.scenarioFlags as any).tradePlan?.rewardToRisk, 2, `${testCase.name}: 2R plan`);
+    if (decision.direction === "LONG") {
+      assert.equal((decision.stopPrice ?? 0) < (decision.entryPrice ?? 0), true, `${testCase.name}: long stop below entry`);
+      assert.equal((decision.targetPrice ?? 0) > (decision.entryPrice ?? 0), true, `${testCase.name}: long target above entry`);
+    }
+    if (decision.direction === "SHORT") {
+      assert.equal((decision.stopPrice ?? 0) > (decision.entryPrice ?? 0), true, `${testCase.name}: short stop above entry`);
+      assert.equal((decision.targetPrice ?? 0) < (decision.entryPrice ?? 0), true, `${testCase.name}: short target below entry`);
+    }
   }
   console.log(`${testCase.name}: ${decision.scenario} / ${decision.status} / score ${decision.favorabilityScore}`);
 }

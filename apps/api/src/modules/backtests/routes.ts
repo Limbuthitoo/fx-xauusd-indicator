@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantModuleStrategyConfiguration, updateTenantModuleSetting } from "../admin/settings.js";
-import { runModule2LearningPython, runStrategyModuleLearningPython } from "../admin/learning.js";
+import { runModule2LearningPython, runStrategyIndicatorAuditPython, runStrategyModuleLearningPython } from "../admin/learning.js";
 import { requireTenantModule } from "../auth/routes.js";
 import { evaluateVwapOpeningDrive, getCachedCandles } from "../market-data/routes.js";
 
@@ -197,6 +197,13 @@ export async function backtestRoutes(app: FastifyInstance) {
     const { moduleCode } = request.params as { moduleCode: string };
     const auth = await requireTenantModule(request, moduleCode);
     return latestModuleLearningSnapshot(auth.tenantId, moduleCode);
+  });
+
+  app.get("/api/modules/:moduleCode/indicator-audit", async (request) => {
+    const { moduleCode } = request.params as { moduleCode: string };
+    const auth = await requireTenantModule(request, moduleCode);
+    if (!auth.tenantId) return { error: "Tenant account is required for indicator audit." };
+    return runStrategyIndicatorAuditPython(auth.tenantId, moduleCode);
   });
 
   app.post("/api/modules/:moduleCode/learning/run", async (request) => {

@@ -40,6 +40,7 @@ export type LiquiditySweepConfig = {
   minimumSweepDistanceATR: number;
   maximumSweepDistanceATR: number;
   closeBackMaximumBars: number;
+  maximumSweepLookbackBars: number;
   minimumDisplacementRangeATR: number;
   minimumBodyPercentage: number;
   maximumBarsAfterSweep: number;
@@ -86,6 +87,17 @@ export type LiquiditySweepDecision = {
   favorabilityReasons: string[];
 };
 
+type SweepCandidate = {
+  index: number;
+  sweepIndex: number;
+  level: LiquidityLevel;
+  candle: Candle;
+  closeBackCandle: Candle;
+  distanceAtr: number;
+  sweptAt: string;
+  closedBackAt: string;
+};
+
 const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
   newYorkStartTime: "09:30",
@@ -94,6 +106,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   minimumSweepDistanceATR: 0.1,
   maximumSweepDistanceATR: 1,
   closeBackMaximumBars: 3,
+  maximumSweepLookbackBars: 96,
   minimumDisplacementRangeATR: 1.2,
   minimumBodyPercentage: 0.6,
   maximumBarsAfterSweep: 5,
@@ -145,24 +158,25 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
   }
 
-  const sweep = detectLatestSweep(setupCandles, levels, atr, config);
+  const sequence = detectBestLiquiditySequence(setupCandles, levels, pivots, atr, config);
+  const sweep = sequence?.sweep ?? null;
   push(evaluations, "LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", Boolean(sweep?.level), true, "AUTOMATIC", sweep?.level?.type ?? null, "PDH/PDL, Asian, London, equal high/low", sweep?.level ? `${sweep.level.type} at ${sweep.level.price.toFixed(2)} was selected.` : "No valid liquidity level has been swept.");
   push(evaluations, "LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", Boolean(sweep), true, "AUTOMATIC", sweep?.distanceAtr == null ? null : Number(sweep.distanceAtr.toFixed(2)), `${config.minimumSweepDistanceATR}-${config.maximumSweepDistanceATR} ATR`, sweep ? "Price traded beyond liquidity and closed back through the level within the allowed candles." : "No valid close-back sweep has been confirmed.");
   if (!sweep) return waitDecision("WAITING_FOR_SWEEP", "Waiting for a valid liquidity sweep and close-back.", evaluations, flags, levels, htfBias);
 
-  const direction: Direction = sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT";
-  const displacement = detectDisplacement(setupCandles, sweep.index, direction, atr, config);
+  const direction: Direction = sequence?.direction ?? (sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT");
+  const displacement = sequence?.displacement ?? null;
   push(evaluations, "DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, Boolean(displacement), true, "AUTOMATIC", displacement?.rangeAtr == null ? null : Number(displacement.rangeAtr.toFixed(2)), `>= ${config.minimumDisplacementRangeATR} ATR`, displacement ? "A strong directional candle appeared after the sweep." : "No strong displacement candle appeared after the sweep.");
   if (!displacement) return waitDecision("WAITING_FOR_DISPLACEMENT", "Sweep found. Waiting for displacement in the reversal direction.", evaluations, flags, levels, htfBias, sweep, direction);
 
-  const bos = detectBos(setupCandles, sweep.index, displacement.index, direction, pivots, atr, config);
+  const bos = sequence?.bos ?? null;
   push(evaluations, "BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed by close", Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? "Candle body closed beyond the selected internal structure point." : "No candle-close BOS/CHoCH has confirmed yet.");
   if (!bos) return waitDecision("WAITING_FOR_BOS", "Displacement found. Waiting for candle-close BOS/CHoCH.", evaluations, flags, levels, htfBias, sweep, direction);
 
   const currentIndex = setupCandles.length - 1;
-  const fvg = detectFreshFvg(setupCandles, sweep.index, displacement.index, direction, atr, config);
-  const orderBlock = detectOrderBlock(setupCandles, displacement.index, direction, atr);
-  const zone = selectFreshEntryZone(setupCandles, currentIndex, direction, fvg, orderBlock);
+  const fvg = sequence?.fvg ?? null;
+  const orderBlock = sequence?.orderBlock ?? null;
+  const zone = sequence?.zone ?? null;
 
   const setupFresh = currentIndex - bos.index <= config.maximumBarsAfterBosForEntry;
   if (!setupFresh) return blockedDecision("SETUP_TIMEOUT", "Module 2 setup expired before a valid candidate trade.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
@@ -306,6 +320,27 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     .every((evaluation) => evaluation.status === "PASS");
 }
 
+function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | "requiredForEntry"> {
+  const mandatory = new Set([
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "DISPLACEMENT_CONFIRMED",
+    "BOS_CHOCH_CONFIRMED",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "CONFIRM_ENTRY_CANDLE"
+  ]);
+  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
+  const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
+  if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
+  if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
+  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
+  return { ruleLayer: "EVIDENCE", requiredForEntry: false };
+}
+
 function normalizeCandles(candles: Candle[]) {
   return candles
     .filter((candle) => [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite))
@@ -333,8 +368,34 @@ function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: L
   levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, source: lowType });
 }
 
-function detectLatestSweep(candles: Candle[], levels: LiquidityLevel[], atr: number, config: LiquiditySweepConfig) {
-  for (let index = candles.length - 1; index >= Math.max(0, candles.length - 12 - config.closeBackMaximumBars); index -= 1) {
+function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, atr: number, config: LiquiditySweepConfig) {
+  const currentIndex = candles.length - 1;
+  const sequences = detectSweepCandidates(candles, levels, atr, config).map((sweep) => {
+    const direction: Direction = sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT";
+    const displacement = detectDisplacement(candles, sweep.index, direction, atr, config);
+    const bos = displacement ? detectBos(candles, sweep.index, displacement.index, direction, pivots, atr, config) : null;
+    const fvg = displacement ? detectFreshFvg(candles, sweep.index, displacement.index, direction, atr, config) : null;
+    const orderBlock = displacement ? detectOrderBlock(candles, displacement.index, direction, atr) : null;
+    const zone = bos ? selectFreshEntryZone(candles, currentIndex, direction, fvg, orderBlock) : null;
+    const retrace = zone ? candles[currentIndex].low <= zone.high && candles[currentIndex].high >= zone.low : false;
+    const confirmation = zone ? confirmsEntry(candles[currentIndex], direction, zone) : false;
+    const agePenalty = Math.max(0, currentIndex - (bos?.index ?? displacement?.index ?? sweep.index)) * 0.01;
+    const score =
+      1 +
+      (displacement ? 4 : 0) +
+      (bos ? 8 : 0) +
+      (zone ? 16 : 0) +
+      (retrace ? 32 : 0) +
+      (confirmation ? 64 : 0) -
+      agePenalty;
+    return { sweep, direction, displacement, bos, fvg, orderBlock, zone, retrace, confirmation, score };
+  });
+  return sequences.sort((left, right) => right.score - left.score || right.sweep.index - left.sweep.index)[0] ?? null;
+}
+
+function detectSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr: number, config: LiquiditySweepConfig) {
+  const candidates: SweepCandidate[] = [];
+  for (let index = candles.length - 1; index >= Math.max(0, candles.length - config.maximumSweepLookbackBars - config.closeBackMaximumBars); index -= 1) {
     const candle = candles[index];
     for (const level of levels) {
       const penetration = level.side === "SELL_SIDE" ? level.price - candle.low : candle.high - level.price;
@@ -345,12 +406,13 @@ function detectLatestSweep(candles: Candle[], levels: LiquidityLevel[], atr: num
         const closeBackCandle = candles[closeIndex];
         const closedBack = level.side === "SELL_SIDE" ? closeBackCandle.close > level.price : closeBackCandle.close < level.price;
         if (closedBack) {
-          return { index: closeIndex, sweepIndex: index, level, candle, closeBackCandle, distanceAtr, sweptAt: candle.timestampUtc, closedBackAt: closeBackCandle.timestampUtc };
+          candidates.push({ index: closeIndex, sweepIndex: index, level, candle, closeBackCandle, distanceAtr, sweptAt: candle.timestampUtc, closedBackAt: closeBackCandle.timestampUtc });
+          break;
         }
       }
     }
   }
-  return null;
+  return candidates;
 }
 
 function detectDisplacement(candles: Candle[], sweepIndex: number, direction: Direction, atr: number, config: LiquiditySweepConfig) {
@@ -436,7 +498,7 @@ function isZoneFresh(candles: Candle[], zone: NonNullable<ReturnType<typeof dete
   return direction === "LONG" ? !rows.some((candle) => candle.close < zone.low) : !rows.some((candle) => candle.close > zone.high);
 }
 
-function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: NonNullable<ReturnType<typeof detectLatestSweep>>, zone: { midpoint: number; low: number; high: number }, atr: number, config: LiquiditySweepConfig) {
+function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: SweepCandidate, zone: { midpoint: number; low: number; high: number }, atr: number, config: LiquiditySweepConfig) {
   const entry = zone.midpoint;
   const stop = direction === "LONG" ? Math.min(sweep.candle.low, zone.low) - atr * config.stopBufferATR : Math.max(sweep.candle.high, zone.high) + atr * config.stopBufferATR;
   const targets = levels
@@ -455,7 +517,7 @@ function buildLayeredTradePlan(
   candles: Candle[],
   levels: LiquidityLevel[],
   direction: Direction,
-  sweep: NonNullable<ReturnType<typeof detectLatestSweep>>,
+  sweep: SweepCandidate,
   zone: ReturnType<typeof selectFreshEntryZone>,
   current: Candle,
   atr: number,
@@ -664,6 +726,7 @@ function push(evaluations: RuleEvaluation[], ruleCode: string, name: string, pas
   evaluations.push({
     ruleCode,
     name,
+    ...module2RuleLayer(ruleCode),
     status: passed ? "PASS" : "FAIL",
     blocking,
     source,
