@@ -3182,13 +3182,14 @@ function LiveStrategyCenterPanel({
   session?: any;
 }) {
   const signal = getSignal(setup, trade);
-  const rows = moduleCode === "orb_max_options"
+  const rawRows = moduleCode === "orb_max_options"
     ? maxOrbChecklistRows(evaluations, setup, session)
     : moduleCode === "high_probability_strategy_2"
       ? liquiditySweepChecklistRows(evaluations, setup)
       : moduleCode === "strategy_lab_3"
         ? vwapOpeningDriveChecklistRows(evaluations, setup)
       : genericModuleChecklistRows(evaluations, setup, moduleCode);
+  const rows = liveScopedChecklistRows(rawRows, setup);
   const sections = groupedChecklistSections(moduleCode, rows);
   const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
   const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
@@ -3265,7 +3266,7 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
 function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }: { state: PanelState; setup?: any; trade?: any; tradePlan?: any; feedHealth: string }) {
   const cockpit = module2CockpitState(state, setup, trade);
   const signal = getSignal(setup, trade);
-  const rows = liquiditySweepChecklistRows(setup?.evaluations ?? [], setup);
+  const rows = liveScopedChecklistRows(liquiditySweepChecklistRows(setup?.evaluations ?? [], setup), setup);
   const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"].includes(row.rule_code ?? row.ruleCode));
   const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
@@ -5010,7 +5011,7 @@ function Module3StrategyValidationPanel({ setup, evaluations, session }: { setup
   const flags = setup?.scenario_flags ?? {};
   const zone = flags.entryZone ?? {};
   const drive = flags.drive ?? {};
-  const rows = vwapOpeningDriveChecklistRows(evaluations, setup);
+  const rows = liveScopedChecklistRows(vwapOpeningDriveChecklistRows(evaluations, setup), setup);
   const groups = [
     {
       title: "Hard Rules",
@@ -7174,13 +7175,14 @@ function Status({ label, value, tone = "neutral" }: { label: string; value: stri
 
 function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" }: { evaluations: any[]; setup?: any; session?: any; moduleCode?: string }) {
   const activeModuleCode = setup?.module_code ?? moduleCode;
-  const rows = activeModuleCode === "orb_max_options"
+  const rawRows = activeModuleCode === "orb_max_options"
     ? maxOrbChecklistRows(evaluations, setup, session)
     : activeModuleCode === "high_probability_strategy_2"
       ? liquiditySweepChecklistRows(evaluations, setup)
       : activeModuleCode === "strategy_lab_3"
         ? vwapOpeningDriveChecklistRows(evaluations, setup)
       : genericModuleChecklistRows(evaluations, setup, activeModuleCode);
+  const rows = liveScopedChecklistRows(rawRows, setup);
   const sections = groupedChecklistSections(activeModuleCode, rows);
   return (
     <div className="rule-list">
@@ -7337,6 +7339,18 @@ function checklistSections(rows: any[], definitions: Array<{ title: string; desc
   return sections;
 }
 
+function liveScopedChecklistRows(rows: any[], setup?: any) {
+  if (setup?.live_current !== false) return rows;
+  return rows.map((row) => {
+    if (row.status === "NOT_APPLICABLE") return row;
+    return {
+      ...row,
+      status: "WAITING",
+      explanation: "Waiting for the latest Twelve Data candle evaluation. Previous module evidence remains on the chart until the live check refreshes."
+    };
+  });
+}
+
 function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
   const flags = setup?.scenario_flags ?? {};
   const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
@@ -7435,7 +7449,9 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
   const automaticReady = setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY" || setup?.status === "PAPER_TRADE_OPENED";
   const unmatchedRules = Array.isArray(matrix.unmatchedChecklistRules) ? matrix.unmatchedChecklistRules : [];
   const sessionActive = ["OPENING_RANGE_LOCKED", "WAITING_FOR_SETUP", "TRADE_ACTIVE"].includes(session?.state) || Boolean(setup?.expires_at && new Date(setup.expires_at).getTime() >= Date.now());
-  const orbLocked = Boolean(session?.opening_range) || Boolean(setup?.detected_at);
+  const orbLocked = session?.opening_range?.status === "LOCKED"
+    || ["WAITING_FOR_SETUP", "TRADE_ACTIVE", "TRADE_PLANNED", "TRADE_CLOSED", "NO_TRADE"].includes(String(session?.state ?? ""))
+    || Boolean(setup?.detected_at);
 
   const rows = [
     {

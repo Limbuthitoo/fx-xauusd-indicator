@@ -2903,9 +2903,10 @@ export function evaluateVwapOpeningDrive(input: {
     return module3Decision("WAITING_FOR_DATA", null, "WAIT", "Waiting for enough 5M candles to evaluate VWAP opening-drive pullback.", evaluations, flags);
   }
   const nowTime = new Date(current.timestampUtc).getTime();
-  const sessionStart = new Date(input.sessionStartAt).getTime();
-  const sessionEnd = new Date(input.sessionEndAt).getTime();
-  const sessionActive = nowTime >= sessionStart && nowTime <= sessionEnd;
+  const sessionStartTime = new Date(input.sessionStartAt).getTime();
+  const sessionEndTime = new Date(input.sessionEndAt).getTime();
+  const timestampTime = (candle: Candle) => new Date(candle.timestampUtc).getTime();
+  const sessionActive = nowTime >= sessionStartTime && nowTime <= sessionEndTime;
   const tradeLimitOk = Number(input.tradesTakenThisSession ?? 0) < Number(config.maximumTradesPerSession ?? 1);
   const spreadOk = input.spread == null || input.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(input.newsStatus ?? "CLEAR").includes("BLOCKED");
@@ -2914,8 +2915,12 @@ export function evaluateVwapOpeningDrive(input: {
   if (!sessionActive || !tradeLimitOk) return module3Decision("HARD_RULE_BLOCK", null, "BLOCKED", "Module 3 hard rules failed before opening-drive evaluation.", evaluations, flags);
 
   const atr = averageTrueRange(candles.slice(-21));
-  const driveEnd = new Date(sessionStart + Number(config.openingDriveMinutes) * 60_000).toISOString();
-  const driveCandles = candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc < driveEnd);
+  const driveEndTime = sessionStartTime + Number(config.openingDriveMinutes) * 60_000;
+  const driveEnd = new Date(driveEndTime).toISOString();
+  const driveCandles = candles.filter((candle) => {
+    const time = timestampTime(candle);
+    return time >= sessionStartTime && time < driveEndTime;
+  });
   const drive = driveCandles.length > 0 ? {
     start: driveCandles[0],
     end: driveCandles.at(-1)!,
@@ -2928,12 +2933,20 @@ export function evaluateVwapOpeningDrive(input: {
   const driveBody = drive ? Math.abs(drive.close - drive.open) : 0;
   const driveDirection = drive && drive.close > drive.open ? "LONG" : drive && drive.close < drive.open ? "SHORT" : null;
   const driveStrong = Boolean(drive && atr > 0 && driveRange / atr >= config.minimumDriveRangeATR && driveBody / Math.max(driveRange, 0.00001) >= config.minimumDriveBodyPercent);
-  push("OPENING_DRIVE_COMPLETE", "Opening drive complete", Boolean(drive && nowTime >= new Date(driveEnd).getTime()), true, driveCandles.length, `after ${config.openingDriveMinutes} minutes`, "The initial NY impulse window must complete before pullback entries.");
-  push("OPENING_DRIVE_STRONG", "Opening drive strength", driveStrong, true, atr > 0 ? Number((driveRange / atr).toFixed(2)) : null, `>= ${config.minimumDriveRangeATR} ATR`, "The opening drive must show real range expansion and body commitment.");
-  if (!drive || nowTime < new Date(driveEnd).getTime()) return module3Decision("WAITING_FOR_OPENING_DRIVE", null, "WAIT", "Waiting for the NY opening drive to complete.", evaluations, { ...flags, drive });
+  push("OPENING_DRIVE_COMPLETE", "Opening drive complete", Boolean(drive && nowTime >= driveEndTime), true, driveCandles.length, `after ${config.openingDriveMinutes} minutes`, "The initial NY impulse window must complete before pullback entries.");
+  const driveRangeAtr = atr > 0 ? driveRange / atr : null;
+  const driveBodyRatio = drive ? driveBody / Math.max(driveRange, 0.00001) : null;
+  const driveStrengthActual = driveRangeAtr == null || driveBodyRatio == null
+    ? null
+    : `${driveRangeAtr.toFixed(2)} ATR / ${Math.round(driveBodyRatio * 100)}% body`;
+  push("OPENING_DRIVE_STRONG", "Opening drive strength", driveStrong, true, driveStrengthActual, `>= ${config.minimumDriveRangeATR} ATR and >= ${Math.round(config.minimumDriveBodyPercent * 100)}% body`, "The opening drive must show real range expansion and body commitment.");
+  if (!drive || nowTime < driveEndTime) return module3Decision("WAITING_FOR_OPENING_DRIVE", null, "WAIT", "Waiting for the NY opening drive to complete.", evaluations, { ...flags, drive });
   if (!driveStrong || !driveDirection) return module3Decision("NO_STRONG_OPENING_DRIVE", null, "NO TRADE", "No strong opening drive is available for Module 3.", evaluations, { ...flags, drive });
 
-  const sessionRows = candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc <= current.timestampUtc);
+  const sessionRows = candles.filter((candle) => {
+    const time = timestampTime(candle);
+    return time >= sessionStartTime && time <= nowTime;
+  });
   const vwap = volumeWeightedAverage(sessionRows);
   const volumeCoverage = sessionRows.length > 0 ? sessionRows.filter((candle) => Number(candle.volume) > 0).length / sessionRows.length : 0;
   const vwapDataQuality = volumeCoverage >= 0.8;
@@ -2944,13 +2957,13 @@ export function evaluateVwapOpeningDrive(input: {
   const htfAligned = htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH");
   const vwapAligned = direction === "LONG" ? current.close > vwap + atr * config.minimumVwapDistanceATR : current.close < vwap - atr * config.minimumVwapDistanceATR;
   const trendAligned = direction === "LONG" ? current.close >= ema : current.close <= ema;
-  const pullbackRows = candles.filter((candle) => candle.timestampUtc >= driveEnd);
+  const pullbackRows = candles.filter((candle) => timestampTime(candle) >= driveEndTime);
   const zoneLow = direction === "LONG" ? Math.min(vwap, ema) - atr * config.pullbackZoneAtr : Math.min(vwap, ema);
   const zoneHigh = direction === "LONG" ? Math.max(vwap, ema) : Math.max(vwap, ema) + atr * config.pullbackZoneAtr;
   const pullbackZoneReady = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
   const pullbackObservations = pullbackRows.map((candle, index) => {
     const history = candles.filter((row) => row.timestampUtc <= candle.timestampUtc);
-    const sessionHistory = history.filter((row) => row.timestampUtc >= input.sessionStartAt);
+    const sessionHistory = history.filter((row) => timestampTime(row) >= sessionStartTime);
     const vwapAtCandle = volumeWeightedAverage(sessionHistory);
     const emaAtCandle = simpleEma(history.map((row) => row.close), Number(config.emaPeriod));
     const low = direction === "LONG" ? Math.min(vwapAtCandle, emaAtCandle) - atr * config.pullbackZoneAtr : Math.min(vwapAtCandle, emaAtCandle);
@@ -2986,7 +2999,8 @@ export function evaluateVwapOpeningDrive(input: {
   const mandatoryEntryPassed = module3MandatoryEntryPassed(evaluations);
   const scoreOk = score >= config.minimumSignalScore;
   push("SIGNAL_SCORE", "Minimum signal score", scoreOk, true, score, `>= ${config.minimumSignalScore}`, "Module 3 requires a high-quality opening-drive pullback score.");
-  const fullChecklistPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS") && htfAligned && vwapDataQuality;
+  const blockingEvaluations = evaluations.filter((row) => row.blocking);
+  const fullChecklistPassed = blockingEvaluations.length > 0 && blockingEvaluations.every((row) => row.status === "PASS") && htfAligned && vwapDataQuality;
   flags.drive = drive;
   flags.vwap = vwap;
   flags.vwapMode = vwapMode;
@@ -4364,16 +4378,18 @@ function withChecklistMetadata(moduleCode: string, decision: any) {
     ...moduleRuleLayer(moduleCode, evaluation.ruleCode ?? evaluation.rule_code)
   }));
   const mandatoryMatched = moduleMandatoryEntryPassed(moduleCode, evaluations);
-  const fullMatched = evaluations.filter((evaluation: any) => evaluation.blocking).every((evaluation: any) => evaluation.status === "PASS");
+  const blockingEvaluations = evaluations.filter((evaluation: any) => evaluation.blocking);
+  const fullMatched = blockingEvaluations.length > 0 && blockingEvaluations.every((evaluation: any) => evaluation.status === "PASS");
   const currentFlags = decision.scenarioFlags ?? {};
-  const setupTier = currentFlags.setupTier ?? (fullMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH");
+  const fullChecklistMatched = blockingEvaluations.length > 0 ? (currentFlags.fullChecklistMatched ?? fullMatched) : false;
+  const setupTier = blockingEvaluations.length > 0 ? (currentFlags.setupTier ?? (fullMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH")) : "WATCH";
   return {
     ...decision,
     evaluations,
     scenarioFlags: {
       ...currentFlags,
       mandatoryChecklistMatched: currentFlags.mandatoryChecklistMatched ?? mandatoryMatched,
-      fullChecklistMatched: currentFlags.fullChecklistMatched ?? fullMatched,
+      fullChecklistMatched,
       setupTier,
       paperTradeEligible: ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status)) && mandatoryMatched,
       checklistSummary: checklistSummary(moduleCode, evaluations)

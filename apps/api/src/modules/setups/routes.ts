@@ -178,7 +178,10 @@ export async function setupRoutes(app: FastifyInstance) {
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
     const setup = await query(
-      `SELECT sc.*
+      `SELECT
+         sc.*,
+         latest.timestamp_utc AS latest_candle_at,
+         (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc) AS live_current
        FROM setup_candidates sc
        LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
        LEFT JOIN trades t ON t.trade_plan_id = tp.id AND t.outcome = 'ACTIVE'
@@ -198,7 +201,6 @@ export async function setupRoutes(app: FastifyInstance) {
          AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
          AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
-         AND (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc)
        ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END, sc.detected_at DESC
        LIMIT 1`,
       [auth.tenantId, moduleCode]
