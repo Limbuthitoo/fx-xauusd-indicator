@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
-import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
 import { API_BASE_URL, ApiError, api, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
@@ -22,7 +22,7 @@ const DEFAULT_PUSH_PREFERENCES = {
   systemDiagnostics: false
 };
 
-type ActiveSection = "command" | "live" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
+type ActiveSection = "command" | "live" | "signals" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
 type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
@@ -41,6 +41,7 @@ type PanelState = {
   tradePlan?: any;
   currentTrade?: any;
   paperTrading?: { summary?: any; trades?: any[] };
+  tradeSignals?: { summary?: any; signals?: any[] };
   sessionReview?: any;
   weeklyReport?: any[];
   monthlyReport?: any[];
@@ -220,6 +221,7 @@ function App() {
       notifications: bundle.notifications?.length ? bundle.notifications : previous.notifications ?? [],
       notificationSummary: bundle.notificationSummary?.length ? bundle.notificationSummary : previous.notificationSummary ?? [],
       paperTrading: bundle.paperTrading ?? previous.paperTrading,
+      tradeSignals: bundle.tradeSignals ?? previous.tradeSignals,
       settings: bundle.settings?.length ? bundle.settings : previous.settings ?? [],
       orbModuleSettings: bundle.orbModuleSettings?.length ? bundle.orbModuleSettings : previous.orbModuleSettings ?? [],
       activeModuleSettings: bundle.activeModuleSettings?.length ? bundle.activeModuleSettings : previous.activeModuleSettings ?? [],
@@ -989,6 +991,7 @@ function App() {
         <nav>
           {can("dashboard.view") ? <NavButton icon={<ShieldCheck />} label="Command Center" active={activeSection === "command"} onClick={() => setActiveSection("command")} /> : null}
           {can("chart.view") ? <NavButton icon={<LineChart />} label="Live Chart" active={activeSection === "live"} onClick={() => setActiveSection("live")} /> : null}
+          {can("signals.view") ? <NavButton icon={<ArrowUpDown />} label="BUY & SELL" active={activeSection === "signals"} onClick={() => setActiveSection("signals")} /> : null}
           {can("signals.view") ? <NavButton icon={<Table2 />} label="Paper Trading" active={activeSection === "paper"} onClick={() => setActiveSection("paper")} /> : null}
           {can("dashboard.view") ? <NavButton icon={<Database />} label="System Status" active={activeSection === "health"} onClick={() => setActiveSection("health")} /> : null}
           {can("signals.view") ? <NavButton icon={<Database />} label="Strategy Center" active={activeSection === "orb"} onClick={() => setActiveSection("orb")} /> : null}
@@ -1018,7 +1021,7 @@ function App() {
           </div>
         </header>
 
-        {activeSection !== "paper" ? <section className="status-strip auto-status-strip">
+        {!['paper', 'signals'].includes(activeSection) ? <section className="status-strip auto-status-strip">
           <Status label="Symbol" value={activeSymbol} />
           <Status label="Timeframe" value={`${activeTimeframeMinutes}m`} />
           <Status label="Session" value={state.session?.state ?? "AUTO WAITING"} tone={toneFor(state.session?.state)} />
@@ -1029,7 +1032,7 @@ function App() {
           <Status label="Real Orders" value="OFF" tone="bad" />
         </section> : null}
 
-        {!accountLocked && activeSection !== "paper" ? (
+        {!accountLocked && !['paper', 'signals'].includes(activeSection) ? (
           <section className="module-switcher">
             {enabledModules.map((module: any) => (
               <button
@@ -1100,6 +1103,18 @@ function App() {
             data={state.paperTrading}
             modules={enabledModules}
             onRefresh={() => refresh().catch(() => setMessage("Paper trading refresh failed."))}
+            onOpenChart={(moduleCode) => {
+              setActiveModuleCode(moduleCode);
+              setActiveSection("live");
+            }}
+          />
+        ) : null}
+
+        {activeSection === "signals" && !accountLocked ? (
+          <TradeSignalsWorkspace
+            data={state.tradeSignals}
+            modules={enabledModules}
+            onRefresh={() => refresh().catch(() => setMessage("BUY & SELL refresh failed."))}
             onOpenChart={(moduleCode) => {
               setActiveModuleCode(moduleCode);
               setActiveSection("live");
@@ -7388,6 +7403,179 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function TradeSignalsWorkspace({
+  data,
+  modules,
+  onRefresh,
+  onOpenChart
+}: {
+  data?: { summary?: any; signals?: any[] };
+  modules: any[];
+  onRefresh: () => void;
+  onOpenChart: (moduleCode: string) => void;
+}) {
+  const [sideFilter, setSideFilter] = useState("ALL");
+  const [moduleFilter, setModuleFilter] = useState("ALL");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const signals = data?.signals ?? [];
+  const summary = data?.summary ?? {};
+  const filtered = signals.filter((signal) =>
+    (sideFilter === "ALL" || signal.action === sideFilter) &&
+    (moduleFilter === "ALL" || signal.moduleCode === moduleFilter)
+  );
+  const selected = signals.find((signal) => signal.id === selectedId) ?? null;
+
+  if (selected) {
+    const evaluations = selected.checklist?.evaluations ?? [];
+    return (
+      <section className="trade-signals-workspace admin-section">
+        <div className="signal-detail-toolbar">
+          <button className="signal-back-button" onClick={() => setSelectedId(null)}><ArrowLeft size={17} />Back to signals</button>
+          <button onClick={() => onOpenChart(selected.moduleCode)}><LineChart size={16} />Open live chart</button>
+        </div>
+
+        <section className={`signal-detail-hero ${selected.action === "SELL" ? "sell" : "buy"}`}>
+          <div>
+            <span>{moduleShortName(selected.moduleCode, selected.moduleName)}</span>
+            <h2>{selected.action} {selected.symbol}</h2>
+            <p>{formatScenario(selected.scenario)}</p>
+          </div>
+          <div className="signal-detail-state">
+            <strong>{selected.trade?.status === "ACTIVE" ? "PAPER TRADE ACTIVE" : selected.status}</strong>
+            <span>{selected.setupTier} SETUP · {formatNepalTime(selected.detectedAt)}</span>
+          </div>
+        </section>
+
+        <div className="signal-price-strip">
+          <SignalPrice label="Entry range" value={formatSignalRange(selected.entryRange)} />
+          <SignalPrice label="Stop loss" value={formatPriceValue(selected.stopLoss)} tone="stop" />
+          <SignalPrice label="TP1" value={formatPriceValue(selected.tp1)} tone="target" />
+          <SignalPrice label="TP2 · Paper target" value={formatPriceValue(selected.tp2)} tone="target" />
+          <SignalPrice label="TP3" value={formatPriceValue(selected.tp3)} tone="target" />
+        </div>
+
+        <div className="signal-detail-grid">
+          <section className="signal-evidence-panel">
+            <div className="signal-section-heading">
+              <div>
+                <h3><CheckCircle2 size={18} />Entry evidence</h3>
+                <p>{selected.reason ?? "The strategy checklist produced a valid entry."}</p>
+              </div>
+              <span className="signal-check-count">{selected.checklist?.passed ?? 0}/{selected.checklist?.total ?? 0} passed</span>
+            </div>
+            <div className="signal-checklist-detail">
+              {evaluations.map((evaluation: any) => (
+                <div key={evaluation.id ?? evaluation.rule_code} className={`signal-check-row ${evaluation.status === "PASS" ? "pass" : "fail"}`}>
+                  {evaluation.status === "PASS" ? <CheckCircle2 size={17} /> : <XCircle size={17} />}
+                  <div>
+                    <strong>{evaluation.name}</strong>
+                    <span>{evaluation.explanation}</span>
+                  </div>
+                  <b>{evaluation.status}</b>
+                </div>
+              ))}
+              {evaluations.length === 0 ? <p className="reason">Checklist evidence is not available for this setup.</p> : null}
+            </div>
+          </section>
+
+          <aside className="signal-trade-facts">
+            <h3><Target size={18} />Trade details</h3>
+            <Metric label="Direction" value={selected.direction} />
+            <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
+            <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
+            <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
+            <Metric label="Grade" value={selected.grade ?? "--"} />
+            <Metric label="Entry type" value={formatEntryKind(selected.entryRange?.kind)} />
+            <Metric label="Valid until" value={selected.expiresAt ? formatNepalTime(selected.expiresAt) : "Until invalidated"} />
+            <Metric label="Paper status" value={selected.trade?.status ?? "Awaiting paper entry"} />
+          </aside>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="trade-signals-workspace admin-section">
+      <div className="paper-trading-head">
+        <div>
+          <h2><ArrowUpDown size={20} />BUY & SELL</h2>
+          <p>Valid live-session trade setups generated by your assigned strategy modules.</p>
+        </div>
+        <button onClick={onRefresh}><LineChart size={16} />Refresh</button>
+      </div>
+
+      <div className="signal-summary-strip">
+        <Metric label="Live setups" value={summary.total ?? 0} />
+        <Metric label="BUY" value={summary.buy ?? 0} />
+        <Metric label="SELL" value={summary.sell ?? 0} />
+        <Metric label="Active paper trades" value={summary.activePaperTrades ?? 0} />
+        <Metric label="Full checklist" value={summary.fullSetups ?? 0} />
+      </div>
+
+      <div className="paper-toolbar">
+        <div className="paper-segmented" aria-label="Signal side filter">
+          {["ALL", "BUY", "SELL"].map((side) => (
+            <button key={side} className={sideFilter === side ? "active" : ""} onClick={() => setSideFilter(side)}>{side}</button>
+          ))}
+        </div>
+        <label>
+          <span>Strategy</span>
+          <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
+            <option value="ALL">All assigned modules</option>
+            {modules.map((module) => <option key={module.code} value={module.code}>{moduleShortName(module.code, module.name)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="trade-signal-grid">
+        {filtered.map((signal) => (
+          <button key={signal.id} className={`trade-signal-card ${signal.action === "SELL" ? "sell" : "buy"}`} onClick={() => setSelectedId(signal.id)}>
+            <div className="trade-signal-card-head">
+              <div>
+                <span>{moduleShortName(signal.moduleCode, signal.moduleName)}</span>
+                <strong>{signal.action} {signal.symbol}</strong>
+              </div>
+              <span className="signal-tier">{signal.setupTier}</span>
+            </div>
+            <div className="trade-signal-entry">
+              <span>Entry range</span>
+              <strong>{formatSignalRange(signal.entryRange)}</strong>
+            </div>
+            <div className="trade-signal-levels">
+              <SignalPrice label="SL" value={formatPriceValue(signal.stopLoss)} tone="stop" />
+              <SignalPrice label="TP1" value={formatPriceValue(signal.tp1)} tone="target" />
+              <SignalPrice label="TP2" value={formatPriceValue(signal.tp2)} tone="target" />
+              <SignalPrice label="TP3" value={formatPriceValue(signal.tp3)} tone="target" />
+            </div>
+            <div className="trade-signal-card-foot">
+              <span>{formatNepalTime(signal.detectedAt)}</span>
+              <strong>{signal.checklist?.passed ?? 0}/{signal.checklist?.total ?? 0} rules</strong>
+            </div>
+          </button>
+        ))}
+      </div>
+      {filtered.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No valid live setups</strong><span>Cards appear automatically after an assigned module validates a BUY or SELL entry.</span></div> : null}
+    </section>
+  );
+}
+
+function SignalPrice({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
+  return <div className={`signal-price ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function formatSignalRange(range: any) {
+  const low = Number(range?.low);
+  const high = Number(range?.high);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return "--";
+  if (Math.abs(high - low) < 0.00001) return `${formatPriceValue(low)} exact`;
+  return `${formatPriceValue(low)} - ${formatPriceValue(high)}`;
+}
+
+function formatEntryKind(kind?: string) {
+  if (kind === "EXACT_SIGNAL_CLOSE") return "Exact signal close";
+  return String(kind ?? "Strategy entry zone").replaceAll("_", " ").toLowerCase();
+}
+
 function PaperTradingWorkspace({
   data,
   modules,
@@ -7530,6 +7718,7 @@ function sectionTitle(section: ActiveSection) {
   const titles: Record<ActiveSection, string> = {
     command: "Command Center",
     live: "Live Chart",
+    signals: "BUY & SELL",
     paper: "Paper Trading",
     health: "System Status",
     orb: "Strategy Center",
@@ -7547,6 +7736,7 @@ function sectionSubtitle(section: ActiveSection) {
   const subtitles: Record<ActiveSection, string> = {
     command: "One operational view for all enabled XAUUSD strategy modules, paper trades, confidence, and rehearsals.",
     live: "Realtime XAUUSD candles, live indicators, and automatic paper-trade signal state.",
+    signals: "Live validated BUY and SELL setups with entry range, stop loss, tiered targets, and checklist evidence.",
     paper: "Monitor simulated entries, current conditions, risk-to-reward, TP/SL, and completed outcomes across assigned modules.",
     health: "Live service checks for Twelve Data, PostgreSQL/cache, NY scheduler, chart readiness, and module automation.",
     orb: "Module-specific setup evidence, generated BUY/SELL records, outcomes, and scenario reasoning.",

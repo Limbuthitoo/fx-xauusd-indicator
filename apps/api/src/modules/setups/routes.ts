@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantOrbStrategyConfiguration } from "../admin/settings.js";
-import { requireTenantModule } from "../auth/routes.js";
+import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 
 type ReplayCase = "BUY" | "SELL" | "RETEST" | "FAKEOUT" | "SWEEP_REVERSAL" | "OVEREXTENDED" | "NO_TRADE";
@@ -83,6 +83,87 @@ const ORB_QA_CASES: Array<{ code: ReplayCase; label: string; expected: string; t
 ];
 
 export async function setupRoutes(app: FastifyInstance) {
+  app.get("/api/setups/signals", async (request) => {
+    const auth = requirePermission(request, "signals.view");
+    if (!auth.tenantId) return { summary: emptySignalSummary(), signals: [] };
+    const search = request.query as { limit?: string; side?: string; moduleCode?: string };
+    const limit = Math.min(100, Math.max(1, Number(search.limit ?? 50)));
+    const side = String(search.side ?? "ALL").toUpperCase();
+    const moduleCode = String(search.moduleCode ?? "ALL");
+    const params: unknown[] = [auth.tenantId];
+    const sideFilter = side === "BUY" || side === "SELL"
+      ? `AND sc.direction = $${params.push(side === "BUY" ? "LONG" : "SHORT")}`
+      : "";
+    const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    params.push(limit);
+    const setups = await query(
+      `SELECT
+         sc.*,
+         sm.name AS module_name,
+         tp.reward_to_risk,
+         t.id AS trade_id,
+         t.outcome AS trade_outcome,
+         t.actual_entry,
+         t.actual_stop,
+         t.actual_target,
+         t.actual_exit,
+         t.result_r,
+         t.opened_at,
+         t.closed_at,
+         latest.close AS current_price,
+         latest.timestamp_utc AS current_price_at
+       FROM setup_candidates sc
+       JOIN platform_strategy_modules sm ON sm.code = sc.module_code
+       JOIN tenant_modules tm ON tm.module_id = sm.id
+         AND tm.tenant_id = sc.tenant_id
+         AND tm.status = 'ENABLED'
+       LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+       LEFT JOIN trades t ON t.trade_plan_id = tp.id
+       LEFT JOIN LATERAL (
+         SELECT c.close, c.timestamp_utc
+         FROM candles c
+         WHERE c.symbol = sc.symbol
+           AND c.timeframe_minutes = 5
+           AND c.source LIKE 'TWELVE_DATA%'
+         ORDER BY c.timestamp_utc DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE sc.tenant_id = $1
+         AND sc.direction IN ('LONG', 'SHORT')
+         AND sc.entry_price IS NOT NULL
+         AND sc.stop_price IS NOT NULL
+         AND sc.target_price IS NOT NULL
+         AND sc.status IN ('LONG SETUP READY', 'SHORT SETUP READY', 'PAPER_TRADE_OPENED', 'TRADE_PLANNED')
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE')
+         ${sideFilter}
+         ${moduleFilter}
+       ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, sc.detected_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+    const setupIds = setups.rows.map((row: any) => row.id);
+    const evaluations = setupIds.length > 0
+      ? await query(
+          `SELECT *
+           FROM setup_rule_evaluations
+           WHERE setup_candidate_id = ANY($1::uuid[])
+           ORDER BY evaluated_at ASC`,
+          [setupIds]
+        )
+      : { rows: [] };
+    const evaluationsBySetup = new Map<string, any[]>();
+    for (const evaluation of evaluations.rows as any[]) {
+      const rows = evaluationsBySetup.get(evaluation.setup_candidate_id) ?? [];
+      rows.push(evaluation);
+      evaluationsBySetup.set(evaluation.setup_candidate_id, rows);
+    }
+    const signals = setups.rows.map((row: any) => signalSetupView(row, evaluationsBySetup.get(row.id) ?? []));
+    return { summary: summarizeSignals(signals), signals };
+  });
+
   app.get("/api/setups/current", async (request) => {
     const search = request.query as { moduleCode?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
@@ -1124,6 +1205,85 @@ export async function setupRoutes(app: FastifyInstance) {
       return rows[0];
     });
   }
+}
+
+function signalSetupView(row: any, evaluations: any[]) {
+  const entry = Number(row.actual_entry ?? row.entry_price);
+  const stopLoss = Number(row.actual_stop ?? row.stop_price);
+  const paperTarget = Number(row.actual_target ?? row.target_price);
+  const targetDistance = Math.abs(paperTarget - entry);
+  const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
+  const multiplier = direction === "SHORT" ? -1 : 1;
+  const flags = row.scenario_flags ?? {};
+  const zone = flags.entryZone ?? flags.entry_zone ?? null;
+  const zoneLow = Number(zone?.low);
+  const zoneHigh = Number(zone?.high);
+  const hasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
+  const riskDistance = Math.abs(entry - stopLoss);
+  const tp1 = entry + multiplier * targetDistance * 0.5;
+  const tp2 = paperTarget;
+  const tp3 = entry + multiplier * targetDistance * 1.5;
+  const currentPrice = row.current_price == null ? null : Number(row.current_price);
+  const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
+  return {
+    id: row.id,
+    moduleCode: row.module_code,
+    moduleName: row.module_name,
+    symbol: row.symbol,
+    action: direction === "LONG" ? "BUY" : "SELL",
+    direction,
+    scenario: row.scenario,
+    status: row.status,
+    setupTier: flags.setupTier ?? (flags.fullChecklistMatched ? "FULL" : "MANDATORY"),
+    grade: row.favorability_grade ?? flags.tradeGrade ?? null,
+    confidence: row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score),
+    detectedAt: row.detected_at,
+    expiresAt: row.expires_at,
+    entry,
+    entryRange: {
+      low: hasZone ? Math.min(zoneLow, zoneHigh) : entry,
+      high: hasZone ? Math.max(zoneLow, zoneHigh) : entry,
+      kind: hasZone ? String(zone.kind ?? "STRATEGY_ENTRY_ZONE") : "EXACT_SIGNAL_CLOSE"
+    },
+    stopLoss,
+    tp1,
+    tp2,
+    tp3,
+    paperTarget,
+    riskDistance,
+    rewardToRisk: row.reward_to_risk == null ? (riskDistance > 0 ? targetDistance / riskDistance : null) : Number(row.reward_to_risk),
+    currentPrice,
+    currentPriceAt: row.current_price_at,
+    trade: row.trade_id ? {
+      id: row.trade_id,
+      status: row.trade_outcome,
+      openedAt: row.opened_at,
+      closedAt: row.closed_at,
+      exit: row.actual_exit == null ? null : Number(row.actual_exit),
+      resultR: row.result_r == null ? null : Number(row.result_r)
+    } : null,
+    checklist: {
+      passed: checklistPassed,
+      total: evaluations.length,
+      evaluations
+    },
+    reason: row.final_reason
+  };
+}
+
+function summarizeSignals(signals: any[]) {
+  return {
+    total: signals.length,
+    buy: signals.filter((signal) => signal.action === "BUY").length,
+    sell: signals.filter((signal) => signal.action === "SELL").length,
+    activePaperTrades: signals.filter((signal) => signal.trade?.status === "ACTIVE").length,
+    fullSetups: signals.filter((signal) => signal.setupTier === "FULL").length,
+    latestAt: signals[0]?.detectedAt ?? null
+  };
+}
+
+function emptySignalSummary() {
+  return { total: 0, buy: 0, sell: 0, activePaperTrades: 0, fullSetups: 0, latestAt: null };
 }
 
 function setupRecommendation(setup: any) {
