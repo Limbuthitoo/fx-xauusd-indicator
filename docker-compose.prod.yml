@@ -90,6 +90,70 @@ services:
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
       MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
 
+  quant:
+    profiles: ["prod"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backup:
+    image: postgres:16-alpine
+    profiles: ["prod"]
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+    command:
+      - sh
+      - -lc
+      - |
+        set -e
+        mkdir -p /backups/postgres
+        while true; do
+          ts=$$(date -u +%Y%m%dT%H%M%SZ)
+          file="/backups/postgres/orb_guide_$${ts}.dump"
+          pg_dump -h postgres -U orb_user -d orb_guide -Fc > "$${file}"
+          find /backups/postgres -type f -name 'orb_guide_*.dump' -mtime +"$${BACKUP_RETENTION_DAYS}" -print -delete
+          echo "backup created: $${file}"
+          sleep "$${BACKUP_INTERVAL_SECONDS}"
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ops-monitor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: ["prod"]
+    restart: unless-stopped
+    command: ["node", "/app/scripts/ops-monitor.mjs"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
+      REDIS_URL: redis://redis:6379
+      API_HEALTH_URL: http://api:7073/api/health
+      QUANT_HEALTH_URL: http://quant:8000/health
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-60}
+      MONITOR_WORKER_MAX_AGE_SECONDS: ${MONITOR_WORKER_MAX_AGE_SECONDS:-180}
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      quant:
+        condition: service_healthy
+
   web:
     profiles: ["prod"]
     restart: unless-stopped

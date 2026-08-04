@@ -14,6 +14,7 @@ RUN npm ci
 COPY apps/api apps/api
 COPY apps/quant apps/quant
 COPY db db
+COPY scripts scripts
 RUN npm run build:api
 WORKDIR /app/apps/api
 EXPOSE 7070
