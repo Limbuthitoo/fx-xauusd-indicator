@@ -1232,6 +1232,10 @@ function signalSetupView(row: any, evaluations: any[]) {
   const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(entry + multiplier * pips * XAUUSD_PIP_SIZE));
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
+  const checklistTotal = evaluations.length;
+  const fullChecklistValid = checklistTotal > 0 && checklistPassed === checklistTotal;
+  const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
+  const chance = signalChanceScore(confidence, checklistPassed, checklistTotal, Boolean(flags.fullChecklistMatched), direction);
   return {
     id: row.id,
     moduleCode: row.module_code,
@@ -1243,7 +1247,13 @@ function signalSetupView(row: any, evaluations: any[]) {
     status: row.status,
     setupTier: flags.setupTier ?? (flags.fullChecklistMatched ? "FULL" : "MANDATORY"),
     grade: row.favorability_grade ?? flags.tradeGrade ?? null,
-    confidence: row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score),
+    confidence,
+    chance,
+    chanceLabel: `${chance}%`,
+    chanceSource: confidence == null ? "Checklist completion" : "Module confidence score",
+    fullChecklistValid,
+    longChecklistBoost: direction === "LONG" && fullChecklistValid,
+    moduleSignal: `${row.module_name} ${direction === "LONG" ? "BUY" : "SELL"} signal`,
     detectedAt: row.detected_at,
     expiresAt: row.expires_at,
     entry,
@@ -1261,6 +1271,15 @@ function signalSetupView(row: any, evaluations: any[]) {
       { label: "TP2", pips: DAY_TRADING_TARGET_PIPS[1], price: tp2 },
       { label: "TP3", pips: DAY_TRADING_TARGET_PIPS[2], price: tp3 }
     ],
+    longTradePlan: {
+      label: "Full checklist trade",
+      targetLabel: "TP",
+      targetPrice: roundSignalPrice(paperTarget),
+      eligible: fullChecklistValid,
+      reason: fullChecklistValid
+        ? `${row.module_name} has a full checklist ${direction === "LONG" ? "BUY" : "SELL"} setup with ${chance}% chance score.`
+        : "Long setup waits until every checklist rule is valid."
+    },
     pipSize: XAUUSD_PIP_SIZE,
     tradeHorizon: DAY_TRADING_HOLD_WINDOW,
     paperTarget,
@@ -1278,7 +1297,7 @@ function signalSetupView(row: any, evaluations: any[]) {
     } : null,
     checklist: {
       passed: checklistPassed,
-      total: evaluations.length,
+      total: checklistTotal,
       evaluations
     },
     reason: row.final_reason
@@ -1289,6 +1308,15 @@ function roundSignalPrice(value: number) {
   return Number(value.toFixed(2));
 }
 
+function signalChanceScore(confidence: unknown, checklistPassed: number, checklistTotal: number, fullChecklistMatched: boolean, direction: "LONG" | "SHORT") {
+  const numericConfidence = Number(confidence);
+  if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence)));
+  const checklistScore = checklistTotal > 0 ? (checklistPassed / checklistTotal) * 100 : 0;
+  const fullBonus = fullChecklistMatched ? 5 : 0;
+  const longValidationBonus = direction === "LONG" && checklistTotal > 0 && checklistPassed === checklistTotal ? 3 : 0;
+  return Math.min(99, Math.max(1, Math.round(checklistScore + fullBonus + longValidationBonus)));
+}
+
 function summarizeSignals(signals: any[]) {
   return {
     total: signals.length,
@@ -1296,12 +1324,13 @@ function summarizeSignals(signals: any[]) {
     sell: signals.filter((signal) => signal.action === "SELL").length,
     activePaperTrades: signals.filter((signal) => signal.trade?.status === "ACTIVE").length,
     fullSetups: signals.filter((signal) => signal.setupTier === "FULL").length,
+    averageChance: signals.length > 0 ? Math.round(signals.reduce((sum, signal) => sum + Number(signal.chance ?? 0), 0) / signals.length) : 0,
     latestAt: signals[0]?.detectedAt ?? null
   };
 }
 
 function emptySignalSummary() {
-  return { total: 0, buy: 0, sell: 0, activePaperTrades: 0, fullSetups: 0, latestAt: null };
+  return { total: 0, buy: 0, sell: 0, activePaperTrades: 0, fullSetups: 0, averageChance: 0, latestAt: null };
 }
 
 function setupRecommendation(setup: any) {

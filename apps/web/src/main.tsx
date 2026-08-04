@@ -7416,6 +7416,8 @@ function TradeSignalsWorkspace({
 }) {
   const [sideFilter, setSideFilter] = useState("ALL");
   const [moduleFilter, setModuleFilter] = useState("ALL");
+  const [horizonFilter, setHorizonFilter] = useState<"SHORT" | "LONG">("SHORT");
+  const [selectedHorizon, setSelectedHorizon] = useState<"SHORT" | "LONG">("SHORT");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const signals = data?.signals ?? [];
   const summary = data?.summary ?? {};
@@ -7423,10 +7425,17 @@ function TradeSignalsWorkspace({
     (sideFilter === "ALL" || signal.action === sideFilter) &&
     (moduleFilter === "ALL" || signal.moduleCode === moduleFilter)
   );
+  const longSignals = filtered
+    .filter((signal) => signal.longTradePlan?.eligible)
+    .slice()
+    .sort((left, right) => Number(right.chance ?? 0) - Number(left.chance ?? 0))
+    .slice(0, 1);
+  const visibleSignals = horizonFilter === "LONG" ? longSignals : filtered;
   const selected = signals.find((signal) => signal.id === selectedId) ?? null;
 
   if (selected) {
     const evaluations = selected.checklist?.evaluations ?? [];
+    const longMode = selectedHorizon === "LONG";
     return (
       <section className="trade-signals-workspace admin-section">
         <div className="signal-detail-toolbar">
@@ -7442,16 +7451,23 @@ function TradeSignalsWorkspace({
           </div>
           <div className="signal-detail-state">
             <strong>{selected.trade?.status === "ACTIVE" ? "PAPER TRADE ACTIVE" : selected.status}</strong>
-            <span>{selected.setupTier} SETUP · {formatNepalTime(selected.detectedAt)}</span>
+            <span>{longMode ? "LONG SETUP" : `${selected.setupTier} SETUP`} · {formatNepalTime(selected.detectedAt)}</span>
           </div>
         </section>
 
-        <div className="signal-price-strip">
+        <div className={`signal-price-strip ${longMode ? "long-mode" : ""}`}>
           <SignalPrice label="Entry range" value={formatSignalRange(selected.entryRange)} />
           <SignalPrice label="Stop loss" value={formatPriceValue(selected.stopLoss)} tone="stop" />
-          <SignalPrice label={targetLabel(selected, 0, "TP1 · 50 pips")} value={formatPriceValue(selected.tp1)} tone="target" />
-          <SignalPrice label={targetLabel(selected, 1, "TP2 · 100 pips")} value={formatPriceValue(selected.tp2)} tone="target" />
-          <SignalPrice label={targetLabel(selected, 2, "TP3 · 150 pips")} value={formatPriceValue(selected.tp3)} tone="target" />
+          {longMode ? (
+            <SignalPrice label="TP · Module target" value={formatPriceValue(longTargetPrice(selected))} tone="target" />
+          ) : (
+            <>
+              <SignalPrice label={targetLabel(selected, 0, "TP1 · 50 pips")} value={formatPriceValue(selected.tp1)} tone="target" />
+              <SignalPrice label={targetLabel(selected, 1, "TP2 · 100 pips")} value={formatPriceValue(selected.tp2)} tone="target" />
+              <SignalPrice label={targetLabel(selected, 2, "TP3 · 150 pips")} value={formatPriceValue(selected.tp3)} tone="target" />
+            </>
+          )}
+          <SignalPrice label="Chance" value={chanceLabel(selected)} tone={chanceTone(selected)} />
         </div>
 
         <div className="signal-detail-grid">
@@ -7484,9 +7500,10 @@ function TradeSignalsWorkspace({
             <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
+            <Metric label="Chance" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
             <Metric label="Grade" value={selected.grade ?? "--"} />
             <Metric label="Entry type" value={formatEntryKind(selected.entryRange?.kind)} />
-            <Metric label="Trade horizon" value={tradeHorizonLabel(selected.tradeHorizon)} />
+            <Metric label="Trade horizon" value={longMode ? "Long · one TP" : tradeHorizonLabel(selected.tradeHorizon)} />
             <Metric label="Valid until" value={selected.expiresAt ? formatNepalTime(selected.expiresAt) : "Until invalidated"} />
             <Metric label="Paper status" value={selected.trade?.status ?? "Awaiting paper entry"} />
           </aside>
@@ -7510,10 +7527,18 @@ function TradeSignalsWorkspace({
         <Metric label="BUY" value={summary.buy ?? 0} />
         <Metric label="SELL" value={summary.sell ?? 0} />
         <Metric label="Active paper trades" value={summary.activePaperTrades ?? 0} />
-        <Metric label="Full checklist" value={summary.fullSetups ?? 0} />
+        <Metric label="Avg chance" value={(summary.averageChance ?? 0) > 0 ? `${summary.averageChance}%` : "--"} />
       </div>
 
       <div className="paper-toolbar">
+        <div className="paper-segmented" aria-label="Signal horizon filter">
+          {[
+            ["SHORT", "Short"],
+            ["LONG", "Long"]
+          ].map(([value, label]) => (
+            <button key={value} className={horizonFilter === value ? "active" : ""} onClick={() => setHorizonFilter(value as "SHORT" | "LONG")}>{label}</button>
+          ))}
+        </div>
         <div className="paper-segmented" aria-label="Signal side filter">
           {["ALL", "BUY", "SELL"].map((side) => (
             <button key={side} className={sideFilter === side ? "active" : ""} onClick={() => setSideFilter(side)}>{side}</button>
@@ -7528,25 +7553,59 @@ function TradeSignalsWorkspace({
         </label>
       </div>
 
+      <div className="trade-horizon-note">
+        <strong>{horizonFilter === "LONG" ? "Long setup" : "Short setup"}</strong>
+        <span>{horizonFilter === "LONG" ? "Shows only the strongest full-checklist module trade with one TP." : "Intraday setup uses TP1 50 pips, TP2 100 pips, and TP3 150 pips."}</span>
+      </div>
+
       <div className="trade-signal-grid">
-        {filtered.map((signal) => (
-          <button key={signal.id} className={`trade-signal-card ${signal.action === "SELL" ? "sell" : "buy"}`} onClick={() => setSelectedId(signal.id)}>
+        {visibleSignals.map((signal) => (
+          <button
+            key={signal.id}
+            className={`trade-signal-card ${signal.action === "SELL" ? "sell" : "buy"} ${signal.longChecklistBoost ? "long-validated" : ""}`}
+            onClick={() => {
+              setSelectedHorizon(horizonFilter);
+              setSelectedId(signal.id);
+            }}
+          >
             <div className="trade-signal-card-head">
               <div>
                 <span>{moduleShortName(signal.moduleCode, signal.moduleName)}</span>
                 <strong>{signal.action} {signal.symbol}</strong>
               </div>
-              <span className="signal-tier">{signal.setupTier}</span>
+              <span className="signal-tier">{signal.longChecklistBoost ? "LONG VERIFIED" : signal.setupTier}</span>
             </div>
+            {horizonFilter === "LONG" ? (
+              <div className="trade-long-boost">
+                <CheckCircle2 size={16} />
+                <span>{signal.longTradePlan?.reason ?? `${moduleShortName(signal.moduleCode, signal.moduleName)} full checklist setup.`}</span>
+              </div>
+            ) : signal.longChecklistBoost ? (
+              <div className="trade-long-boost">
+                <CheckCircle2 size={16} />
+                <span>{moduleShortName(signal.moduleCode, signal.moduleName)} confirmed all BUY checklist rules.</span>
+              </div>
+            ) : null}
             <div className="trade-signal-entry">
               <span>Entry range</span>
               <strong>{formatSignalRange(signal.entryRange)}</strong>
             </div>
+            <div className="trade-signal-chance">
+              <span>Chance</span>
+              <strong className={chanceTone(signal)}>{chanceLabel(signal)}</strong>
+              <em>{signal.chanceSource ?? "Module scoring"}</em>
+            </div>
             <div className="trade-signal-levels">
               <SignalPrice label="SL" value={formatPriceValue(signal.stopLoss)} tone="stop" />
-              <SignalPrice label={targetLabel(signal, 0, "TP1 50p")} value={formatPriceValue(signal.tp1)} tone="target" />
-              <SignalPrice label={targetLabel(signal, 1, "TP2 100p")} value={formatPriceValue(signal.tp2)} tone="target" />
-              <SignalPrice label={targetLabel(signal, 2, "TP3 150p")} value={formatPriceValue(signal.tp3)} tone="target" />
+              {horizonFilter === "LONG" ? (
+                <SignalPrice label="TP" value={formatPriceValue(longTargetPrice(signal))} tone="target" />
+              ) : (
+                <>
+                  <SignalPrice label={targetLabel(signal, 0, "TP1 50p")} value={formatPriceValue(signal.tp1)} tone="target" />
+                  <SignalPrice label={targetLabel(signal, 1, "TP2 100p")} value={formatPriceValue(signal.tp2)} tone="target" />
+                  <SignalPrice label={targetLabel(signal, 2, "TP3 150p")} value={formatPriceValue(signal.tp3)} tone="target" />
+                </>
+              )}
             </div>
             <div className="trade-signal-card-foot">
               <span>{formatNepalTime(signal.detectedAt)}</span>
@@ -7555,7 +7614,7 @@ function TradeSignalsWorkspace({
           </button>
         ))}
       </div>
-      {filtered.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No valid live setups</strong><span>Cards appear automatically after an assigned module validates a BUY or SELL entry.</span></div> : null}
+      {visibleSignals.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No valid {horizonFilter === "LONG" ? "long" : "short"} setups</strong><span>{horizonFilter === "LONG" ? "Long cards appear after a module has one full-checklist setup." : "Cards appear automatically after an assigned module validates a BUY or SELL entry."}</span></div> : null}
     </section>
   );
 }
@@ -7567,6 +7626,23 @@ function SignalPrice({ label, value, tone = "" }: { label: string; value: string
 function targetLabel(signal: any, index: number, fallback: string) {
   const target = signal?.targets?.[index];
   return target?.pips == null ? fallback : `${target.label ?? `TP${index + 1}`} · ${target.pips} pips`;
+}
+
+function chanceLabel(signal: any) {
+  const chance = Number(signal?.chance);
+  return Number.isFinite(chance) ? `${Math.round(chance)}%` : "--";
+}
+
+function chanceTone(signal: any) {
+  const chance = Number(signal?.chance);
+  if (!Number.isFinite(chance)) return "";
+  if (chance >= 80) return "target high";
+  if (chance >= 65) return "target";
+  return "warn";
+}
+
+function longTargetPrice(signal: any) {
+  return signal?.longTradePlan?.targetPrice ?? signal?.paperTarget ?? signal?.tp2;
 }
 
 function tradeHorizonLabel(horizon: any) {

@@ -2208,8 +2208,19 @@ button:hover,
 .signal-summary-strip,
 .signal-price-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-block: 1px solid #253027;
+}
+
+.signal-summary-strip {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.signal-price-strip {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.signal-price-strip.long-mode {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .signal-summary-strip .metric {
@@ -2247,6 +2258,11 @@ button:hover,
   border-left-color: #ff6b6b;
 }
 
+.trade-signal-card.long-validated {
+  border-color: #19c98a;
+  background: #0f1a14;
+}
+
 .trade-signal-card:hover {
   border-color: #35d895;
   background: #111b15;
@@ -2254,6 +2270,26 @@ button:hover,
 
 .trade-signal-card.sell:hover {
   border-color: #ff6b6b;
+}
+
+.trade-horizon-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.trade-horizon-note strong {
+  color: #edf4ef;
+}
+
+.trade-horizon-note span {
+  color: #91a097;
+  font-size: 12px;
 }
 
 .trade-signal-card-head,
@@ -2307,6 +2343,52 @@ button:hover,
   border-block: 1px solid #253027;
 }
 
+.trade-long-boost,
+.trade-signal-chance {
+  display: grid;
+  min-width: 0;
+  border: 1px solid #253027;
+  border-radius: 5px;
+  background: #142219;
+}
+
+.trade-long-boost {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  color: #35d895;
+  font-size: 12px;
+}
+
+.trade-long-boost span {
+  overflow-wrap: anywhere;
+}
+
+.trade-signal-chance {
+  gap: 3px;
+  padding: 10px;
+}
+
+.trade-signal-chance span,
+.trade-signal-chance em {
+  color: #91a097;
+  font-size: 11px;
+}
+
+.trade-signal-chance strong {
+  color: #f4c430;
+  font-size: 22px;
+}
+
+.trade-signal-chance strong.target {
+  color: #35d895;
+}
+
+.trade-signal-chance strong.high {
+  color: #5ff0aa;
+}
+
 .trade-signal-entry strong {
   overflow-wrap: anywhere;
   font-size: 19px;
@@ -2314,7 +2396,7 @@ button:hover,
 
 .trade-signal-levels {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
   gap: 1px;
   background: #253027;
 }
@@ -2339,6 +2421,14 @@ button:hover,
 
 .signal-price.target strong {
   color: #35d895;
+}
+
+.signal-price.warn strong {
+  color: #f4c430;
+}
+
+.signal-price.high strong {
+  color: #5ff0aa;
 }
 
 .trade-signal-card-foot {
