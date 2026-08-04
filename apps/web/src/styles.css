@@ -1537,13 +1537,20 @@ button:hover,
 }
 
 .inline-actions {
-  grid-template-columns: repeat(2, minmax(64px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 150px;
+}
+
+.inline-actions button {
+  min-height: 38px;
+  padding-inline: 8px;
+  white-space: nowrap;
+  font-size: 13px;
 }
 
 .command-module-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(280px, 1fr));
   gap: 10px;
 }
 
@@ -1600,7 +1607,7 @@ button:hover,
 
 .command-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(132px, 1fr));
   gap: 1px;
   overflow: hidden;
   border: 1px solid #253027;
@@ -1609,8 +1616,32 @@ button:hover,
 }
 
 .command-metrics .metric {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-content: start;
+  gap: 5px;
+  min-height: 66px;
+  padding: 9px 10px;
   border: 0;
   border-radius: 0;
+  background: #1b271f;
+}
+
+.command-metrics .metric span {
+  min-width: 0;
+  color: #9ba8a0;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.command-metrics .metric strong {
+  min-width: 0;
+  text-align: left;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+  font-size: 14px;
+  line-height: 1.2;
 }
 
 .command-setup-plan {
