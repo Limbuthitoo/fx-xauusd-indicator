@@ -140,6 +140,7 @@ Web and mobile notifications must support different detail layouts depending on 
 - TP/SL closeout: show lifecycle result.
 - Feed/session/system notification: show operational details instead of empty trade cards.
 - Tapping a mobile push notification should open the matching notification detail screen.
+- Mobile notification detail screen uses purpose-specific templates for trade entry, active paper trade, TP/SL closeout, feed/session/health, and system/learning alerts.
 
 Push provider:
 
@@ -193,9 +194,21 @@ Platform admin should not log into tenant dashboard as a tenant.
 - Tenant login only.
 - No visible API URL field on login screen.
 - Bottom navigation uses icons and separate screens.
-- Screens include Home, Signals, Chart, Journal, Alerts, More.
+- Bottom navigation is Home, BUY & SELL, Live Chart, Paper Trading, More.
+- Alerts, push settings, security, module list, chart preferences, support, app updates, and about live inside More.
+- BUY & SELL screen uses Short and Long tabs:
+  - Short shows actionable intraday setup cards with TP1/TP2/TP3.
+  - Long shows the strongest full-checklist setup with one main TP.
+  - Tapping a setup opens a trading-ticket detail screen with entry range, entry, SL, TP, RR, chance, grade, paper status, and checklist evidence.
+- BUY & SELL screen also keeps module tabs and shows the selected module detail card below actionable setup cards.
+- Mobile module detail cards group rule checklists into mandatory gates, confirmation rules, and quality filters.
 - More screen contains real menu flows for push settings, modules, chart preferences, security, support, about, app updates.
-- Mobile chart reads backend cached candles/websocket and must not call Twelve Data directly.
+- Mobile chart reads backend cached candles/websocket only and must not call chart sync or Twelve Data directly.
+- Mobile chart focuses on the latest candles on first load and uses compact module legends.
+- Mobile chart overlays:
+  - Module 1: 15M ORB High/Mid/Low plus paper entry/SL/TP levels.
+  - Module 2: liquidity sweep, sweep high/low, BOS/CHoCH, displacement, FVG/OB entry zone, entry/SL/TP.
+  - Module 3: VWAP, opening-drive high/low, pullback zone, entry/SL/TP.
 - Mobile app uses app icon/logo assets from the project.
 - APK builds should auto-increase version when using the project build script.
 
@@ -220,6 +233,8 @@ EXPO_PUBLIC_EAS_PROJECT_ID='93d8c80d-dd63-497a-8e49-b7f6506ee2ab' npx eas-cli bu
 - Backend should auto-detect version where possible.
 - New APK upload should replace/delete old APK file to protect server storage.
 - Mobile app should detect available updates and show changelog/download details.
+- Mobile Home shows an app update banner when a newer active APK is available.
+- Opening More refreshes mobile app update status so App Updates has current release metadata.
 
 ## Authentication And Security
 
@@ -303,4 +318,3 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Avoid claiming 70-85% accuracy unless validated with PostgreSQL backtests.
 - Backtests should explain missed trades, valid trades, TP/SL result, and checklist reasons.
 - Learning brain should use completed paper trades and backtest results, then produce module-specific recommendations.
-

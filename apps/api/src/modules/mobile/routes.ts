@@ -498,9 +498,9 @@ function normalizeSupportInfo(input?: Record<string, unknown> | null) {
 function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, openingRange?: any) {
   const levels = [];
   if (moduleCode === "orb_max_options" && openingRange) {
-    levels.push({ label: "ORB High", price: Number(openingRange.high), tone: "warn" });
-    levels.push({ label: "ORB Low", price: Number(openingRange.low), tone: "warn" });
-    levels.push({ label: "Mid", price: Number(openingRange.midpoint), tone: "neutral" });
+    levels.push({ label: "15M ORB High", price: Number(openingRange.high), tone: "warn" });
+    levels.push({ label: "15M ORB Mid", price: Number(openingRange.midpoint), tone: "neutral" });
+    levels.push({ label: "15M ORB Low", price: Number(openingRange.low), tone: "warn" });
   }
   const entry = Number(trade?.actual_entry ?? setup?.entry_price);
   const stop = Number(trade?.actual_stop ?? setup?.stop_price);
@@ -514,11 +514,45 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
     });
   }
   const flags = setup?.scenario_flags ?? {};
+  if (moduleCode === "high_probability_strategy_2") {
+    const sweepLevel = flags.sweep?.level;
+    const bosLevel = flags.bos?.level;
+    const displacementPrice = flags.displacement?.candle?.close ?? flags.displacement?.close;
+    if (sweepLevel?.price != null) levels.push({ label: `${formatLevelLabel(sweepLevel.type, "Liquidity")}`, price: Number(sweepLevel.price), tone: "warn" });
+    if (flags.sweep?.candle?.high != null) levels.push({ label: "Sweep High", price: Number(flags.sweep.candle.high), tone: "bad" });
+    if (flags.sweep?.candle?.low != null) levels.push({ label: "Sweep Low", price: Number(flags.sweep.candle.low), tone: "bad" });
+    if (bosLevel != null) levels.push({ label: "BOS / CHoCH", price: Number(bosLevel), tone: "entry" });
+    if (displacementPrice != null) levels.push({ label: "Displacement", price: Number(displacementPrice), tone: "entry" });
+  }
+  if (moduleCode === "strategy_lab_3") {
+    const drive = flags.drive ?? {};
+    if (drive.high != null) levels.push({ label: "Opening Drive High", price: Number(drive.high), tone: "warn" });
+    if (drive.low != null) levels.push({ label: "Opening Drive Low", price: Number(drive.low), tone: "warn" });
+  }
   const zone = flags.entryZone ?? flags.pullbackZone;
   if (zone?.low != null && zone?.high != null) {
-    levels.push({ label: "Zone Low", price: Number(zone.low), tone: "neutral" });
-    levels.push({ label: "Zone High", price: Number(zone.high), tone: "neutral" });
+    const zoneName = zone.kind === "ORDER_BLOCK" ? "OB" : zone.kind === "VWAP_PULLBACK_ZONE" ? "Pullback" : "FVG";
+    levels.push({ label: `${zoneName} Low`, price: Number(zone.low), tone: "neutral" });
+    if (zone.midpoint != null) levels.push({ label: `${zoneName} Mid`, price: Number(zone.midpoint), tone: "neutral" });
+    levels.push({ label: `${zoneName} High`, price: Number(zone.high), tone: "neutral" });
   }
   if (flags.vwap != null) levels.push({ label: "VWAP", price: Number(flags.vwap), tone: "entry" });
-  return levels.filter((level) => Number.isFinite(level.price));
+  return dedupeMobileLevels(levels.filter((level) => Number.isFinite(level.price)));
+}
+
+function formatLevelLabel(value: unknown, fallback: string) {
+  const text = String(value ?? fallback).replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return text || fallback;
+}
+
+function dedupeMobileLevels(levels: Array<{ label: string; price: number; tone: string }>) {
+  const seen = new Set<string>();
+  const output = [];
+  for (const level of levels) {
+    const key = `${level.label}:${level.price.toFixed(2)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(level);
+  }
+  return output;
 }

@@ -142,6 +142,12 @@ type NotificationDetail = {
   issueCode?: string | null;
   recommendedAction?: string | null;
   ageSeconds?: string | number | null;
+  exitPrice?: string | number | null;
+  resultR?: string | number | null;
+  closeReason?: string | null;
+  provider?: string | null;
+  cacheStatus?: string | null;
+  schedulerStatus?: string | null;
   source: "push" | "history";
 };
 
@@ -219,6 +225,8 @@ type ChartPayload = {
   timeframeMinutes: number;
   candles: ChartCandle[];
   levels: ChartLevel[];
+  setup?: any;
+  trade?: any;
   latestCandleAt?: string | null;
   provider?: string;
   status?: string;
@@ -236,17 +244,16 @@ type LiveEvent =
       automation?: unknown;
     };
 
-type MobileTab = "home" | "signals" | "chart" | "journal" | "alerts" | "more";
+type MobileTab = "home" | "buySell" | "chart" | "paper" | "more";
 
 const XAUUSD_PIP_SIZE = 0.01;
 const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
 
 const mobileTabs: Array<{ key: MobileTab; label: string }> = [
   { key: "home", label: "Home" },
-  { key: "signals", label: "Signals" },
-  { key: "chart", label: "Chart" },
-  { key: "journal", label: "Journal" },
-  { key: "alerts", label: "Alerts" },
+  { key: "buySell", label: "BUY & SELL" },
+  { key: "chart", label: "Live Chart" },
+  { key: "paper", label: "Paper Trading" },
   { key: "more", label: "More" }
 ];
 
@@ -347,7 +354,7 @@ function AppContent() {
       const content = response?.notification?.request?.content ?? {};
       const detail = notificationDetailFromPush(content.title, content.body, content.data);
       setSelectedNotificationDetail(detail);
-      setActiveTab("alerts");
+      setActiveTab("more");
       setMoreView("menu");
       handledInitialResponse = true;
     };
@@ -375,6 +382,11 @@ function AppContent() {
     });
     loadModuleLearning(selectedModuleCode, token).catch(() => undefined);
   }, [token, apiBaseUrl, selectedModuleCode, authUser?.passwordChangeRequired]);
+
+  useEffect(() => {
+    if (!token || authUser?.passwordChangeRequired || activeTab !== "more") return;
+    checkAppUpdate(false).catch(() => undefined);
+  }, [token, apiBaseUrl, activeTab, authUser?.passwordChangeRequired]);
 
   useEffect(() => {
     if (!token || authUser?.passwordChangeRequired) return;
@@ -677,19 +689,6 @@ function AppContent() {
     if (!authToken) return;
     setChartLoadingModule(moduleCode);
     try {
-      await fetch(`${apiBaseUrl}/api/market-data/twelve-data/chart-sync`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          symbol: "XAUUSD",
-          providerSymbol: "XAU/USD",
-          timeframeMinutes: 5,
-          moduleCode
-        })
-      }).catch(() => null);
       const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=180`, {
         headers: { authorization: `Bearer ${authToken}` }
       });
@@ -995,15 +994,24 @@ function AppContent() {
             latestAlert={latestAlert}
             pushStatus={pushStatus}
             socketStatus={socketStatus}
-            onOpenAlerts={() => setActiveTab("alerts")}
-            onOpenSignals={() => setActiveTab("signals")}
+            appUpdate={appUpdate}
+            onOpenAlerts={() => {
+              setActiveTab("more");
+              setMoreView("notification-history");
+            }}
+            onOpenSignals={() => setActiveTab("buySell")}
             onOpenChart={() => setActiveTab("chart")}
+            onOpenUpdates={() => {
+              setActiveTab("more");
+              setMoreView("app-updates");
+            }}
           />
         ) : null}
 
-        {activeTab === "signals" ? (
-          <SignalsScreen
+        {activeTab === "buySell" ? (
+          <BuySellScreen
             dashboard={dashboard}
+            selectedModuleCode={selectedModule?.code ?? null}
             learningByModule={learningByModule}
             learningLoadingModule={learningLoadingModule}
             onRunLearning={(moduleCode) => runModuleLearning(moduleCode).catch((error) => Alert.alert("Learning failed", error.message))}
@@ -1032,17 +1040,7 @@ function AppContent() {
           />
         ) : null}
 
-        {activeTab === "journal" ? <JournalScreen dashboard={dashboard} journalByModule={journalByModule} /> : null}
-
-        {activeTab === "alerts" ? (
-          <AlertsScreen
-            notifications={dashboard?.notifications ?? []}
-            onOpenNotification={(item) => {
-              setSelectedNotificationDetail(notificationDetailFromHistory(item, dashboard));
-              acknowledgeNotification(item.id);
-            }}
-          />
-        ) : null}
+        {activeTab === "paper" ? <PaperTradingScreen dashboard={dashboard} journalByModule={journalByModule} /> : null}
 
         {activeTab === "more" ? (
           <MoreScreen
@@ -1239,21 +1237,26 @@ function HomeScreen({
   latestAlert,
   pushStatus,
   socketStatus,
+  appUpdate,
   onOpenAlerts,
   onOpenSignals,
-  onOpenChart
+  onOpenChart,
+  onOpenUpdates
 }: {
   dashboard: Dashboard | null;
   activeSignals: number;
   latestAlert: any;
   pushStatus: string;
   socketStatus: string;
+  appUpdate: AppUpdateState;
   onOpenAlerts: () => void;
   onOpenSignals: () => void;
   onOpenChart: () => void;
+  onOpenUpdates: () => void;
 }) {
   const modules = dashboard?.modules ?? [];
   const bestModule = modules.find((module) => signalLabel(module).label !== "WAIT") ?? modules[0];
+  const latestUpdate = appUpdate.latest;
   return (
     <>
       <View style={styles.portfolioCard}>
@@ -1285,15 +1288,30 @@ function HomeScreen({
         </View>
       </View>
 
+      {appUpdate.updateAvailable && latestUpdate ? (
+        <Pressable style={styles.updateBanner} onPress={onOpenUpdates}>
+          <View style={styles.updateBannerIcon}>
+            <MiniIcon name="chart" />
+          </View>
+          <View style={styles.updateBannerContent}>
+            <Text style={styles.updateBannerTitle}>App update available</Text>
+            <Text style={styles.updateBannerCopy} numberOfLines={2}>
+              Version {latestUpdate.version_name ?? "--"} ({latestUpdate.version_code ?? "--"}) · {latestUpdate.changelog || "Open release notes and download the latest APK."}
+            </Text>
+          </View>
+          <Text style={styles.updateBannerAction}>Install</Text>
+        </Pressable>
+      ) : null}
+
       <View style={styles.homeActionGrid}>
         <Pressable style={styles.homeActionCard} onPress={onOpenSignals}>
           <View style={styles.homeActionIcon}><MiniIcon name="signals" /></View>
-          <Text style={styles.homeActionTitle}>Strategy Signals</Text>
-          <Text style={styles.homeActionCopy}>Rule checklist, entry status, SL and TP.</Text>
+          <Text style={styles.homeActionTitle}>BUY & SELL</Text>
+          <Text style={styles.homeActionCopy}>Validated module entries with SL and TP.</Text>
         </Pressable>
         <Pressable style={styles.homeActionCard} onPress={onOpenChart}>
           <View style={styles.homeActionIcon}><MiniIcon name="chart" /></View>
-          <Text style={styles.homeActionTitle}>Live XAUUSD Chart</Text>
+          <Text style={styles.homeActionTitle}>Live Chart</Text>
           <Text style={styles.homeActionCopy}>Shared candle feed with module levels.</Text>
         </Pressable>
       </View>
@@ -1332,20 +1350,41 @@ function HomeScreen({
   );
 }
 
-function SignalsScreen({
+function BuySellScreen({
   dashboard,
+  selectedModuleCode,
   learningByModule,
   learningLoadingModule,
   onRunLearning,
   onSelectModule
 }: {
   dashboard: Dashboard | null;
+  selectedModuleCode: string | null;
   learningByModule: Record<string, ModuleLearningSnapshot>;
   learningLoadingModule: string | null;
   onRunLearning: (moduleCode: string) => void;
   onSelectModule: (moduleCode: string) => void;
 }) {
   const modules = dashboard?.modules ?? [];
+  const selectedModule = modules.find((module) => module.code === selectedModuleCode) ?? modules[0];
+  const [horizon, setHorizon] = useState<"short" | "long">("short");
+  const [detailModuleCode, setDetailModuleCode] = useState<string | null>(null);
+  const actionableModules = modules.filter(isActionableModule);
+  const longModules = actionableModules.filter(isFullChecklistModule);
+  const visibleModules = horizon === "long"
+    ? longModules.slice(0, 1)
+    : actionableModules;
+  const selectedDetailModule = visibleModules.find((module) => module.code === detailModuleCode) ?? null;
+  if (selectedDetailModule) {
+    return (
+      <BuySellSetupDetail
+        module={selectedDetailModule}
+        horizon={horizon}
+        onBack={() => setDetailModuleCode(null)}
+        onOpenChart={() => onSelectModule(selectedDetailModule.code)}
+      />
+    );
+  }
   return (
     <>
       <View style={styles.clockGrid}>
@@ -1353,18 +1392,172 @@ function SignalsScreen({
         <Metric label="Nepal" value={dashboard?.clocks.nepal ?? "--"} />
       </View>
 
-      <SectionTitle title="Strategy Signals" />
-      {modules.map((module) => (
-        <Pressable key={module.code} onPress={() => onSelectModule(module.code)}>
-          <ModuleDetail
-            module={module}
-            learning={learningByModule[module.code]}
-            learningBusy={learningLoadingModule === module.code}
-            onRunLearning={onRunLearning}
-          />
+      <SectionTitle title="BUY & SELL" />
+      <View style={styles.horizonTabs}>
+        <Pressable style={[styles.horizonTab, horizon === "short" && styles.horizonTabActive]} onPress={() => setHorizon("short")}>
+          <Text style={[styles.horizonTabText, horizon === "short" && styles.horizonTabTextActive]}>Short</Text>
+          <Text style={styles.horizonTabMeta}>Intraday TP1/TP2/TP3</Text>
+        </Pressable>
+        <Pressable style={[styles.horizonTab, horizon === "long" && styles.horizonTabActive]} onPress={() => setHorizon("long")}>
+          <Text style={[styles.horizonTabText, horizon === "long" && styles.horizonTabTextActive]}>Long</Text>
+          <Text style={styles.horizonTabMeta}>Full checklist setup</Text>
+        </Pressable>
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.compactModuleTabs}>
+        {modules.map((module) => {
+          const signal = signalLabel(module);
+          return (
+            <Pressable
+              key={module.code}
+              style={[styles.compactModuleTab, selectedModule?.code === module.code && styles.compactModuleTabActive]}
+              onPress={() => onSelectModule(module.code)}
+            >
+              <Text style={[styles.compactModuleText, selectedModule?.code === module.code && styles.compactModuleTextActive]}>{module.shortName}</Text>
+              <Text style={[styles.compactModuleMeta, signal.tone === "good" ? styles.goodText : signal.tone === "bad" ? styles.badText : styles.warnText]}>{signal.label}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {visibleModules.map((module) => (
+        <Pressable key={module.code} onPress={() => setDetailModuleCode(module.code)}>
+          <BuySellSetupCard module={module} horizon={horizon} />
         </Pressable>
       ))}
+      {visibleModules.length === 0 ? (
+        <EmptyCard text={horizon === "long" ? "No full-checklist BUY or SELL setup is validated right now." : "No validated BUY or SELL setup right now."} />
+      ) : null}
+      {selectedModule ? (
+        <ModuleDetail
+          module={selectedModule}
+          learning={learningByModule[selectedModule.code]}
+          learningBusy={learningLoadingModule === selectedModule.code}
+          onRunLearning={onRunLearning}
+        />
+      ) : null}
       {modules.length === 0 ? <EmptyCard text="No strategy modules are assigned to this tenant account." /> : null}
+    </>
+  );
+}
+
+function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "short" | "long" }) {
+  const setup = module.currentSetup ?? {};
+  const trade = module.currentTrade ?? {};
+  const signal = signalLabel(module);
+  const direction = trade.direction ?? setup.direction ?? "--";
+  const action = tradeAction(direction, signal.label);
+  const entry = trade.actual_entry ?? setup.entry_price;
+  const stopLoss = trade.actual_stop ?? setup.stop_price;
+  const targetLadder = dayTradingTargets(entry, direction);
+  const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit;
+  return (
+    <View style={[styles.tradeSetupCard, action === "SELL" && styles.tradeSetupCardSell]}>
+      <View style={styles.tradeSetupTop}>
+        <View>
+          <Text style={styles.tradeSetupModule}>{module.shortName}</Text>
+          <Text style={styles.tradeSetupTitle}>{action} {horizon === "long" ? "full checklist" : "intraday setup"}</Text>
+          <Text style={styles.ruleExplanation}>{setup.scenario ? formatScenarioName(String(setup.scenario)) : moduleTimingLabel(module)}</Text>
+        </View>
+        <View style={[styles.signalPill, action === "SELL" ? styles.badPill : styles.goodPill]}>
+          <Text style={styles.signalText}>{action}</Text>
+        </View>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
+        <Metric label="SL" value={formatPrice(stopLoss)} />
+        {horizon === "long" ? (
+          <Metric label="Main TP" value={formatPrice(mainTarget ?? targetLadder.tp2)} />
+        ) : (
+          <>
+            <Metric label="TP1 50p" value={formatPrice(targetLadder.tp1)} />
+            <Metric label="TP2 100p" value={formatPrice(targetLadder.tp2)} />
+            <Metric label="TP3 150p" value={formatPrice(targetLadder.tp3)} />
+          </>
+        )}
+        <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
+        <Metric label="Chance" value={chanceLabel(setup)} />
+      </View>
+      <Text style={styles.noticeTime}>Tap for checklist evidence and trade plan.</Text>
+    </View>
+  );
+}
+
+function BuySellSetupDetail({
+  module,
+  horizon,
+  onBack,
+  onOpenChart
+}: {
+  module: ModuleRow;
+  horizon: "short" | "long";
+  onBack: () => void;
+  onOpenChart: () => void;
+}) {
+  const setup = module.currentSetup ?? {};
+  const trade = module.currentTrade ?? {};
+  const signal = signalLabel(module);
+  const direction = trade.direction ?? setup.direction ?? "--";
+  const action = tradeAction(direction, signal.label);
+  const entry = trade.actual_entry ?? setup.entry_price;
+  const stopLoss = trade.actual_stop ?? setup.stop_price;
+  const targetLadder = dayTradingTargets(entry, direction);
+  const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit ?? targetLadder.tp2;
+  const groupedRules = groupedChecklist(setup.evaluations ?? [], module.code);
+  return (
+    <>
+      <View style={styles.detailTopBar}>
+        <Pressable style={styles.backButton} onPress={onBack}>
+          <Text style={styles.backButtonText}>‹ Back</Text>
+        </Pressable>
+        <Text style={styles.detailPill}>{horizon === "long" ? "FULL CHECKLIST" : "INTRADAY"}</Text>
+      </View>
+      <View style={[styles.tradeSetupCard, action === "SELL" && styles.tradeSetupCardSell]}>
+        <Text style={styles.eyebrow}>{module.shortName}</Text>
+        <Text style={styles.detailTitle}>{action} XAUUSD</Text>
+        <Text style={styles.detailBody}>{setup.final_reason ?? signal.reason}</Text>
+        <View style={styles.metricsGrid}>
+          <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
+          <Metric label="Entry" value={formatPrice(entry)} />
+          <Metric label="Stop Loss" value={formatPrice(stopLoss)} />
+          {horizon === "long" ? (
+            <Metric label="Main TP" value={formatPrice(mainTarget)} />
+          ) : (
+            <>
+              <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
+              <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
+              <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+            </>
+          )}
+          <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
+          <Metric label="Chance" value={chanceLabel(setup)} />
+          <Metric label="Grade" value={formatDetailValue(setup.trade_grade ?? setup.favorability_grade)} />
+          <Metric label="Paper" value={trade.outcome ?? "READY"} />
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionMini}>Checklist Evidence</Text>
+        {groupedRules.map((group) => (
+          <View key={group.title} style={styles.checklistGroup}>
+            <View style={styles.checklistGroupHeader}>
+              <Text style={styles.checklistGroupTitle}>{group.title}</Text>
+              <Text style={styles.checklistGroupMeta}>{group.summary}</Text>
+            </View>
+            {group.rules.map((rule: any) => (
+              <View key={rule.rule_code ?? rule.ruleCode ?? rule.name} style={styles.ruleRow}>
+                <Text style={[styles.ruleStatus, ruleStatusTone(rule.status)]}>{shortRuleStatus(rule.status)}</Text>
+                <View style={styles.ruleBody}>
+                  <Text style={styles.ruleTitle}>{rule.name}</Text>
+                  <Text style={styles.ruleExplanation}>{rule.explanation}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        ))}
+        {groupedRules.length === 0 ? <Text style={styles.muted}>No checklist evidence is attached to this setup yet.</Text> : null}
+        <Pressable style={styles.fullButton} onPress={onOpenChart}>
+          <Text style={styles.fullButtonText}>Open Live Chart</Text>
+        </Pressable>
+      </View>
     </>
   );
 }
@@ -1416,7 +1609,7 @@ function ChartScreen({
   );
 }
 
-function JournalScreen({ dashboard, journalByModule }: { dashboard: Dashboard | null; journalByModule: Record<string, JournalTrade[]> }) {
+function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboard | null; journalByModule: Record<string, JournalTrade[]> }) {
   const modules = dashboard?.modules ?? [];
   const allTrades = modules.flatMap((module) => journalByModule[module.code] ?? []);
   const decidedTrades = allTrades.filter((trade) => ["WIN", "LOSS", "BREAKEVEN"].includes(String(trade.outcome ?? "")));
@@ -1424,7 +1617,7 @@ function JournalScreen({ dashboard, journalByModule }: { dashboard: Dashboard | 
   const totalR = allTrades.reduce((sum, trade) => sum + Number(trade.result_r ?? 0), 0);
   return (
     <>
-      <SectionTitle title="Paper Journal" />
+      <SectionTitle title="Paper Trading" />
       <View style={styles.card}>
         <Text style={styles.sectionMini}>Performance Summary</Text>
         <View style={styles.metricsGrid}>
@@ -1540,14 +1733,10 @@ function NotificationDetailScreen({
   const takeProfit = detail.takeProfit ?? trade.actual_target ?? trade.target_price ?? "--";
   const rr = detail.rewardToRisk ?? trade.reward_to_risk ?? "--";
   const symbol = detail.symbol ?? trade.symbol ?? "XAUUSD";
-  const isTradeAlert = hasTradeDetails(detail) || entry !== "--" || stopLoss !== "--" || takeProfit !== "--";
   const setupReason = detail.finalReason ?? module?.currentSetup?.final_reason ?? null;
   const category = notificationCategory(detail);
   const moduleLabel = detail.moduleName ?? module?.shortName ?? moduleDisplayName(moduleCode);
-  const hasResolvedTradePlan = isTradeAlert || Boolean(trade.id);
-  const showTradePlan = category === "TRADE_SETUP" || hasResolvedTradePlan;
-  const showSetupContext = category === "TRADE_SETUP" || detail.scenario || detail.setupCandidateId || detail.mandatoryPassed != null || detail.confirmationPassed != null || detail.qualityPassed != null;
-  const showOperational = category === "HEALTH" || category === "SYSTEM" || category === "SESSION" || category === "FEED" || !showTradePlan;
+  const resolvedDetail = { ...detail, moduleCode, moduleName: moduleLabel, symbol, direction, action, entry, stopLoss, takeProfit, rewardToRisk: rr, finalReason: setupReason ?? detail.finalReason };
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -1567,57 +1756,7 @@ function NotificationDetailScreen({
           <Text style={styles.noticeTime}>{detail.createdAt ? formatTime(detail.createdAt) : detail.source === "push" ? "Opened from push notification" : "--"}</Text>
         </View>
 
-        {showTradePlan ? (
-          <View style={[styles.moreDiagnosticsCard, action === "SELL" ? styles.notificationTradeSell : styles.notificationTradeBuy]}>
-            <Text style={styles.sectionMini}>{category === "TRADE_LIFECYCLE" ? "Paper Trade Status" : "Trade Setup"}</Text>
-            <View style={styles.tradeBadgeRow}>
-              <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
-              <Text style={styles.tradeSymbol}>{symbol}</Text>
-              <Text style={styles.tradeModule}>{moduleLabel}</Text>
-            </View>
-            <View style={styles.metricsGrid}>
-              <Metric label="Entry" value={formatDetailValue(entry)} />
-              <Metric label="Stop Loss" value={formatDetailValue(stopLoss)} />
-              <Metric label="Take Profit" value={formatDetailValue(takeProfit)} />
-              <Metric label="Direction" value={String(direction)} />
-              <Metric label="RR" value={formatDetailValue(rr)} />
-              <Metric label="Grade" value={formatDetailValue(detail.grade)} />
-              <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
-              <Metric label="Status" value={formatDetailValue(detail.status)} />
-            </View>
-            {category === "TRADE_LIFECYCLE" ? <Text style={styles.reason}>This alert belongs to an existing paper trade. Review the open module chart or journal before taking manual action.</Text> : null}
-          </View>
-        ) : null}
-
-        {showOperational ? (
-          <View style={styles.moreDiagnosticsCard}>
-            <Text style={styles.sectionMini}>{category === "HEALTH" ? "Module Health Alert" : category === "SESSION" ? "Session Notice" : category === "FEED" ? "Market Feed Notice" : "Notification Details"}</Text>
-            <View style={styles.metricsGrid}>
-              <Metric label="Module" value={formatDetailValue(moduleLabel)} />
-              <Metric label="Priority" value={formatDetailValue(detail.priority)} />
-              <Metric label="Issue" value={formatDetailValue(detail.issueCode ?? detail.eventType)} />
-              <Metric label="Status" value={formatDetailValue(detail.status)} />
-              <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
-              <Metric label="Source" value={detail.source === "push" ? "Push" : "History"} />
-            </View>
-            <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction(category, detail)}</Text>
-          </View>
-        ) : null}
-
-        {showSetupContext ? (
-          <View style={styles.moreDiagnosticsCard}>
-            <Text style={styles.sectionMini}>Setup Context</Text>
-            <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
-            <Metric label="Confidence" value={detail.confidence == null ? "--" : `${detail.confidence}%`} />
-            <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
-            <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
-            <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
-            <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
-            <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
-            <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
-            {setupReason ? <Text style={styles.reason}>{setupReason}</Text> : null}
-          </View>
-        ) : null}
+        <NotificationTemplate detail={resolvedDetail} category={category} module={module} />
 
         <View style={styles.moreDiagnosticsCard}>
           <Text style={styles.sectionMini}>Open Workspace</Text>
@@ -1631,6 +1770,170 @@ function NotificationDetailScreen({
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function NotificationTemplate({
+  detail,
+  category,
+  module
+}: {
+  detail: NotificationDetail;
+  category: string;
+  module: ModuleRow | null;
+}) {
+  if (category === "TRADE_SETUP") return <TradeSetupNotification detail={detail} module={module} />;
+  if (category === "TRADE_CLOSEOUT") return <TradeCloseoutNotification detail={detail} module={module} />;
+  if (category === "TRADE_LIFECYCLE") return <PaperTradeNotification detail={detail} module={module} />;
+  if (category === "FEED" || category === "SESSION" || category === "HEALTH") return <OperationalNotification detail={detail} category={category} />;
+  return <SystemNotification detail={detail} category={category} />;
+}
+
+function TradeSetupNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const action = tradeAction(detail.direction, detail.action ?? undefined);
+  const targetLadder = dayTradingTargets(detail.entry, detail.direction ?? detail.action);
+  return (
+    <>
+      <View style={[styles.moreDiagnosticsCard, action === "SELL" ? styles.notificationTradeSell : styles.notificationTradeBuy]}>
+        <Text style={styles.sectionMini}>Trade Entry Signal</Text>
+        <View style={styles.tradeBadgeRow}>
+          <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
+          <Text style={styles.tradeSymbol}>{detail.symbol ?? "XAUUSD"}</Text>
+          <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? "--"}</Text>
+        </View>
+        <View style={styles.metricsGrid}>
+          <Metric label="Entry Range" value={entryRangeLabel(module?.currentSetup ?? {}, detail.entry)} />
+          <Metric label="Entry" value={formatDetailValue(detail.entry)} />
+          <Metric label="Stop Loss" value={formatDetailValue(detail.stopLoss)} />
+          <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
+          <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
+          <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+          <Metric label="RR" value={formatDetailValue(detail.rewardToRisk)} />
+          <Metric label="Chance" value={detail.confidence == null ? chanceLabel(module?.currentSetup ?? {}) : `${detail.confidence}%`} />
+          <Metric label="Grade" value={formatDetailValue(detail.grade)} />
+          <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
+        </View>
+        <Text style={styles.reason}>{detail.finalReason ?? "Review the setup evidence before placing any manual real trade."}</Text>
+      </View>
+      <SetupEvidenceNotification detail={detail} module={module} />
+    </>
+  );
+}
+
+function PaperTradeNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const trade = module?.currentTrade ?? {};
+  const action = tradeAction(detail.direction ?? trade.direction, detail.action ?? undefined);
+  return (
+    <View style={[styles.moreDiagnosticsCard, action === "SELL" ? styles.notificationTradeSell : styles.notificationTradeBuy]}>
+      <Text style={styles.sectionMini}>Paper Trade Status</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
+        <Text style={styles.tradeSymbol}>{detail.symbol ?? trade.symbol ?? "XAUUSD"}</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? "--"}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Entry" value={formatDetailValue(detail.entry ?? trade.actual_entry)} />
+        <Metric label="Stop Loss" value={formatDetailValue(detail.stopLoss ?? trade.actual_stop)} />
+        <Metric label="Target" value={formatDetailValue(detail.takeProfit ?? trade.actual_target)} />
+        <Metric label="RR" value={formatDetailValue(detail.rewardToRisk ?? trade.reward_to_risk)} />
+        <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
+        <Metric label="Status" value={formatDetailValue(detail.status ?? trade.outcome)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction("TRADE_LIFECYCLE", detail)}</Text>
+    </View>
+  );
+}
+
+function TradeCloseoutNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const isWin = String(detail.closeReason ?? detail.status ?? detail.title).toUpperCase().includes("TP") || Number(detail.resultR ?? 0) > 0;
+  return (
+    <View style={[styles.moreDiagnosticsCard, isWin ? styles.notificationTradeBuy : styles.notificationTradeSell]}>
+      <Text style={styles.sectionMini}>TP / SL Closeout</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, !isWin && styles.tradeDirectionSell]}>{isWin ? "WIN" : "LOSS"}</Text>
+        <Text style={styles.tradeSymbol}>{detail.symbol ?? "XAUUSD"}</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? "--"}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Exit" value={formatDetailValue(detail.exitPrice)} />
+        <Metric label="Result" value={formatR(detail.resultR)} />
+        <Metric label="Close Reason" value={formatDetailValue(detail.closeReason ?? detail.status)} />
+        <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+      </View>
+      <Text style={styles.reason}>This result should now appear in Paper Trading and learning samples.</Text>
+    </View>
+  );
+}
+
+function OperationalNotification({ detail, category }: { detail: NotificationDetail; category: string }) {
+  return (
+    <View style={styles.moreDiagnosticsCard}>
+      <Text style={styles.sectionMini}>{category === "HEALTH" ? "System Health" : category === "SESSION" ? "Session Notice" : "Market Feed Notice"}</Text>
+      <View style={styles.metricsGrid}>
+        <Metric label="Provider" value={formatDetailValue(detail.provider ?? "Twelve Data")} />
+        <Metric label="Cache" value={formatDetailValue(detail.cacheStatus)} />
+        <Metric label="Scheduler" value={formatDetailValue(detail.schedulerStatus)} />
+        <Metric label="Issue" value={formatDetailValue(detail.issueCode ?? detail.eventType)} />
+        <Metric label="Status" value={formatDetailValue(detail.status)} />
+        <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction(category, detail)}</Text>
+    </View>
+  );
+}
+
+function SystemNotification({ detail, category }: { detail: NotificationDetail; category: string }) {
+  return (
+    <View style={styles.moreDiagnosticsCard}>
+      <Text style={styles.sectionMini}>{category === "SYSTEM" ? "System / Learning Alert" : "Notification Details"}</Text>
+      <View style={styles.metricsGrid}>
+        <Metric label="Module" value={formatDetailValue(detail.moduleName)} />
+        <Metric label="Priority" value={formatDetailValue(detail.priority)} />
+        <Metric label="Status" value={formatDetailValue(detail.status)} />
+        <Metric label="Source" value={detail.source === "push" ? "Push" : "History"} />
+        <Metric label="Event" value={formatDetailValue(detail.eventType)} />
+        <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction(category, detail)}</Text>
+    </View>
+  );
+}
+
+function SetupEvidenceNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const groupedRules = groupedChecklist(module?.currentSetup?.evaluations ?? [], module?.code ?? String(detail.moduleCode ?? ""));
+  const hasSummary = detail.scenario || detail.setupCandidateId || detail.mandatoryPassed != null || detail.confirmationPassed != null || detail.qualityPassed != null;
+  return (
+    <View style={styles.moreDiagnosticsCard}>
+      <Text style={styles.sectionMini}>Checklist Snapshot</Text>
+      {hasSummary ? (
+        <View style={styles.metricsGrid}>
+          <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
+          <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
+          <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
+          <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
+          <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
+          <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+        </View>
+      ) : null}
+      {groupedRules.map((group) => (
+        <View key={group.title} style={styles.checklistGroup}>
+          <View style={styles.checklistGroupHeader}>
+            <Text style={styles.checklistGroupTitle}>{group.title}</Text>
+            <Text style={styles.checklistGroupMeta}>{group.summary}</Text>
+          </View>
+          {group.rules.slice(0, 5).map((rule: any) => (
+            <View key={rule.rule_code ?? rule.ruleCode ?? rule.name} style={styles.ruleRow}>
+              <Text style={[styles.ruleStatus, ruleStatusTone(rule.status)]}>{shortRuleStatus(rule.status)}</Text>
+              <View style={styles.ruleBody}>
+                <Text style={styles.ruleTitle}>{rule.name}</Text>
+                <Text style={styles.ruleExplanation}>{rule.explanation}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ))}
+      {!hasSummary && groupedRules.length === 0 ? <Text style={styles.muted}>No checklist snapshot was attached to this notification.</Text> : null}
+    </View>
   );
 }
 
@@ -2117,53 +2420,63 @@ function MobileCandlestickChart({
   if (!chart) return <EmptyCard text={loading ? "Loading XAUUSD chart from server cache..." : "Select a module to load its XAUUSD chart."} />;
   if (chart.candles.length === 0) return <EmptyCard text="No cached XAUUSD candles are available yet." />;
 
-  const plotHeight = 184;
+  const visibleCandles = chart.candles.slice(-90);
+  const plotHeight = 236;
   const topPad = 14;
   const bottomPad = 18;
-  const candleStep = 10;
-  const candleWidth = 6;
-  const plotWidth = Math.max(340, chart.candles.length * candleStep + 56);
+  const candleStep = 8;
+  const candleWidth = 5;
+  const plotWidth = Math.max(340, visibleCandles.length * candleStep + 96);
   const prices = [
-    ...chart.candles.flatMap((candle) => [candle.high, candle.low]),
+    ...visibleCandles.flatMap((candle) => [candle.high, candle.low]),
     ...chart.levels.map((level) => level.price)
   ].filter(Number.isFinite);
   const minPrice = Math.min(...prices);
   const maxPrice = Math.max(...prices);
   const range = Math.max(maxPrice - minPrice, 0.01);
   const priceToY = (price: number) => topPad + ((maxPrice - price) / range) * plotHeight;
-  const latest = chart.candles[chart.candles.length - 1];
-  const selectedInChart = selectedCandle && chart.candles.some((candle) => candle.timestampUtc === selectedCandle.timestampUtc)
+  const latest = visibleCandles[visibleCandles.length - 1];
+  const selectedInChart = selectedCandle && visibleCandles.some((candle) => candle.timestampUtc === selectedCandle.timestampUtc)
     ? selectedCandle
     : null;
   const info = selectedInChart ?? latest;
+  const legend = chartLegend(chart);
 
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartHeader}>
         <View>
           <Text style={styles.cardTitle}>{chart.symbol}</Text>
-          <Text style={styles.muted}>{chart.timeframeMinutes}m live chart · {chart.candles.length} candles · {chart.status ?? "CACHE"}</Text>
+          <Text style={styles.muted}>{chart.timeframeMinutes}m live chart · latest {visibleCandles.length}/{chart.candles.length} candles · {chart.status ?? "CACHE"}</Text>
         </View>
         <View style={styles.priceBox}>
           <Text style={styles.priceLabel}>Last</Text>
           <Text style={styles.priceValue}>{formatPrice(latest.close)}</Text>
         </View>
       </View>
+      <View style={styles.chartLegend}>
+        {legend.map((item) => (
+          <View key={item.label} style={styles.chartLegendItem}>
+            <View style={[styles.chartLegendDot, levelLineStyle(item.tone)]} />
+            <Text style={styles.chartLegendText}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartScroll}>
         <View style={[styles.chartPlot, { width: plotWidth, height: plotHeight + topPad + bottomPad }]}>
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
             <View key={ratio} style={[styles.chartGridLine, { top: topPad + ratio * plotHeight }]} />
           ))}
-          {chart.levels.map((level) => {
+          {chart.levels.slice(0, 14).map((level) => {
             const y = priceToY(level.price);
             return (
               <View key={`${level.label}-${level.price}`} style={[styles.chartLevelWrap, { top: y }]}>
                 <View style={[styles.chartLevelLine, levelLineStyle(level.tone)]} />
-                <Text style={[styles.chartLevelLabel, levelTextStyle(level.tone)]}>{level.label} {formatPrice(level.price)}</Text>
+                <Text style={[styles.chartLevelLabel, levelTextStyle(level.tone)]} numberOfLines={1}>{shortChartLevelLabel(level.label)} {formatPrice(level.price)}</Text>
               </View>
             );
           })}
-          {chart.candles.map((candle, index) => {
+          {visibleCandles.map((candle, index) => {
             const rising = candle.close >= candle.open;
             const x = 24 + index * candleStep;
             const wickTop = priceToY(candle.high);
@@ -2216,6 +2529,7 @@ function ModuleDetail({
   const entry = trade.actual_entry ?? setup.entry_price;
   const stopLoss = trade.actual_stop ?? setup.stop_price;
   const targetLadder = dayTradingTargets(entry, trade.direction ?? setup.direction);
+  const groupedRules = groupedChecklist(evaluations, module.code);
   return (
     <View style={styles.card}>
       <View style={styles.moduleHeader}>
@@ -2243,13 +2557,21 @@ function ModuleDetail({
         <Metric label="Month WR" value={formatPercent(module.monthly?.winRate)} />
       </View>
       <Text style={styles.sectionMini}>Rule Checklist</Text>
-      {evaluations.slice(0, 8).map((rule: any) => (
-        <View key={rule.rule_code ?? rule.ruleCode ?? rule.name} style={styles.ruleRow}>
-          <Text style={[styles.ruleStatus, rule.status === "PASS" ? styles.goodText : rule.status === "FAIL" ? styles.badText : styles.warnText]}>{rule.status ?? "WAIT"}</Text>
-          <View style={styles.ruleBody}>
-            <Text style={styles.ruleTitle}>{rule.name}</Text>
-            <Text style={styles.ruleExplanation}>{rule.explanation}</Text>
+      {groupedRules.map((group) => (
+        <View key={group.title} style={styles.checklistGroup}>
+          <View style={styles.checklistGroupHeader}>
+            <Text style={styles.checklistGroupTitle}>{group.title}</Text>
+            <Text style={styles.checklistGroupMeta}>{group.summary}</Text>
           </View>
+          {group.rules.slice(0, 8).map((rule: any) => (
+            <View key={rule.rule_code ?? rule.ruleCode ?? rule.name} style={styles.ruleRow}>
+              <Text style={[styles.ruleStatus, ruleStatusTone(rule.status)]}>{shortRuleStatus(rule.status)}</Text>
+              <View style={styles.ruleBody}>
+                <Text style={styles.ruleTitle}>{rule.name}</Text>
+                <Text style={styles.ruleExplanation}>{rule.explanation}</Text>
+              </View>
+            </View>
+          ))}
         </View>
       ))}
       {evaluations.length === 0 ? <Text style={styles.muted}>Waiting for this module to evaluate a completed NY candle.</Text> : null}
@@ -2291,6 +2613,46 @@ function ModuleDetail({
   );
 }
 
+function groupedChecklist(evaluations: any[], moduleCode: string) {
+  const groups = [
+    { title: moduleCode === "orb_max_options" ? "Mandatory ORB Gates" : "Mandatory Signal Gates", kind: "mandatory", rules: [] as any[] },
+    { title: "Confirmation Rules", kind: "confirmation", rules: [] as any[] },
+    { title: "Quality Filters", kind: "quality", rules: [] as any[] }
+  ];
+  for (const rule of evaluations) {
+    const code = String(rule.rule_code ?? rule.ruleCode ?? rule.code ?? rule.name ?? "").toUpperCase();
+    const name = String(rule.name ?? "").toUpperCase();
+    const text = `${code} ${name}`;
+    if (/SESSION|RANGE|SWEEP|DISPLACEMENT|BOS|CHOCH|DRIVE|PULLBACK|BREAKOUT|RETEST|ENTRY_ZONE/.test(text)) {
+      groups[0].rules.push(rule);
+    } else if (/EMA|VWAP|FVG|ORDER_BLOCK|OB|ENTRY_CANDLE|CONFIRMATION|BIAS|TREND/.test(text)) {
+      groups[1].rules.push(rule);
+    } else {
+      groups[2].rules.push(rule);
+    }
+  }
+  return groups
+    .filter((group) => group.rules.length > 0)
+    .map((group) => {
+      const pass = group.rules.filter((rule) => String(rule.status ?? "").toUpperCase() === "PASS").length;
+      return { ...group, summary: `${pass}/${group.rules.length}` };
+    });
+}
+
+function ruleStatusTone(status: unknown) {
+  const normalized = String(status ?? "").toUpperCase();
+  if (normalized === "PASS") return styles.goodText;
+  if (normalized === "FAIL" || normalized === "BLOCKED") return styles.badText;
+  return styles.warnText;
+}
+
+function shortRuleStatus(status: unknown) {
+  const normalized = String(status ?? "WAIT").toUpperCase();
+  if (normalized === "NOT_APPLICABLE") return "N/A";
+  if (normalized === "IN_PROGRESS") return "RUN";
+  return normalized;
+}
+
 function Metric({ label, value }: { label: string; value: string | number }) {
   return (
     <View style={styles.metric}>
@@ -2319,7 +2681,7 @@ function BottomNavIcon({ tab, active }: { tab: MobileTab; active: boolean }) {
       </View>
     );
   }
-  if (tab === "signals") {
+  if (tab === "buySell") {
     return (
       <View style={styles.navIconCanvas}>
         <View style={[styles.iconSignalStem, tone]} />
@@ -2340,21 +2702,12 @@ function BottomNavIcon({ tab, active }: { tab: MobileTab; active: boolean }) {
       </View>
     );
   }
-  if (tab === "journal") {
+  if (tab === "paper") {
     return (
       <View style={styles.navIconCanvas}>
         <View style={[styles.iconBookCover, tone]} />
         <View style={[styles.iconBookLineOne, tone]} />
         <View style={[styles.iconBookLineTwo, tone]} />
-      </View>
-    );
-  }
-  if (tab === "alerts") {
-    return (
-      <View style={styles.navIconCanvas}>
-        <View style={[styles.iconBellBody, tone]} />
-        <View style={[styles.iconBellClapper, active ? styles.iconDotActive : styles.iconDot]} />
-        <View style={[styles.iconBellTop, tone]} />
       </View>
     );
   }
@@ -2427,6 +2780,82 @@ function levelTextStyle(tone: string) {
   return styles.levelNeutralText;
 }
 
+function chartLegend(chart: ChartPayload) {
+  if (chart.moduleCode === "orb_max_options") {
+    return [
+      { label: "15M ORB range", tone: "warn" },
+      { label: "5M trigger candles", tone: "entry" },
+      { label: "Paper levels", tone: "good" }
+    ];
+  }
+  if (chart.moduleCode === "high_probability_strategy_2") {
+    return [
+      { label: "Liquidity sweep", tone: "warn" },
+      { label: "BOS / displacement", tone: "entry" },
+      { label: "FVG / OB zone", tone: "neutral" },
+      { label: "Entry / SL / TP", tone: "good" }
+    ];
+  }
+  if (chart.moduleCode === "strategy_lab_3") {
+    return [
+      { label: "VWAP", tone: "entry" },
+      { label: "Opening drive", tone: "warn" },
+      { label: "Pullback zone", tone: "neutral" },
+      { label: "Entry / SL / TP", tone: "good" }
+    ];
+  }
+  return [
+    { label: "Module levels", tone: "entry" },
+    { label: "Paper levels", tone: "good" }
+  ];
+}
+
+function shortChartLevelLabel(label: string) {
+  return label
+    .replace("Opening Drive", "Drive")
+    .replace("Displacement", "Disp.")
+    .replace("BOS / CHoCH", "BOS")
+    .replace("15M ORB", "ORB");
+}
+
+function isActionableModule(module: ModuleRow) {
+  const label = signalLabel(module).label;
+  if (label === "WAIT" || label === "NO TRADE") return false;
+  const setup = module.currentSetup ?? {};
+  const trade = module.currentTrade ?? {};
+  return Boolean(trade.outcome === "ACTIVE" || setup.entry_price || setup.status?.includes("SETUP") || setup.status === "PAPER_TRADE_OPENED");
+}
+
+function isFullChecklistModule(module: ModuleRow) {
+  const setup = module.currentSetup ?? {};
+  const flags = setup.scenario_flags ?? {};
+  if (flags.fullChecklistValid === true || flags.longChecklistBoost === true) return true;
+  if (String(flags.setupTier ?? setup.setup_tier ?? "").toUpperCase() === "FULL") return true;
+  const grouped = groupedChecklist(setup.evaluations ?? [], module.code);
+  return grouped.length > 0 && grouped.every((group) => group.rules.every((rule: any) => String(rule.status ?? "").toUpperCase() === "PASS"));
+}
+
+function tradeAction(direction: unknown, fallbackLabel?: string) {
+  const normalizedDirection = String(direction ?? "").toUpperCase();
+  const normalizedFallback = String(fallbackLabel ?? "").toUpperCase();
+  if (normalizedDirection === "SHORT" || normalizedDirection === "SELL" || normalizedFallback.includes("SELL")) return "SELL";
+  return "BUY";
+}
+
+function entryRangeLabel(setup: any, fallbackEntry: unknown) {
+  const low = setup.entry_zone_low ?? setup.entryZoneLow ?? setup.entry_low ?? setup.entryRangeLow;
+  const high = setup.entry_zone_high ?? setup.entryZoneHigh ?? setup.entry_high ?? setup.entryRangeHigh;
+  if (low != null && high != null) return `${formatPrice(low)} - ${formatPrice(high)}`;
+  return formatPrice(fallbackEntry);
+}
+
+function chanceLabel(setup: any) {
+  const value = setup.chance ?? setup.confidence_score ?? setup.favorability_score ?? setup.score;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  return numeric <= 1 ? `${(numeric * 100).toFixed(0)}%` : `${numeric.toFixed(0)}%`;
+}
+
 function signalLabel(module: ModuleRow) {
   const trade = module.currentTrade;
   const setup = module.currentSetup;
@@ -2492,6 +2921,12 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
     recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
     ageSeconds: payload.ageSeconds ?? payload.age_seconds ?? null,
+    exitPrice: payload.exitPrice ?? payload.exit_price ?? payload.exit ?? null,
+    resultR: payload.resultR ?? payload.result_r ?? null,
+    closeReason: stringOrNull(payload.closeReason ?? payload.close_reason),
+    provider: stringOrNull(payload.provider),
+    cacheStatus: stringOrNull(payload.cacheStatus ?? payload.cache_status),
+    schedulerStatus: stringOrNull(payload.schedulerStatus ?? payload.scheduler_status),
     source: "push"
   };
 }
@@ -2544,6 +2979,12 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
     recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
     ageSeconds: payload.ageSeconds ?? payload.age_seconds ?? null,
+    exitPrice: payload.exitPrice ?? payload.exit_price ?? payload.exit ?? trade.actual_exit ?? null,
+    resultR: payload.resultR ?? payload.result_r ?? trade.result_r ?? null,
+    closeReason: stringOrNull(payload.closeReason ?? payload.close_reason ?? trade.close_reason),
+    provider: stringOrNull(payload.provider),
+    cacheStatus: stringOrNull(payload.cacheStatus ?? payload.cache_status),
+    schedulerStatus: stringOrNull(payload.schedulerStatus ?? payload.scheduler_status),
     source: "history"
   };
 }
@@ -2622,6 +3063,7 @@ function notificationCategory(detail: NotificationDetail) {
   if (explicit) return explicit;
   const haystack = `${detail.eventType ?? ""} ${detail.title} ${detail.body}`.toUpperCase();
   if (hasTradeDetails(detail) || /ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
+  if (/TP_HIT|SL_HIT|TARGET|STOP LOSS|STOPPED|CLOSEOUT|CLOSED|WIN|LOSS/.test(haystack)) return "TRADE_CLOSEOUT";
   if (/TP_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
   if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
   if (/SESSION|WINDOW|PRESSESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
@@ -2676,7 +3118,8 @@ function formatPercent(value: unknown) {
 }
 
 function formatR(value: unknown) {
-  const numeric = Number(value ?? 0);
+  if (value == null || value === "") return "--";
+  const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "--";
   return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}R`;
 }
@@ -2829,6 +3272,31 @@ const styles = StyleSheet.create({
   quickActionIconText: { color: "#f5f8f6", fontWeight: "900", fontSize: 18 },
   quickActionLabel: { color: "#f0f4f1", fontWeight: "800", fontSize: 12, marginTop: 10 },
   quickActionValue: { color: "#919c95", fontWeight: "700", fontSize: 10, marginTop: 4, maxWidth: 74 },
+  updateBanner: {
+    marginTop: 14,
+    marginBottom: 2,
+    minHeight: 86,
+    borderRadius: 22,
+    backgroundColor: "#13211b",
+    borderWidth: 1,
+    borderColor: "#2fe6a8",
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12
+  },
+  updateBannerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#20352c",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  updateBannerContent: { flex: 1 },
+  updateBannerTitle: { color: "#f4f7f4", fontSize: 16, fontWeight: "900" },
+  updateBannerCopy: { color: "#aeb8b2", fontSize: 12, fontWeight: "700", lineHeight: 17, marginTop: 5 },
+  updateBannerAction: { color: "#2fe6a8", fontSize: 12, fontWeight: "900" },
   homeActionGrid: { flexDirection: "row", gap: 12, marginTop: 14 },
   homeActionCard: {
     flex: 1,
@@ -2979,7 +3447,37 @@ const styles = StyleSheet.create({
   compactModuleTabActive: { borderColor: "#2fe6a8", backgroundColor: "#13211b" },
   compactModuleText: { color: "#8d9690", fontWeight: "900", fontSize: 12 },
   compactModuleTextActive: { color: "#f4f7f4" },
+  compactModuleMeta: { marginTop: 6, fontSize: 10, fontWeight: "900" },
+  horizonTabs: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  horizonTab: {
+    flex: 1,
+    minHeight: 68,
+    borderRadius: 18,
+    backgroundColor: "#111412",
+    borderWidth: 1,
+    borderColor: "#252c28",
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    justifyContent: "center"
+  },
+  horizonTabActive: { borderColor: "#2fe6a8", backgroundColor: "#13211b" },
+  horizonTabText: { color: "#8d9690", fontWeight: "900", fontSize: 15 },
+  horizonTabTextActive: { color: "#f4f7f4" },
+  horizonTabMeta: { color: "#89938d", fontWeight: "700", fontSize: 11, marginTop: 5 },
   card: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 18, padding: 16, marginBottom: 14 },
+  tradeSetupCard: {
+    backgroundColor: "#101a15",
+    borderWidth: 1,
+    borderColor: "#254f40",
+    borderRadius: 22,
+    padding: 16,
+    marginTop: 12,
+    marginBottom: 14
+  },
+  tradeSetupCardSell: { backgroundColor: "#1a1112", borderColor: "#573036" },
+  tradeSetupTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  tradeSetupModule: { color: "#2fe6a8", fontWeight: "900", fontSize: 12, marginBottom: 6 },
+  tradeSetupTitle: { color: "#f4f7f4", fontWeight: "900", fontSize: 22, lineHeight: 27 },
   chartCard: {
     backgroundColor: "#0d100e",
     borderWidth: 1,
@@ -2992,6 +3490,10 @@ const styles = StyleSheet.create({
     overflow: "hidden"
   },
   chartHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 8 },
+  chartLegend: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingBottom: 10 },
+  chartLegendItem: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 14, paddingHorizontal: 9, paddingVertical: 6 },
+  chartLegendDot: { width: 9, height: 9, borderRadius: 5 },
+  chartLegendText: { color: "#aeb8b2", fontSize: 10, fontWeight: "900" },
   priceBox: { alignItems: "flex-end" },
   priceLabel: { color: "#7d8781", fontSize: 11, fontWeight: "800" },
   priceValue: { color: "#2fe6a8", fontSize: 21, fontWeight: "900", marginTop: 2 },
@@ -3000,7 +3502,7 @@ const styles = StyleSheet.create({
   chartGridLine: { position: "absolute", left: 0, right: 0, height: 1, backgroundColor: "#1b211d" },
   chartLevelWrap: { position: "absolute", left: 0, right: 0, height: 20 },
   chartLevelLine: { position: "absolute", left: 0, right: 0, top: 0, height: 1 },
-  chartLevelLabel: { position: "absolute", right: 4, top: 2, fontSize: 10, fontWeight: "900", backgroundColor: "#090c0a", paddingHorizontal: 4 },
+  chartLevelLabel: { position: "absolute", right: 4, top: 2, maxWidth: 132, fontSize: 10, fontWeight: "900", backgroundColor: "#090c0a", paddingHorizontal: 4 },
   candleHitArea: { position: "absolute", top: 0, width: 10 },
   candleWick: { position: "absolute", left: 4, width: 1 },
   candleBody: { position: "absolute", left: 1, borderRadius: 2 },
@@ -3033,6 +3535,10 @@ const styles = StyleSheet.create({
   metricLabel: { color: "#89938d", fontSize: 12, fontWeight: "800" },
   metricValue: { color: "#f4f7f4", fontSize: 16, fontWeight: "900", marginTop: 7 },
   sectionMini: { color: "#f4f7f4", fontWeight: "900", marginTop: 18, marginBottom: 8, fontSize: 16 },
+  checklistGroup: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 15, paddingHorizontal: 12, paddingTop: 10, marginBottom: 10 },
+  checklistGroupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingBottom: 2 },
+  checklistGroupTitle: { color: "#edf5f0", fontWeight: "900", fontSize: 14, flex: 1 },
+  checklistGroupMeta: { color: "#2fe6a8", fontWeight: "900", fontSize: 12 },
   ruleRow: { flexDirection: "row", gap: 10, borderTopWidth: 1, borderTopColor: "#252c28", paddingVertical: 12 },
   ruleStatus: { width: 52, fontSize: 11, fontWeight: "900" },
   ruleBody: { flex: 1 },

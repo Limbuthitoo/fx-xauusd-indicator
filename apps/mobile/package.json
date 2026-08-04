@@ -8,6 +8,7 @@
     "ios": "expo run:ios",
     "android": "expo run:android",
     "web": "expo start --web",
+    "build:android-apk:local": "npx eas-cli build --platform android --profile production-apk --local",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
