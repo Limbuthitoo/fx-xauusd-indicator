@@ -37,6 +37,15 @@ const XAUUSD_PAPER_SPEC = {
   commissionPerLot: 0
 };
 
+const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
+const XAUUSD_PIP_SIZE = XAUUSD_PAPER_SPEC.tickSize;
+const DAY_TRADING_HOLD_WINDOW = {
+  label: "Intraday only",
+  preferredHours: "4-5",
+  maximumHours: 12,
+  guidance: "Review or close the paper trade before the day-trading window expires."
+};
+
 const MODULE2_QA_CASES: Array<{
   code: Module2ReplayCase;
   label: string;
@@ -1220,9 +1229,7 @@ function signalSetupView(row: any, evaluations: any[]) {
   const zoneHigh = Number(zone?.high);
   const hasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
   const riskDistance = Math.abs(entry - stopLoss);
-  const tp1 = entry + multiplier * targetDistance * 0.5;
-  const tp2 = paperTarget;
-  const tp3 = entry + multiplier * targetDistance * 1.5;
+  const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(entry + multiplier * pips * XAUUSD_PIP_SIZE));
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   return {
@@ -1249,6 +1256,13 @@ function signalSetupView(row: any, evaluations: any[]) {
     tp1,
     tp2,
     tp3,
+    targets: [
+      { label: "TP1", pips: DAY_TRADING_TARGET_PIPS[0], price: tp1 },
+      { label: "TP2", pips: DAY_TRADING_TARGET_PIPS[1], price: tp2 },
+      { label: "TP3", pips: DAY_TRADING_TARGET_PIPS[2], price: tp3 }
+    ],
+    pipSize: XAUUSD_PIP_SIZE,
+    tradeHorizon: DAY_TRADING_HOLD_WINDOW,
     paperTarget,
     riskDistance,
     rewardToRisk: row.reward_to_risk == null ? (riskDistance > 0 ? targetDistance / riskDistance : null) : Number(row.reward_to_risk),
@@ -1269,6 +1283,10 @@ function signalSetupView(row: any, evaluations: any[]) {
     },
     reason: row.final_reason
   };
+}
+
+function roundSignalPrice(value: number) {
+  return Number(value.toFixed(2));
 }
 
 function summarizeSignals(signals: any[]) {

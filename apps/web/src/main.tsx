@@ -7449,9 +7449,9 @@ function TradeSignalsWorkspace({
         <div className="signal-price-strip">
           <SignalPrice label="Entry range" value={formatSignalRange(selected.entryRange)} />
           <SignalPrice label="Stop loss" value={formatPriceValue(selected.stopLoss)} tone="stop" />
-          <SignalPrice label="TP1" value={formatPriceValue(selected.tp1)} tone="target" />
-          <SignalPrice label="TP2 · Paper target" value={formatPriceValue(selected.tp2)} tone="target" />
-          <SignalPrice label="TP3" value={formatPriceValue(selected.tp3)} tone="target" />
+          <SignalPrice label={targetLabel(selected, 0, "TP1 · 50 pips")} value={formatPriceValue(selected.tp1)} tone="target" />
+          <SignalPrice label={targetLabel(selected, 1, "TP2 · 100 pips")} value={formatPriceValue(selected.tp2)} tone="target" />
+          <SignalPrice label={targetLabel(selected, 2, "TP3 · 150 pips")} value={formatPriceValue(selected.tp3)} tone="target" />
         </div>
 
         <div className="signal-detail-grid">
@@ -7486,6 +7486,7 @@ function TradeSignalsWorkspace({
             <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
             <Metric label="Grade" value={selected.grade ?? "--"} />
             <Metric label="Entry type" value={formatEntryKind(selected.entryRange?.kind)} />
+            <Metric label="Trade horizon" value={tradeHorizonLabel(selected.tradeHorizon)} />
             <Metric label="Valid until" value={selected.expiresAt ? formatNepalTime(selected.expiresAt) : "Until invalidated"} />
             <Metric label="Paper status" value={selected.trade?.status ?? "Awaiting paper entry"} />
           </aside>
@@ -7543,13 +7544,13 @@ function TradeSignalsWorkspace({
             </div>
             <div className="trade-signal-levels">
               <SignalPrice label="SL" value={formatPriceValue(signal.stopLoss)} tone="stop" />
-              <SignalPrice label="TP1" value={formatPriceValue(signal.tp1)} tone="target" />
-              <SignalPrice label="TP2" value={formatPriceValue(signal.tp2)} tone="target" />
-              <SignalPrice label="TP3" value={formatPriceValue(signal.tp3)} tone="target" />
+              <SignalPrice label={targetLabel(signal, 0, "TP1 50p")} value={formatPriceValue(signal.tp1)} tone="target" />
+              <SignalPrice label={targetLabel(signal, 1, "TP2 100p")} value={formatPriceValue(signal.tp2)} tone="target" />
+              <SignalPrice label={targetLabel(signal, 2, "TP3 150p")} value={formatPriceValue(signal.tp3)} tone="target" />
             </div>
             <div className="trade-signal-card-foot">
               <span>{formatNepalTime(signal.detectedAt)}</span>
-              <strong>{signal.checklist?.passed ?? 0}/{signal.checklist?.total ?? 0} rules</strong>
+              <strong>{tradeHorizonLabel(signal.tradeHorizon)}</strong>
             </div>
           </button>
         ))}
@@ -7561,6 +7562,18 @@ function TradeSignalsWorkspace({
 
 function SignalPrice({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
   return <div className={`signal-price ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function targetLabel(signal: any, index: number, fallback: string) {
+  const target = signal?.targets?.[index];
+  return target?.pips == null ? fallback : `${target.label ?? `TP${index + 1}`} · ${target.pips} pips`;
+}
+
+function tradeHorizonLabel(horizon: any) {
+  if (!horizon) return "Intraday";
+  const preferred = horizon.preferredHours ? `${horizon.preferredHours}h ideal` : null;
+  const maximum = horizon.maximumHours ? `max ${horizon.maximumHours}h` : null;
+  return [horizon.label ?? "Intraday", preferred, maximum].filter(Boolean).join(" · ");
 }
 
 function formatSignalRange(range: any) {

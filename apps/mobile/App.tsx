@@ -238,6 +238,9 @@ type LiveEvent =
 
 type MobileTab = "home" | "signals" | "chart" | "journal" | "alerts" | "more";
 
+const XAUUSD_PIP_SIZE = 0.01;
+const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
+
 const mobileTabs: Array<{ key: MobileTab; label: string }> = [
   { key: "home", label: "Home" },
   { key: "signals", label: "Signals" },
@@ -2210,6 +2213,9 @@ function ModuleDetail({
   const learningSummary = learning?.summary ?? {};
   const recommendations = learning?.recommendations ?? [];
   const topRecommendation = recommendations[0];
+  const entry = trade.actual_entry ?? setup.entry_price;
+  const stopLoss = trade.actual_stop ?? setup.stop_price;
+  const targetLadder = dayTradingTargets(entry, trade.direction ?? setup.direction);
   return (
     <View style={styles.card}>
       <View style={styles.moduleHeader}>
@@ -2225,9 +2231,12 @@ function ModuleDetail({
       <Text style={styles.reason}>{setup.final_reason ?? signal.reason}</Text>
       <View style={styles.metricsGrid}>
         <Metric label="Direction" value={trade.direction ?? setup.direction ?? "--"} />
-        <Metric label="Entry" value={formatPrice(trade.actual_entry ?? setup.entry_price)} />
-        <Metric label="Stop Loss" value={formatPrice(trade.actual_stop ?? setup.stop_price)} />
-        <Metric label="Take Profit" value={formatPrice(trade.actual_target ?? setup.target_price)} />
+        <Metric label="Entry" value={formatPrice(entry)} />
+        <Metric label="Stop Loss" value={formatPrice(stopLoss)} />
+        <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
+        <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
+        <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+        <Metric label="Trade Horizon" value="Intraday max 12h" />
         <Metric label="Score" value={setup.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
         <Metric label="Trade" value={trade.outcome ?? "NONE"} />
         <Metric label="Week WR" value={formatPercent(module.weekly?.winRate)} />
@@ -2485,6 +2494,15 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     ageSeconds: payload.ageSeconds ?? payload.age_seconds ?? null,
     source: "push"
   };
+}
+
+function dayTradingTargets(entryValue: unknown, directionValue: unknown) {
+  const entry = Number(entryValue);
+  if (!Number.isFinite(entry)) return { tp1: null, tp2: null, tp3: null };
+  const direction = String(directionValue ?? "").toUpperCase();
+  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
+  const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => Number((entry + multiplier * pips * XAUUSD_PIP_SIZE).toFixed(2)));
+  return { tp1, tp2, tp3 };
 }
 
 function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): NotificationDetail {

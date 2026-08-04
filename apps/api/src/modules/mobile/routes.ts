@@ -5,6 +5,9 @@ import { query } from "../../infrastructure/db/client.js";
 import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
 
+const XAUUSD_PIP_SIZE = 0.01;
+const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
+
 export async function mobileRoutes(app: FastifyInstance) {
   app.get("/api/mobile/app-update", async (request) => {
     const search = request.query as { platform?: string; currentVersion?: string; currentCode?: string };
@@ -501,10 +504,15 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
   }
   const entry = Number(trade?.actual_entry ?? setup?.entry_price);
   const stop = Number(trade?.actual_stop ?? setup?.stop_price);
-  const target = Number(trade?.actual_target ?? setup?.target_price);
+  const direction = String(trade?.direction ?? setup?.direction ?? "").toUpperCase();
+  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
   if (Number.isFinite(entry)) levels.push({ label: "Entry", price: entry, tone: "entry" });
   if (Number.isFinite(stop)) levels.push({ label: "SL", price: stop, tone: "bad" });
-  if (Number.isFinite(target)) levels.push({ label: "TP", price: target, tone: "good" });
+  if (Number.isFinite(entry)) {
+    DAY_TRADING_TARGET_PIPS.forEach((pips, index) => {
+      levels.push({ label: `TP${index + 1} ${pips}p`, price: Number((entry + multiplier * pips * XAUUSD_PIP_SIZE).toFixed(2)), tone: "good" });
+    });
+  }
   const flags = setup?.scenario_flags ?? {};
   const zone = flags.entryZone ?? flags.pullbackZone;
   if (zone?.low != null && zone?.high != null) {
