@@ -475,12 +475,14 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
     }
     for (let index = 0; index < signalCandles.length; index += 1) {
       const current = signalCandles[index];
-      const setupCandles = group.filter((candle) => candle.timestampUtc <= current.timestampUtc);
+      const lookbackStart = new Date(new Date(current.timestampUtc).getTime() - 48 * 60 * 60_000).toISOString();
+      const setupCandles = candles.filter((candle) => candle.timestampUtc >= lookbackStart && candle.timestampUtc <= current.timestampUtc);
       const decision = evaluateLiquiditySweepSetup({
         now: current.timestampUtc,
         symbol: input.symbol,
         setupCandles,
-        biasCandles: aggregateCandles(setupCandles, input.timeframe, 15),
+        biasCandles: aggregateCandles(candles.filter((candle) => candle.timestampUtc <= current.timestampUtc).slice(-600), input.timeframe, 15)
+          .filter((candle) => new Date(candle.timestampUtc).getTime() <= new Date(current.timestampUtc).getTime() - 15 * 60_000),
         spread: current.spread ?? null,
         newsStatus: "CLEAR",
         tradesTakenThisSession: trades.filter((trade) => trade.sessionDate === sessionDate).length,
@@ -628,6 +630,8 @@ function runVwapOpeningDriveMemoryCacheBacktest(input: {
         now: current.timestampUtc,
         symbol: input.symbol,
         candles: setupCandles,
+        biasCandles: aggregateCandles(candles.filter((candle) => candle.timestampUtc <= current.timestampUtc).slice(-600), input.timeframe, 15)
+          .filter((candle) => new Date(candle.timestampUtc).getTime() <= new Date(current.timestampUtc).getTime() - 15 * 60_000),
         sessionStartAt: times.sessionStartAt,
         sessionEndAt: times.signalWindowEndAt,
         spread: current.spread ?? null,

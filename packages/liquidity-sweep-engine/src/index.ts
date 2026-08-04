@@ -36,6 +36,10 @@ export type LiquiditySweepConfig = {
   timezone: string;
   newYorkStartTime: string;
   newYorkEndTime: string;
+  asianStartTime: string;
+  asianEndTime: string;
+  londonStartTime: string;
+  londonEndTime: string;
   maximumTradesPerSession: number;
   minimumSweepDistanceATR: number;
   maximumSweepDistanceATR: number;
@@ -102,6 +106,10 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
   newYorkStartTime: "09:30",
   newYorkEndTime: "16:00",
+  asianStartTime: "19:00",
+  asianEndTime: "04:00",
+  londonStartTime: "03:00",
+  londonEndTime: "09:30",
   maximumTradesPerSession: 3,
   minimumSweepDistanceATR: 0.1,
   maximumSweepDistanceATR: 1,
@@ -144,7 +152,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   const atr = averageTrueRange(setupCandles, 14);
   const htfBias = detectBias(biasCandles);
-  const levels = detectLiquidityLevels(setupCandles, current.timestampUtc, atr);
+  const levels = detectLiquidityLevels(setupCandles, current.timestampUtc, atr, config);
   const pivots = detectPivots(setupCandles, config.pivotLeftBars, config.pivotRightBars);
   const sessionActive = isInsideNewYorkWindow(current.timestampUtc, config.newYorkStartTime, config.newYorkEndTime);
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
@@ -170,7 +178,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   if (!displacement) return waitDecision("WAITING_FOR_DISPLACEMENT", "Sweep found. Waiting for displacement in the reversal direction.", evaluations, flags, levels, htfBias, sweep, direction);
 
   const bos = sequence?.bos ?? null;
-  push(evaluations, "BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed by close", Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? "Candle body closed beyond the selected internal structure point." : "No candle-close BOS/CHoCH has confirmed yet.");
+  const structureType = htfBias === "NEUTRAL"
+    ? "MSS"
+    : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "BOS" : "CHOCH";
+  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the selected internal structure point; classified ${structureType} from the 15M context.` : "No candle-close BOS/CHoCH has confirmed yet.");
   if (!bos) return waitDecision("WAITING_FOR_BOS", "Displacement found. Waiting for candle-close BOS/CHoCH.", evaluations, flags, levels, htfBias, sweep, direction);
 
   const currentIndex = setupCandles.length - 1;
@@ -189,14 +200,21 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   if (!retrace) return waitDecision("WAITING_FOR_RETRACE", "Fresh entry zone is ready. Waiting for price to retrace into it before any paper entry.", evaluations, flags, levels, htfBias, sweep, direction, zone);
 
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
-  const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction);
-  const vwap = volumeWeightedAveragePrice(setupCandles);
-  const vwapOk = direction === "LONG" ? current.close >= vwap : current.close <= vwap;
+  const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
+    && (!config.requireHtfBias || htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH"));
+  const sessionCandles = setupCandles.filter((candle) =>
+    newYorkDateKey(candle.timestampUtc) === newYorkDateKey(current.timestampUtc)
+      && newYorkMinutes(candle.timestampUtc) >= parseTime(config.newYorkStartTime)
+  );
+  const vwap = volumeWeightedAveragePrice(sessionCandles.length > 0 ? sessionCandles : setupCandles);
+  const vwapRows = sessionCandles.length > 0 ? sessionCandles : setupCandles;
+  const vwapVolumeCoverage = vwapRows.length > 0 ? vwapRows.filter((candle) => Number(candle.volume) > 0).length / vwapRows.length : 0;
+  const vwapOk = vwapVolumeCoverage >= 0.8 && (direction === "LONG" ? current.close >= vwap : current.close <= vwap);
   const fvgOk = Boolean(fvg);
   const orderBlockRetestOk = Boolean(orderBlock && current.low <= orderBlock.high && current.high >= orderBlock.low);
   const confirmations = [
-    { code: "CONFIRM_EMA_200", name: "200 EMA trend alignment", passed: ema200Ok, points: 15, actual: ema200Ok ? "aligned" : "not aligned", required: "aligned", explanation: ema200Ok ? "Price and trend context align with the 200 EMA." : "Price/trend context is not aligned with the 200 EMA." },
-    { code: "CONFIRM_VWAP", name: "VWAP alignment", passed: vwapOk, points: 10, actual: current.close.toFixed(2), required: direction === "LONG" ? `>= ${vwap.toFixed(2)}` : `<= ${vwap.toFixed(2)}`, explanation: vwapOk ? "Price is aligned with session VWAP." : "Price is not aligned with session VWAP." },
+    { code: "CONFIRM_EMA_200", name: "15M structure and 200 EMA alignment", passed: ema200Ok, points: 15, actual: `${htfBias} / ${ema200Ok ? "aligned" : "not aligned"}`, required: `${direction === "LONG" ? "BULLISH" : "BEARISH"} 15M context`, explanation: ema200Ok ? "The completed 15M structure and EMA context align with the setup." : "The 15M structure/EMA context is neutral or opposes the setup." },
+    { code: "CONFIRM_VWAP", name: "Session VWAP alignment", passed: vwapOk, points: 10, actual: `${current.close.toFixed(2)} / ${Math.round(vwapVolumeCoverage * 100)}% volume`, required: direction === "LONG" ? `>= ${vwap.toFixed(2)} with >=80% volume` : `<= ${vwap.toFixed(2)} with >=80% volume`, explanation: vwapOk ? "Price is aligned with a volume-backed session VWAP." : "Price is misaligned or provider volume is insufficient for true VWAP confirmation." },
     { code: "CONFIRM_FRESH_FVG", name: "Fresh Fair Value Gap", passed: fvgOk, points: 15, actual: fvg?.kind ?? null, required: "fresh FVG", explanation: fvgOk ? "A fresh FVG is available after displacement." : "No fresh FVG is available." },
     { code: "CONFIRM_ORDER_BLOCK_RETEST", name: "Order block retest", passed: orderBlockRetestOk, points: 10, actual: orderBlock ? `${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}` : null, required: "retest", explanation: orderBlockRetestOk ? "Price retested the detected order block." : "No order-block retest is confirmed." },
     { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm entry." }
@@ -233,9 +251,11 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
   flags.levels = levels;
   flags.htfBias = htfBias;
+  flags.vwap = vwap;
+  flags.vwapVolumeCoverage = vwapVolumeCoverage;
   flags.sweep = sweep;
   flags.displacement = displacement;
-  flags.bos = bos;
+  flags.bos = bos ? { ...bos, structureType } : null;
   flags.entryZone = zone;
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
@@ -315,9 +335,9 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE"
   ]);
-  return evaluations
-    .filter((evaluation) => required.has(evaluation.ruleCode))
-    .every((evaluation) => evaluation.status === "PASS");
+  return [...required].every((ruleCode) =>
+    evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
+  );
 }
 
 function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | "requiredForEntry"> {
@@ -347,17 +367,33 @@ function normalizeCandles(candles: Candle[]) {
     .sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
 }
 
-function detectLiquidityLevels(candles: Candle[], now: string, atr: number): LiquidityLevel[] {
-  const nowDate = new Date(now);
-  const previousDay = candles.filter((candle) => new Date(candle.timestampUtc).toISOString().slice(0, 10) < nowDate.toISOString().slice(0, 10));
-  const today = candles.filter((candle) => new Date(candle.timestampUtc).toISOString().slice(0, 10) === nowDate.toISOString().slice(0, 10));
-  const asian = today.filter((candle) => hourUtc(candle.timestampUtc) >= 0 && hourUtc(candle.timestampUtc) < 7);
-  const london = today.filter((candle) => hourUtc(candle.timestampUtc) >= 7 && hourUtc(candle.timestampUtc) < 13);
+function detectLiquidityLevels(candles: Candle[], now: string, atr: number, config: LiquiditySweepConfig): LiquidityLevel[] {
+  const currentDate = newYorkDateKey(now);
+  const priorDates = [...new Set(candles.map((candle) => newYorkDateKey(candle.timestampUtc)).filter((date) => date < currentDate))].sort();
+  const previousCalendarDate = priorDates.at(-1);
+  const previousTradingDate = [...priorDates].reverse().find((date) => !isWeekendDateKey(date));
+  const previousDay = previousTradingDate ? candles.filter((candle) => newYorkDateKey(candle.timestampUtc) === previousTradingDate) : [];
+  const preSession = candles.filter((candle) => {
+    const date = newYorkDateKey(candle.timestampUtc);
+    const minute = newYorkMinutes(candle.timestampUtc);
+    return date < currentDate || (date === currentDate && minute < parseTime(config.newYorkStartTime));
+  });
+  const asian = preSession.filter((candle) => {
+    const date = newYorkDateKey(candle.timestampUtc);
+    const minute = newYorkMinutes(candle.timestampUtc);
+    return (date === previousCalendarDate && minute >= parseTime(config.asianStartTime))
+      || (date === currentDate && minute < parseTime(config.asianEndTime));
+  });
+  const london = preSession.filter((candle) => {
+    const date = newYorkDateKey(candle.timestampUtc);
+    const minute = newYorkMinutes(candle.timestampUtc);
+    return date === currentDate && minute >= parseTime(config.londonStartTime) && minute < parseTime(config.londonEndTime);
+  });
   const levels: LiquidityLevel[] = [];
   addRangeLevels(levels, previousDay, "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "HIGH");
   addRangeLevels(levels, asian, "ASIAN_HIGH", "ASIAN_LOW", "MEDIUM");
   addRangeLevels(levels, london, "LONDON_HIGH", "LONDON_LOW", "HIGH");
-  const pivots = detectPivots(candles, 2, 2).slice(-18);
+  const pivots = detectPivots(preSession, 2, 2).slice(-18);
   addEqualHighLowLevels(levels, pivots, atr);
   return dedupeLevels(levels);
 }
@@ -397,6 +433,7 @@ function detectSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr:
   const candidates: SweepCandidate[] = [];
   for (let index = candles.length - 1; index >= Math.max(0, candles.length - config.maximumSweepLookbackBars - config.closeBackMaximumBars); index -= 1) {
     const candle = candles[index];
+    if (!isInsideNewYorkWindow(candle.timestampUtc, config.newYorkStartTime, config.newYorkEndTime)) continue;
     for (const level of levels) {
       const penetration = level.side === "SELL_SIDE" ? level.price - candle.low : candle.high - level.price;
       const distanceAtr = atr > 0 ? penetration / atr : 0;
@@ -498,8 +535,8 @@ function isZoneFresh(candles: Candle[], zone: NonNullable<ReturnType<typeof dete
   return direction === "LONG" ? !rows.some((candle) => candle.close < zone.low) : !rows.some((candle) => candle.close > zone.high);
 }
 
-function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: SweepCandidate, zone: { midpoint: number; low: number; high: number }, atr: number, config: LiquiditySweepConfig) {
-  const entry = zone.midpoint;
+function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: SweepCandidate, zone: { midpoint: number; low: number; high: number }, current: Candle, atr: number, config: LiquiditySweepConfig) {
+  const entry = current.close;
   const stop = direction === "LONG" ? Math.min(sweep.candle.low, zone.low) - atr * config.stopBufferATR : Math.max(sweep.candle.high, zone.high) + atr * config.stopBufferATR;
   const targets = levels
     .filter((level) => direction === "LONG" ? level.side === "BUY_SIDE" && level.price > entry : level.side === "SELL_SIDE" && level.price < entry)
@@ -523,7 +560,7 @@ function buildLayeredTradePlan(
   atr: number,
   config: LiquiditySweepConfig
 ) {
-  if (zone) return buildTradePlan(candles, levels, direction, sweep, zone, atr, config);
+  if (zone) return buildTradePlan(candles, levels, direction, sweep, zone, current, atr, config);
   const entry = current.close;
   const stop = direction === "LONG" ? sweep.candle.low - atr * config.stopBufferATR : sweep.candle.high + atr * config.stopBufferATR;
   const targets = levels
@@ -630,8 +667,17 @@ function parseTime(value: string) {
   return hour * 60 + minute;
 }
 
-function hourUtc(timestamp: string) {
-  return new Date(timestamp).getUTCHours();
+function newYorkDateKey(timestamp: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(timestamp));
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "00";
+  const day = parts.find((part) => part.type === "day")?.value ?? "00";
+  return `${year}-${month}-${day}`;
+}
+
+function isWeekendDateKey(date: string) {
+  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
+  return day === 0 || day === 6;
 }
 
 function timeOnly(timestamp: string) {

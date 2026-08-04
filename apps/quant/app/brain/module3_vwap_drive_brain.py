@@ -17,7 +17,7 @@ MANDATORY_RULES = [
     "CONFIRMATION_CANDLE",
 ]
 
-CONFIRMATION_RULES = ["EMA_ALIGNMENT", "SIGNAL_SCORE"]
+CONFIRMATION_RULES = ["EMA_ALIGNMENT", "HTF_15M_BIAS", "VWAP_DATA_QUALITY", "SIGNAL_SCORE"]
 QUALITY_RULES = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]
 
 
@@ -59,7 +59,7 @@ def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
     mandatory = all(statuses.get(item) == "PASS" for item in MANDATORY_RULES)
     quality_count = sum(1 for item in QUALITY_RULES if statuses.get(item) == "PASS")
     signal_score_ok = statuses.get("SIGNAL_SCORE") == "PASS"
-    full = mandatory and quality_count >= 3 and signal_score_ok
+    full = mandatory and quality_count >= 3 and signal_score_ok and statuses.get("HTF_15M_BIAS") == "PASS" and statuses.get("VWAP_DATA_QUALITY") == "PASS"
     rows = []
     for row in evaluations:
         rule_code = code(row)

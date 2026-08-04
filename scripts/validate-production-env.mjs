@@ -38,8 +38,10 @@ const minute = numberValue("TWELVE_DATA_MINUTE_CREDIT_LIMIT");
 const warn = numberValue("TWELVE_DATA_WARN_CREDITS");
 const danger = numberValue("TWELVE_DATA_DANGER_CREDITS");
 const stop = numberValue("TWELVE_DATA_STOP_CREDITS");
+const catchupSeconds = Number(env.TWELVE_DATA_CATCHUP_SECONDS ?? 1800);
 if (!(warn < danger && danger < stop && stop < daily)) errors.push("Twelve Data thresholds must satisfy warn < danger < stop < daily.");
 if (minute > 8) errors.push("TWELVE_DATA_MINUTE_CREDIT_LIMIT should not exceed Twelve Data free limit of 8/minute.");
+if (!Number.isFinite(catchupSeconds) || catchupSeconds < 300) errors.push("TWELVE_DATA_CATCHUP_SECONDS must be at least 300 seconds.");
 
 if (errors.length) fail(errors);
 
@@ -47,7 +49,7 @@ console.log(JSON.stringify({
   status: "OK",
   envFile,
   redisRequired: env.REDIS_REQUIRED,
-  twelveData: { daily, minute, warn, danger, stop },
+  twelveData: { daily, minute, warn, danger, stop, catchupSeconds },
   workerFirst: env.EMBEDDED_MARKET_DATA_WORKER !== "true",
   pushProvider: env.PUSH_PROVIDER ?? "auto"
 }, null, 2));

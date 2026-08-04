@@ -37,6 +37,7 @@ export const config = {
   twelveDataSymbol: process.env.TWELVE_DATA_SYMBOL ?? "XAU/USD",
   twelveDataInterval: process.env.TWELVE_DATA_INTERVAL ?? "5min",
   twelveDataPollSeconds: Number(process.env.TWELVE_DATA_POLL_SECONDS ?? 60),
+  twelveDataCatchupSeconds: Math.max(Number(process.env.TWELVE_DATA_CATCHUP_SECONDS ?? 1800), 300),
   autoRunSupervisorSeconds: Math.max(Number(process.env.AUTO_RUN_SUPERVISOR_SECONDS ?? 60), 30),
   embeddedMarketDataWorker: booleanEnv(process.env.EMBEDDED_MARKET_DATA_WORKER, false),
   twelveDataDailyCreditLimit: Number(process.env.TWELVE_DATA_DAILY_CREDIT_LIMIT ?? 800),

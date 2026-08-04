@@ -2,6 +2,8 @@ import { config } from "../../infrastructure/config.js";
 import { query } from "../../infrastructure/db/client.js";
 import { defaultLiquiditySweepConfiguration } from "@orb-guide/liquidity-sweep-engine";
 
+const SEVEN_DAY_FIVE_MINUTE_CANDLES = 7 * 24 * 12;
+
 export type RuntimeSettings = {
   symbol: string;
   timeframeMinutes: number;
@@ -43,7 +45,7 @@ const defaults: RuntimeSettings = {
     pollSeconds: Math.max(config.twelveDataPollSeconds, 60),
     rawCandleStorage: true,
     cacheDays: 7,
-    startupBackfillCount: 300,
+    startupBackfillCount: SEVEN_DAY_FIVE_MINUTE_CANDLES,
     livePollCount: 2
   }
 };
@@ -72,7 +74,10 @@ export async function getRuntimeSettings(tenantId?: string | null): Promise<Runt
       pollSeconds: Math.max(positiveInteger(feedProvider.pollSeconds, defaults.feed.pollSeconds, 3600), 60),
       rawCandleStorage: booleanValue(feedProvider.rawCandleStorage, defaults.feed.rawCandleStorage),
       cacheDays: positiveInteger(feedProvider.cacheDays, defaults.feed.cacheDays, 30),
-      startupBackfillCount: positiveInteger(feedProvider.startupBackfillCount, defaults.feed.startupBackfillCount, 5000),
+      startupBackfillCount: Math.max(
+        SEVEN_DAY_FIVE_MINUTE_CANDLES,
+        positiveInteger(feedProvider.startupBackfillCount, defaults.feed.startupBackfillCount, 5000)
+      ),
       livePollCount: positiveInteger(feedProvider.livePollCount, defaults.feed.livePollCount, 100)
     }
   };
@@ -245,7 +250,10 @@ export function validateSetting(key: string, value: unknown) {
       pollSeconds: Math.max(positiveInteger(input.pollSeconds, defaults.feed.pollSeconds, 3600), 60),
       rawCandleStorage: booleanValue(input.rawCandleStorage, defaults.feed.rawCandleStorage),
       cacheDays: positiveInteger(input.cacheDays, defaults.feed.cacheDays, 30),
-      startupBackfillCount: positiveInteger(input.startupBackfillCount, defaults.feed.startupBackfillCount, 5000),
+      startupBackfillCount: Math.max(
+        SEVEN_DAY_FIVE_MINUTE_CANDLES,
+        positiveInteger(input.startupBackfillCount, defaults.feed.startupBackfillCount, 5000)
+      ),
       livePollCount: positiveInteger(input.livePollCount, defaults.feed.livePollCount, 100)
     };
   }

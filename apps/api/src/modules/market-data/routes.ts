@@ -58,7 +58,7 @@ type TwelveDataWorkerState = {
 type AutoRunState = {
   enabled: boolean;
   running: boolean;
-  phase: "STARTING" | "API_KEY_MISSING" | "PRE_SESSION" | "MONITORING" | "AFTER_WINDOW" | "PAUSED" | "ERROR";
+  phase: "STARTING" | "API_KEY_MISSING" | "PRE_SESSION" | "CATCH_UP" | "MONITORING" | "AFTER_WINDOW" | "PAUSED" | "ERROR";
   symbol: string;
   timeframeMinutes: number;
   provider: "TWELVE_DATA";
@@ -94,8 +94,9 @@ const AUTO_API_START_LEAD_MINUTES = 15;
 const DEFAULT_TENANT_SLUG = "default-orb-tenant";
 const PERSIST_TWELVE_DATA_CANDLES = true;
 const LIVE_CANDLE_CACHE_DAYS = 7;
-const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 300;
+const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 7 * 24 * 12;
 const TWELVE_DATA_LIVE_POLL_COUNT = 2;
+const TWELVE_DATA_CATCHUP_MINIMUM_COUNT = 8;
 const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
 const ORB_RANGE_TIMEFRAME_MINUTES = 5;
@@ -150,6 +151,7 @@ const twelveDataState: TwelveDataWorkerState = {
 };
 
 let autoRunTimer: NodeJS.Timeout | null = null;
+let offSessionCatchupAttemptAt: number | null = null;
 const autoRunState: AutoRunState = {
   enabled: true,
   running: false,
@@ -218,8 +220,10 @@ export async function marketDataRoutes(app: FastifyInstance) {
       providerSymbol: twelveDataState.providerSymbol,
       interval: twelveDataState.interval,
       pollSeconds: twelveDataState.pollSeconds,
+      catchupSeconds: config.twelveDataCatchupSeconds,
       startupBackfillCount: settings.feed.startupBackfillCount,
       livePollCount: settings.feed.livePollCount,
+      schedulerMode: twelveDataState.running ? "NY_LIVE_60S" : autoRunState.phase === "CATCH_UP" ? "OFF_SESSION_30M" : "PAUSED",
       lastRequestedCount: twelveDataState.lastRequestedCount,
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
@@ -326,6 +330,8 @@ export async function marketDataRoutes(app: FastifyInstance) {
       configured: Boolean(config.twelveDataApiKey),
       startupBackfillCount: settings.feed.startupBackfillCount,
       livePollCount: settings.feed.livePollCount,
+      catchupSeconds: config.twelveDataCatchupSeconds,
+      schedulerMode: twelveDataState.running ? "NY_LIVE_60S" : autoRunState.phase === "CATCH_UP" ? "OFF_SESSION_30M" : "PAUSED",
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
       memoryCandles,
@@ -1366,6 +1372,15 @@ async function runAutoRunCycle() {
   if (monitoring.length === 0) {
     await stopTwelveDataLive({ notify: false });
     autoRunState.running = false;
+    const catchup = await runOffSessionCatchup(tenantCycles);
+    if (catchup.eligible) {
+      autoRunState.phase = "CATCH_UP";
+      autoRunState.lastActionAt = catchup.syncedAt ?? autoRunState.lastActionAt;
+      autoRunState.nextActionAt = catchup.nextSyncAt ?? autoRunState.nextActionAt;
+      autoRunState.reason = catchup.performed
+        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Strategy entry evaluation remains paused until the New York window.`
+        : `Off-session XAUUSD catch-up is current. Next shared sync is scheduled for ${catchup.nextSyncAt}.`;
+    }
     return autoRunState;
   }
 
@@ -1387,6 +1402,87 @@ async function runAutoRunCycle() {
     autoRunState.lastActionAt = new Date().toISOString();
   }
   return autoRunState;
+}
+
+async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings: RuntimeSettings; state: TenantAutoRunState }>) {
+  const first = tenantCycles[0];
+  const market = marketClosedReason();
+  if (!first || market.closed) return { eligible: false, performed: false, reason: market.reason };
+
+  const last = await query(
+    `SELECT created_at
+     FROM api_usage_events
+     WHERE provider = 'TWELVE_DATA'
+       AND trigger_source = 'MARKET_DATA_CATCH_UP'
+     ORDER BY created_at DESC
+     LIMIT 1`
+  );
+  const lastSyncAt = last.rows[0]?.created_at ? new Date(last.rows[0].created_at) : null;
+  const latestAttemptAt = Math.max(lastSyncAt?.getTime() ?? 0, offSessionCatchupAttemptAt ?? 0);
+  const dueAt = latestAttemptAt > 0 ? latestAttemptAt + config.twelveDataCatchupSeconds * 1000 : 0;
+  if (Date.now() < dueAt) {
+    return { eligible: true, performed: false, nextSyncAt: new Date(dueAt).toISOString() };
+  }
+
+  const settings = first.settings;
+  const sourceTimeframe = SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
+  const latest = await query(
+    `SELECT max(timestamp_utc) AS latest
+     FROM candles
+     WHERE symbol = $1 AND timeframe_minutes = $2`,
+    [settings.symbol, sourceTimeframe]
+  );
+  const latestAt = latest.rows[0]?.latest ? new Date(latest.rows[0].latest).getTime() : null;
+  const firstWorkerSync = twelveDataState.lastSyncAt == null && getCachedCandles(settings.symbol, sourceTimeframe).length === 0;
+  const requestedCount = calculateCatchupRequestCount({
+    latestAt,
+    now: Date.now(),
+    timeframeMinutes: sourceTimeframe,
+    startupBackfillCount: settings.feed.startupBackfillCount,
+    firstWorkerSync
+  });
+  const tenantIds = [...new Set(tenantCycles.map((item) => item.tenant.id))];
+  offSessionCatchupAttemptAt = Date.now();
+  const result = await syncTwelveDataCandles({
+    symbol: settings.symbol,
+    providerSymbol: settings.feed.providerSymbol,
+    timeframeMinutes: sourceTimeframe,
+    interval: timeframeToTwelveInterval(sourceTimeframe),
+    count: requestedCount,
+    autoEvaluate: false,
+    usageTenantIds: tenantIds,
+    triggerSource: "MARKET_DATA_CATCH_UP",
+    usageReason: `Shared 30-minute off-session catch-up for ${tenantIds.length} subscriber(s)`
+  });
+  const moduleTimeframes = tenantCycles.map((item) => moduleTimeframeMinutes(item.tenant.module_code, item.settings));
+  await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...moduleTimeframes, 15]);
+  const syncedAt = new Date().toISOString();
+  twelveDataState.lastSyncAt = syncedAt;
+  twelveDataState.lastImported = result.imported ?? 0;
+  twelveDataState.lastRequestedCount = requestedCount;
+  twelveDataState.lastError = result.connected ? null : result.error ?? "Off-session catch-up failed.";
+  twelveDataState.cycles += 1;
+  return {
+    eligible: true,
+    performed: Boolean(result.connected),
+    imported: result.imported ?? 0,
+    requestedCount,
+    syncedAt,
+    nextSyncAt: new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString(),
+    error: result.error ?? null
+  };
+}
+
+export function calculateCatchupRequestCount(input: {
+  latestAt: number | null;
+  now: number;
+  timeframeMinutes: number;
+  startupBackfillCount: number;
+  firstWorkerSync: boolean;
+}) {
+  if (input.firstWorkerSync || input.latestAt == null) return input.startupBackfillCount;
+  const missingBars = Math.ceil(Math.max(0, input.now - input.latestAt) / (input.timeframeMinutes * 60_000)) + 2;
+  return Math.min(input.startupBackfillCount, Math.max(TWELVE_DATA_CATCHUP_MINIMUM_COUNT, missingBars));
 }
 
 async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
@@ -1454,7 +1550,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   if (now >= sessionEnd) {
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
-    state.reason = `${state.moduleName} New York monitoring window is complete. Twelve Data polling is stopped to preserve API calls.`;
+    state.reason = `${state.moduleName} New York monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence; strategy entries remain paused.`;
     state.running = false;
     if (tenant.module_code === "high_probability_strategy_2") {
       const closeout = await runModule2CloseoutAfterSession(session);
@@ -1544,11 +1640,13 @@ async function twelveDataCallPolicy(options: {
     };
   }
 
-  if (options.triggerSource === "MARKET_DATA_WORKER" || options.triggerSource === "TENANT_CHART_SYNC") {
+  if (["MARKET_DATA_WORKER", "MARKET_DATA_CATCH_UP", "TENANT_CHART_SYNC"].includes(options.triggerSource ?? "")) {
     return {
       allowed: true,
-      reason: "NY_API_WINDOW_ACTIVE",
-      message: "Shared Twelve Data call is inside the active New York API window.",
+      reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "OFF_SESSION_CATCH_UP" : "NY_API_WINDOW_ACTIVE",
+      message: options.triggerSource === "MARKET_DATA_CATCH_UP"
+        ? "Shared Twelve Data call is the scheduled 30-minute off-session catch-up."
+        : "Shared Twelve Data call is inside the active New York API window.",
       sessionDate,
       forced: false
     };
@@ -1787,7 +1885,7 @@ async function runTwelveDataCycle() {
       });
       lastResult = result;
       totalImported += result.imported ?? 0;
-      await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...group.timeframes]);
+      await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...group.timeframes, 15]);
       for (const tenant of group.tenants) {
         const timeframe = moduleTimeframeMinutes(tenant.module_code, settings);
         const candles = getCachedCandles(settings.symbol, timeframe);
@@ -2452,7 +2550,10 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   const saved = await evaluateAndSaveSetup(session, range, current, previousResult.rows);
   const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options");
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
+  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
+  const brainApproved = brainApprovesPaperEntry(brainDecision, saved?.setup);
+  await auditBrainPaperEntryGate(session.tenant_id, "orb_max_options", saved?.setup, productionReady, brainDecision, brainApproved);
+  if (productionReady && brainApproved) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails("orb_max_options", saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -2536,22 +2637,34 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   }
   const startLookback = new Date(new Date(session.session_start_at).getTime() - 60 * 60_000).toISOString();
   const setupRows = cachedCandlesBetween(liveCandles, startLookback, current.timestamp_utc);
-  const fallbackRows = setupRows.length > 0
-    ? setupRows
-    : (await query(
+  const storedRows = await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread
+     FROM candles
+     WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc <= $4
+     ORDER BY timestamp_utc ASC
+     LIMIT 300`,
+    [symbol, timeframe, startLookback, current.timestamp_utc]
+  );
+  const fallbackRows = uniqueCandleRows([...storedRows.rows, ...setupRows, current]);
+  const biasRows = (
+    await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc <= $4
-       ORDER BY timestamp_utc ASC
-       LIMIT 300`,
-      [symbol, timeframe, startLookback, current.timestamp_utc]
-    )).rows;
+       WHERE symbol = $1
+         AND timeframe_minutes = 15
+         AND timestamp_utc <= $2
+       ORDER BY timestamp_utc DESC
+       LIMIT 200`,
+      [symbol, new Date(new Date(current.timestamp_utc).getTime() - 15 * 60_000).toISOString()]
+    )
+  ).rows.reverse();
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "vwapOpeningDrive.strategy", session.configuration_json);
   const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
   const decision = evaluateVwapOpeningDrive({
     now: current.timestamp_utc,
     symbol,
-    candles: uniqueCandleRows([...fallbackRows, current]).map(toCandle),
+    candles: fallbackRows.map(toCandle),
+    biasCandles: biasRows.map(toCandle),
     sessionStartAt: session.session_start_at,
     sessionEndAt: session.signal_window_end_at,
     spread: current.spread == null ? null : Number(current.spread),
@@ -2562,7 +2675,10 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
   const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
+  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
+  const brainApproved = brainApprovesPaperEntry(brainDecision, saved?.setup);
+  await auditBrainPaperEntryGate(session.tenant_id, moduleCode, saved?.setup, productionReady, brainDecision, brainApproved);
+  if (productionReady && brainApproved) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -2589,6 +2705,7 @@ export function evaluateVwapOpeningDrive(input: {
   now: string;
   symbol: string;
   candles: Candle[];
+  biasCandles?: Candle[];
   sessionStartAt: string;
   sessionEndAt: string;
   spread?: number | null;
@@ -2606,6 +2723,7 @@ export function evaluateVwapOpeningDrive(input: {
     pullbackZoneAtr: 0.35,
     confirmationBodyPercent: 0.45,
     emaPeriod: 20,
+    htfEmaPeriod: 50,
     minimumRiskReward: 2,
     maximumStopATR: 1.35,
     stopBufferATR: 0.12,
@@ -2644,9 +2762,9 @@ export function evaluateVwapOpeningDrive(input: {
   push("DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, input.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, "Automatic Module 3 paper trades are limited per session so learning can capture multiple valid setups without unlimited stacking.");
   if (!sessionActive || !tradeLimitOk) return module3Decision("HARD_RULE_BLOCK", null, "BLOCKED", "Module 3 hard rules failed before opening-drive evaluation.", evaluations, flags);
 
-  const atr = averageRange(candles.slice(-20));
+  const atr = averageTrueRange(candles.slice(-21));
   const driveEnd = new Date(sessionStart + Number(config.openingDriveMinutes) * 60_000).toISOString();
-  const driveCandles = candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc <= driveEnd);
+  const driveCandles = candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc < driveEnd);
   const drive = driveCandles.length > 0 ? {
     start: driveCandles[0],
     end: driveCandles.at(-1)!,
@@ -2659,31 +2777,50 @@ export function evaluateVwapOpeningDrive(input: {
   const driveBody = drive ? Math.abs(drive.close - drive.open) : 0;
   const driveDirection = drive && drive.close > drive.open ? "LONG" : drive && drive.close < drive.open ? "SHORT" : null;
   const driveStrong = Boolean(drive && atr > 0 && driveRange / atr >= config.minimumDriveRangeATR && driveBody / Math.max(driveRange, 0.00001) >= config.minimumDriveBodyPercent);
-  push("OPENING_DRIVE_COMPLETE", "Opening drive complete", Boolean(drive && nowTime > new Date(driveEnd).getTime()), true, driveCandles.length, `after ${config.openingDriveMinutes} minutes`, "The initial NY impulse window must complete before pullback entries.");
+  push("OPENING_DRIVE_COMPLETE", "Opening drive complete", Boolean(drive && nowTime >= new Date(driveEnd).getTime()), true, driveCandles.length, `after ${config.openingDriveMinutes} minutes`, "The initial NY impulse window must complete before pullback entries.");
   push("OPENING_DRIVE_STRONG", "Opening drive strength", driveStrong, true, atr > 0 ? Number((driveRange / atr).toFixed(2)) : null, `>= ${config.minimumDriveRangeATR} ATR`, "The opening drive must show real range expansion and body commitment.");
-  if (!drive || nowTime <= new Date(driveEnd).getTime()) return module3Decision("WAITING_FOR_OPENING_DRIVE", null, "WAIT", "Waiting for the NY opening drive to complete.", evaluations, { ...flags, drive });
+  if (!drive || nowTime < new Date(driveEnd).getTime()) return module3Decision("WAITING_FOR_OPENING_DRIVE", null, "WAIT", "Waiting for the NY opening drive to complete.", evaluations, { ...flags, drive });
   if (!driveStrong || !driveDirection) return module3Decision("NO_STRONG_OPENING_DRIVE", null, "NO TRADE", "No strong opening drive is available for Module 3.", evaluations, { ...flags, drive });
 
-  const vwap = volumeWeightedAverage(candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc <= current.timestampUtc));
+  const sessionRows = candles.filter((candle) => candle.timestampUtc >= input.sessionStartAt && candle.timestampUtc <= current.timestampUtc);
+  const vwap = volumeWeightedAverage(sessionRows);
+  const volumeCoverage = sessionRows.length > 0 ? sessionRows.filter((candle) => Number(candle.volume) > 0).length / sessionRows.length : 0;
+  const vwapDataQuality = volumeCoverage >= 0.8;
+  const vwapMode = vwapDataQuality ? "VOLUME_WEIGHTED" : "TYPICAL_PRICE_PROXY";
   const ema = simpleEma(candles.map((candle) => candle.close), Number(config.emaPeriod));
   const direction = driveDirection;
+  const htfBias = detectModule3HtfBias(input.biasCandles ?? [], Number(config.htfEmaPeriod));
+  const htfAligned = htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH");
   const vwapAligned = direction === "LONG" ? current.close > vwap + atr * config.minimumVwapDistanceATR : current.close < vwap - atr * config.minimumVwapDistanceATR;
   const trendAligned = direction === "LONG" ? current.close >= ema : current.close <= ema;
-  const pullbackRows = candles.filter((candle) => candle.timestampUtc > driveEnd);
+  const pullbackRows = candles.filter((candle) => candle.timestampUtc >= driveEnd);
   const zoneLow = direction === "LONG" ? Math.min(vwap, ema) - atr * config.pullbackZoneAtr : Math.min(vwap, ema);
   const zoneHigh = direction === "LONG" ? Math.max(vwap, ema) : Math.max(vwap, ema) + atr * config.pullbackZoneAtr;
   const pullbackZoneReady = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
-  const latestPullbackTouch = latestModule3PullbackTouch(pullbackRows, zoneLow, zoneHigh);
+  const pullbackObservations = pullbackRows.map((candle, index) => {
+    const history = candles.filter((row) => row.timestampUtc <= candle.timestampUtc);
+    const sessionHistory = history.filter((row) => row.timestampUtc >= input.sessionStartAt);
+    const vwapAtCandle = volumeWeightedAverage(sessionHistory);
+    const emaAtCandle = simpleEma(history.map((row) => row.close), Number(config.emaPeriod));
+    const low = direction === "LONG" ? Math.min(vwapAtCandle, emaAtCandle) - atr * config.pullbackZoneAtr : Math.min(vwapAtCandle, emaAtCandle);
+    const high = direction === "LONG" ? Math.max(vwapAtCandle, emaAtCandle) : Math.max(vwapAtCandle, emaAtCandle) + atr * config.pullbackZoneAtr;
+    return { index, candle, zone: { low, high, midpoint: (low + high) / 2 }, touched: candle.low <= high && candle.high >= low };
+  });
+  const latestPullbackTouch = [...pullbackObservations].reverse().find((row) => row.touched) ?? null;
   const barsAfterPullbackTouch = latestPullbackTouch ? pullbackRows.length - 1 - latestPullbackTouch.index : null;
   const pullbackTouched = latestPullbackTouch != null && barsAfterPullbackTouch != null && barsAfterPullbackTouch <= Number(config.maximumBarsAfterPullbackTouch);
-  const confirmation = confirmsModule3(current, direction, Number(config.confirmationBodyPercent));
+  const confirmation = confirmsModule3(current, direction, Number(config.confirmationBodyPercent), latestPullbackTouch?.zone);
   push("VWAP_ALIGNMENT", "VWAP alignment", vwapAligned, true, Number(current.close.toFixed(2)), direction === "LONG" ? `> ${vwap.toFixed(2)}` : `< ${vwap.toFixed(2)}`, "Price must be on the correct side of VWAP after the drive.");
+  push("VWAP_DATA_QUALITY", "VWAP volume coverage", vwapDataQuality, false, `${Math.round(volumeCoverage * 100)}% / ${vwapMode}`, ">= 80% candles with volume", vwapDataQuality ? "Session VWAP uses reported candle volume." : "The provider did not supply enough volume; the line is a typical-price proxy and cannot receive a FULL grade.");
   push("EMA_ALIGNMENT", "20 EMA alignment", trendAligned, false, Number(current.close.toFixed(2)), direction === "LONG" ? `>= ${ema.toFixed(2)}` : `<= ${ema.toFixed(2)}`, "EMA alignment confirms continuation context.");
+  push("HTF_15M_BIAS", "Completed 15M trend bias", htfAligned, false, htfBias, direction === "LONG" ? "BULLISH" : "BEARISH", "Completed 15M structure and EMA slope must align for a full-quality setup; mandatory-tier paper observation can still proceed without it.");
   push("PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", pullbackZoneReady, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry.");
   push("PULLBACK_ZONE_TOUCHED", "Pullback zone touched", pullbackTouched, true, latestPullbackTouch ? `${newYorkClock(latestPullbackTouch.candle.timestampUtc)} · ${barsAfterPullbackTouch} bars ago` : `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, `touch within ${config.maximumBarsAfterPullbackTouch} bars`, "Price must pull back into the VWAP/EMA value zone and confirm before the touch becomes stale.");
   push("CONFIRMATION_CANDLE", "Confirmation candle", confirmation, true, current.close > current.open ? "BULLISH" : current.close < current.open ? "BEARISH" : "DOJI", direction, "A completed candle must confirm continuation away from the pullback zone.");
   const entry = current.close;
-  const stop = direction === "LONG" ? Math.min(zoneLow, current.low) - atr * config.stopBufferATR : Math.max(zoneHigh, current.high) + atr * config.stopBufferATR;
+  const touchCandle = latestPullbackTouch?.candle ?? current;
+  const touchZone = latestPullbackTouch?.zone ?? { low: zoneLow, high: zoneHigh };
+  const stop = direction === "LONG" ? Math.min(touchZone.low, touchCandle.low) - atr * config.stopBufferATR : Math.max(touchZone.high, touchCandle.high) + atr * config.stopBufferATR;
   const target = direction === "LONG" ? entry + Math.abs(entry - stop) * config.minimumRiskReward : entry - Math.abs(entry - stop) * config.minimumRiskReward;
   const rr = Math.abs(target - entry) / Math.max(0.00001, Math.abs(entry - stop));
   const stopAtr = Math.abs(entry - stop) / Math.max(atr, 0.00001);
@@ -2693,17 +2830,21 @@ export function evaluateVwapOpeningDrive(input: {
   push("QUALITY_NEWS", "No high-impact news", newsOk, true, input.newsStatus ?? "CLEAR", "CLEAR", "High-impact news blocks automatic Module 3 entries.");
   push("QUALITY_RR", "Minimum RR 2:1", rrOk, true, Number(rr.toFixed(2)), `>= ${config.minimumRiskReward}`, "Reward-to-risk must meet the configured minimum.");
   push("QUALITY_STOP_SIZE", "Maximum stop size", stopOk, true, Number(stopAtr.toFixed(2)), `<= ${config.maximumStopATR} ATR`, "Stop distance must not be too large after the pullback.");
-  const confirmationCount = [vwapAligned, trendAligned, pullbackTouched, confirmation, spreadOk, newsOk, rrOk, stopOk].filter(Boolean).length;
+  const confirmationCount = [vwapAligned, vwapDataQuality, trendAligned, htfAligned, pullbackTouched, confirmation, spreadOk, newsOk, rrOk, stopOk].filter(Boolean).length;
   const score = Math.min(100, Math.round(35 + (driveStrong ? 15 : 0) + confirmationCount * 7));
   const mandatoryEntryPassed = module3MandatoryEntryPassed(evaluations);
-  const fullChecklistPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");
   const scoreOk = score >= config.minimumSignalScore;
   push("SIGNAL_SCORE", "Minimum signal score", scoreOk, true, score, `>= ${config.minimumSignalScore}`, "Module 3 requires a high-quality opening-drive pullback score.");
+  const fullChecklistPassed = evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS") && htfAligned && vwapDataQuality;
   flags.drive = drive;
   flags.vwap = vwap;
+  flags.vwapMode = vwapMode;
+  flags.vwapVolumeCoverage = volumeCoverage;
   flags.ema = ema;
-  flags.entryZone = { low: zoneLow, high: zoneHigh, midpoint: (zoneLow + zoneHigh) / 2, kind: "VWAP_PULLBACK_ZONE" };
-  flags.pullbackTouch = latestPullbackTouch ? { index: latestPullbackTouch.index, candle: latestPullbackTouch.candle, barsAgo: barsAfterPullbackTouch } : null;
+  flags.htfBias = htfBias;
+  flags.htfAligned = htfAligned;
+  flags.entryZone = { low: touchZone.low, high: touchZone.high, midpoint: (touchZone.low + touchZone.high) / 2, kind: "VWAP_PULLBACK_ZONE" };
+  flags.pullbackTouch = latestPullbackTouch ? { index: latestPullbackTouch.index, candle: latestPullbackTouch.candle, zone: latestPullbackTouch.zone, barsAgo: barsAfterPullbackTouch } : null;
   flags.riskReward = rr;
   flags.confidence = score;
   flags.tradeGrade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
@@ -2760,9 +2901,9 @@ function module3MandatoryEntryPassed(evaluations: any[]) {
     "PULLBACK_ZONE_TOUCHED",
     "CONFIRMATION_CANDLE"
   ]);
-  return evaluations
-    .filter((evaluation) => required.has(evaluation.ruleCode))
-    .every((evaluation) => evaluation.status === "PASS");
+  return [...required].every((ruleCode) =>
+    evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
+  );
 }
 
 function module3Decision(scenario: string, direction: string | null, status: string, reason: string, evaluations: any[], flags: Record<string, unknown>, score = 0) {
@@ -2780,17 +2921,33 @@ function module3Decision(scenario: string, direction: string | null, status: str
   };
 }
 
-function averageRange(candles: Candle[]) {
-  if (candles.length === 0) return 0.01;
-  return candles.reduce((sum, candle) => sum + Math.max(0.01, candle.high - candle.low), 0) / candles.length;
+function averageTrueRange(candles: Candle[]) {
+  if (candles.length < 2) return Math.max(0.01, (candles.at(-1)?.high ?? 0) - (candles.at(-1)?.low ?? 0));
+  const ranges = candles.slice(1).map((candle, index) => {
+    const previous = candles[index];
+    return Math.max(candle.high - candle.low, Math.abs(candle.high - previous.close), Math.abs(candle.low - previous.close));
+  });
+  return ranges.reduce((sum, value) => sum + value, 0) / ranges.length;
 }
 
-function latestModule3PullbackTouch(candles: Candle[], zoneLow: number, zoneHigh: number) {
-  for (let index = candles.length - 1; index >= 0; index -= 1) {
-    const candle = candles[index];
-    if (candle.low <= zoneHigh && candle.high >= zoneLow) return { index, candle };
-  }
-  return null;
+function detectModule3HtfBias(candles: Candle[], emaPeriod: number) {
+  const completed = [...candles]
+    .filter((candle) => [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite))
+    .sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
+  if (completed.length < 8) return "NEUTRAL";
+  const closes = completed.map((candle) => candle.close);
+  const period = Math.min(Math.max(8, emaPeriod), closes.length);
+  const emaNow = simpleEma(closes, period);
+  const emaBefore = simpleEma(closes.slice(0, -2), Math.min(period, Math.max(2, closes.length - 2)));
+  const latest = completed.at(-1)!;
+  const recent = completed.slice(-6);
+  const higherHigh = Math.max(...recent.slice(-3).map((candle) => candle.high)) > Math.max(...recent.slice(0, 3).map((candle) => candle.high));
+  const higherLow = Math.min(...recent.slice(-3).map((candle) => candle.low)) > Math.min(...recent.slice(0, 3).map((candle) => candle.low));
+  const lowerHigh = Math.max(...recent.slice(-3).map((candle) => candle.high)) < Math.max(...recent.slice(0, 3).map((candle) => candle.high));
+  const lowerLow = Math.min(...recent.slice(-3).map((candle) => candle.low)) < Math.min(...recent.slice(0, 3).map((candle) => candle.low));
+  if (latest.close >= emaNow && emaNow >= emaBefore && (higherHigh || higherLow)) return "BULLISH";
+  if (latest.close <= emaNow && emaNow <= emaBefore && (lowerHigh || lowerLow)) return "BEARISH";
+  return "NEUTRAL";
 }
 
 function volumeWeightedAverage(candles: Candle[]) {
@@ -2808,11 +2965,14 @@ function simpleEma(values: number[], period: number) {
   return rows.reduce((ema, value, index) => index === 0 ? value : value * multiplier + ema * (1 - multiplier), rows[0] ?? 0);
 }
 
-function confirmsModule3(candle: Candle, direction: string, minimumBodyPercent: number) {
+function confirmsModule3(candle: Candle, direction: string, minimumBodyPercent: number, zone?: { low: number; high: number; midpoint: number }) {
   const range = Math.max(0.00001, candle.high - candle.low);
   const body = Math.abs(candle.close - candle.open);
   const bodyOk = body / range >= minimumBodyPercent;
-  return direction === "LONG" ? candle.close > candle.open && bodyOk : candle.close < candle.open && bodyOk;
+  const closeLocation = (candle.close - candle.low) / range;
+  return direction === "LONG"
+    ? candle.close > candle.open && bodyOk && closeLocation >= 0.65 && (!zone || candle.close > zone.midpoint)
+    : candle.close < candle.open && bodyOk && closeLocation <= 0.35 && (!zone || candle.close < zone.midpoint);
 }
 
 function newYorkClock(timestampUtc: string) {
@@ -2871,24 +3031,20 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
     return { sessionFound: true, evaluation: "ALREADY_EVALUATED", tradeLifecycle };
   }
 
-  const startLookback = new Date(new Date(session.session_start_at).getTime() - 30 * 60_000).toISOString();
+  const startLookback = new Date(new Date(session.session_start_at).getTime() - 48 * 60 * 60_000).toISOString();
   const setupRows = cachedCandlesBetween(liveCandles, startLookback, current.timestamp_utc);
-  const fallbackSetupRows =
-    setupRows.length > 0
-      ? setupRows
-      : (
-          await query(
-            `SELECT timestamp_utc, open, high, low, close, volume, spread
-             FROM candles
-             WHERE symbol = $1
-               AND timeframe_minutes = $2
-               AND timestamp_utc >= $3
-               AND timestamp_utc <= $4
-             ORDER BY timestamp_utc ASC
-             LIMIT 300`,
-            [symbol, timeframe, startLookback, current.timestamp_utc]
-          )
-        ).rows;
+  const storedSetupRows = await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread
+     FROM candles
+     WHERE symbol = $1
+       AND timeframe_minutes = $2
+       AND timestamp_utc >= $3
+       AND timestamp_utc <= $4
+     ORDER BY timestamp_utc ASC
+     LIMIT 700`,
+    [symbol, timeframe, startLookback, current.timestamp_utc]
+  );
+  const fallbackSetupRows = uniqueCandleRows([...storedSetupRows.rows, ...setupRows, current]);
   const biasRows =
     timeframe === 15
       ? fallbackSetupRows
@@ -2901,7 +3057,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
                AND timestamp_utc <= $2
              ORDER BY timestamp_utc DESC
              LIMIT 200`,
-            [symbol, current.timestamp_utc]
+            [symbol, new Date(new Date(current.timestamp_utc).getTime() - 15 * 60_000).toISOString()]
           )
         ).rows.reverse();
   const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
@@ -2910,7 +3066,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   const decision = evaluateLiquiditySweepSetup({
     now: current.timestamp_utc,
     symbol,
-    setupCandles: uniqueCandleRows([...fallbackSetupRows, current]).map(toCandle),
+    setupCandles: fallbackSetupRows.map(toCandle),
     biasCandles: biasRows.map(toCandle),
     spread: current.spread == null ? null : Number(current.spread),
     newsStatus: "CLEAR",
@@ -2926,7 +3082,10 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   await notifyModule2Stage(session, decision);
   await applyModule2SetupLifecycle(saved?.setup, decision, current);
   let paperTrade = null;
-  if (isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk)) {
+  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
+  const brainApproved = brainApprovesPaperEntry(brainDecision, saved?.setup);
+  await auditBrainPaperEntryGate(session.tenant_id, moduleCode, saved?.setup, productionReady, brainDecision, brainApproved);
+  if (productionReady && brainApproved) {
     await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
     const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
     paperTrade = settings.paperTradingEnabled
@@ -3702,6 +3861,53 @@ async function runProductionBrainSweep(tenantId: string | null, moduleCode: stri
   }
 }
 
+function brainApprovesPaperEntry(brainDecision: any, setup: any) {
+  if (!setup?.direction) return false;
+  const expectedAction = setup.direction === "LONG" ? "BUY" : "SELL";
+  return brainDecision?.status === "COMPLETED"
+    && brainDecision?.shouldOpenPaperTrade === true
+    && brainDecision?.action === expectedAction
+    && [brainDecision.entry, brainDecision.stop, brainDecision.target].every((value) => Number.isFinite(Number(value)));
+}
+
+async function auditBrainPaperEntryGate(
+  tenantId: string | null,
+  moduleCode: string,
+  setup: any,
+  productionReady: boolean,
+  brainDecision: any,
+  approved: boolean
+) {
+  if (!tenantId || !setup?.id || !productionReady || approved) return;
+  const existing = await query(
+    `SELECT 1
+     FROM operational_events
+     WHERE tenant_id = $1
+       AND event_type = 'PAPER_ENTRY_BRAIN_BLOCKED'
+       AND metadata->>'setupId' = $2
+     LIMIT 1`,
+    [tenantId, String(setup.id)]
+  );
+  if (existing.rows[0]) return;
+  await recordOperationalEvent({
+    severity: brainDecision?.status === "FAILED" ? "ERROR" : "WARN",
+    category: "WORKER",
+    eventType: "PAPER_ENTRY_BRAIN_BLOCKED",
+    source: "market-data-worker",
+    tenantId,
+    message: `A production-ready ${moduleCode} setup was not approved by its Python brain.`,
+    metadata: {
+      moduleCode,
+      setupId: String(setup.id),
+      setupDirection: setup.direction ?? null,
+      brainStatus: brainDecision?.status ?? null,
+      brainAction: brainDecision?.action ?? null,
+      brainShouldOpenPaperTrade: Boolean(brainDecision?.shouldOpenPaperTrade),
+      brainError: brainDecision?.error ?? null
+    }
+  });
+}
+
 async function moduleConfigSnapshot(tenantId: string | null, moduleCode: string, settingKey: string) {
   const setting = await query(
     `SELECT updated_at
@@ -3976,7 +4182,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
   const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
   const module3Mandatory = new Set(requiredEntryRules("strategy_lab_3"));
-  const module3Confirmation = new Set(["EMA_ALIGNMENT"]);
+  const module3Confirmation = new Set(["EMA_ALIGNMENT", "HTF_15M_BIAS", "VWAP_DATA_QUALITY"]);
   const module3Quality = new Set(["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };

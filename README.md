@@ -481,6 +481,13 @@ Twelve Data free-tier planning currently assumes:
 - 800 credits/day
 - 8 credits/minute
 - 1 shared XAUUSD poll/minute during the configured New York session window
+- 1 shared catch-up request every 30 minutes outside the New York window on weekdays
+- a one-credit startup request of up to 2,016 recent 5-minute candles (seven calendar days) after deployment or restart
+- no scheduled market-data requests on Saturday or Sunday New York dates
+
+The shared source interval is always 5 minutes. Module 1 builds its 15-minute opening range from the first three completed 5-minute New York candles. Modules 2 and 3 execute on completed 5-minute candles and derive completed 15-minute context from the same stored source, so they do not consume separate Twelve Data calls.
+
+Module 2 follows `liquidity level -> NY sweep and close-back -> displacement -> candle-close BOS/CHoCH -> fresh FVG/order block -> retrace -> confirmation`. Module 3 follows `completed NY opening drive -> session VWAP alignment -> dynamic VWAP/EMA pullback -> confirmation`, with completed 15-minute context required for a FULL grade. Mandatory-only setups remain small paper observations; no real broker orders are supported.
 
 ## Disclaimer
 

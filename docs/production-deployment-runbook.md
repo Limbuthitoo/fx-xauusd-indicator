@@ -186,6 +186,8 @@ npm run qa:final
 
 The production worker uses one shared XAUUSD Twelve Data feed. Strategy modules derive their own candle logic from that feed, so adding subscribers does not multiply Twelve Data credits for the same symbol/timeframe source.
 
+Set `TWELVE_DATA_CATCHUP_SECONDS=1800`. On a weekday worker start, the first request gap-fills up to 2,016 recent 5-minute candles, covering seven calendar days in one XAUUSD request. Outside the New York strategy window, the worker performs one shared gap-aware request every 30 minutes. During the New York window it switches to the existing one-request-per-minute live cadence. Saturday and Sunday New York dates remain paused. Every source update is persisted to PostgreSQL and derives completed 15-minute candles locally for strategy context.
+
 ## Mobile APK
 
 Build the APK with the VPS URL:

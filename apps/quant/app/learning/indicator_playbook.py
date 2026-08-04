@@ -99,10 +99,20 @@ MODULE3_RULES: dict[str, dict[str, str]] = {
         "meaning": "Price remains on the continuation side of VWAP after the opening drive.",
         "treatment": "Hard gate. Losing VWAP weakens the continuation thesis.",
     },
+    "VWAP_DATA_QUALITY": {
+        "indicator": "VWAP data quality",
+        "meaning": "At least 80% of session candles contain usable provider volume for a true volume-weighted calculation.",
+        "treatment": "Full-quality confirmation. Missing volume falls back to a clearly labelled typical-price proxy and cannot receive a FULL grade.",
+    },
     "EMA_ALIGNMENT": {
         "indicator": "EMA alignment",
         "meaning": "Short-term trend agrees with the opening-drive direction.",
         "treatment": "Confirmation. Useful for grading and confidence.",
+    },
+    "HTF_15M_BIAS": {
+        "indicator": "Completed 15-minute bias",
+        "meaning": "Completed 15-minute structure and EMA slope agree with the 5-minute opening-drive direction.",
+        "treatment": "Full-quality confirmation. A mandatory-tier paper observation may proceed without it, but it cannot be graded FULL.",
     },
     "PULLBACK_ZONE_READY": {
         "indicator": "VWAP/EMA pullback zone",
