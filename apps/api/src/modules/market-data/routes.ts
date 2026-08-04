@@ -3169,14 +3169,35 @@ async function buildModule2Health(tenantId: string | null, createAlerts: boolean
     healthIssue("MISSED_NY_START", "Missed NY start", windowOpen && Number(sessionCandles.rows[0]?.count ?? 0) === 0, "CRITICAL", "NY window is open but no 5M candles have been stored for Module 2."),
     healthIssue("NO_CANDLES_DURING_WINDOW", "No candles during open window", windowOpen && Number(sessionCandles.rows[0]?.count ?? 0) < 2, "HIGH", "Module 2 has too few candles during the active NY window."),
     healthIssue("DRY_RUN_STATE_STUCK", "Dry-run state stuck", stuckState, "NORMAL", `Recent setup state repeated: ${setupStates[0] ?? "--"}.`),
-    healthIssue("ACTIVE_TRADE_OPEN_TOO_LONG", "Active trade open too long", Number(activeTradeAge.rows[0]?.age_seconds ?? 0) > 3 * 60 * 60, "HIGH", "A Module 2 paper trade has been active for more than 3 hours."),
+    healthIssue("ACTIVE_TRADE_OPEN_TOO_LONG", "Active trade open too long", Number(activeTradeAge.rows[0]?.age_seconds ?? 0) > 3 * 60 * 60, "HIGH", "A Module 2 paper trade has been active for more than 3 hours.", {
+      tradeId: activeTradeAge.rows[0]?.id ?? null,
+      ageSeconds: activeTradeAge.rows[0]?.age_seconds ?? null,
+      status: "ACTIVE",
+      recommendedAction: "Review the active Module 2 paper trade on the chart or journal. The system will still close it automatically at TP or SL."
+    }),
     healthIssue("REPEATED_FEED_ERRORS", "Repeated feed errors", Number(recentFeedErrors.rows[0]?.count ?? 0) >= 3, "HIGH", `${recentFeedErrors.rows[0]?.count ?? 0} Twelve Data errors in the last 30 minutes.`),
     healthIssue("PRODUCTION_AUDIT_FAILED", "Production audit failed", Number(auditFailures.rows[0]?.count ?? 0) > 0, "CRITICAL", "A Module 2 production audit failure notification is still unacknowledged."),
     healthIssue("TUNING_PRESET_CHANGED", "Tuning preset changed", Boolean(latestPromotion.rows[0] && new Date(latestPromotion.rows[0].applied_at).getTime() > Date.now() - 24 * 60 * 60_000), "NORMAL", latestPromotion.rows[0] ? `${latestPromotion.rows[0].action} ${latestPromotion.rows[0].preset_code}.` : "")
   ].filter((issue) => issue.active);
   if (createAlerts) {
     for (const issue of issues) {
-      await notifyTenantOnce(tenantId, `module2-health-${issue.code}-${new Date().toISOString().slice(0, 10)}`, `MODULE2_${issue.code}`, issue.title, issue.body, issue.severity);
+      await notifyTenantOnce(
+        tenantId,
+        `module2-health-${issue.code}-${new Date().toISOString().slice(0, 10)}`,
+        `MODULE2_${issue.code}`,
+        issue.title,
+        issue.body,
+        issue.severity,
+        {
+          category: "HEALTH",
+          moduleCode,
+          moduleName: moduleDisplayName(moduleCode),
+          issueCode: issue.code,
+          status: summaryStatusForHealthIssue(issue),
+          ...issue.data
+        },
+        "systemDiagnostics"
+      );
     }
   }
   const summary = {
@@ -3896,8 +3917,14 @@ function launchCheck(code: string, label: string, pass: boolean, detail: string)
   return { code, label, status: pass ? "PASS" : "WAIT", detail };
 }
 
-function healthIssue(code: string, title: string, active: boolean, severity: string, body: string) {
-  return { code, title, active, severity, body };
+function healthIssue(code: string, title: string, active: boolean, severity: string, body: string, data: Record<string, unknown> = {}) {
+  return { code, title, active, severity, body, data };
+}
+
+function summaryStatusForHealthIssue(issue: { severity?: string }) {
+  if (issue.severity === "CRITICAL") return "CRITICAL";
+  if (issue.severity === "HIGH") return "WARNING";
+  return "INFO";
 }
 
 function checkReadinessStatus(readiness: any, code: string) {

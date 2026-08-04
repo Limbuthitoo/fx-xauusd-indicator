@@ -138,6 +138,10 @@ type NotificationDetail = {
   mandatoryPassed?: string | number | boolean | null;
   confirmationPassed?: string | number | boolean | null;
   qualityPassed?: string | number | boolean | null;
+  category?: string | null;
+  issueCode?: string | null;
+  recommendedAction?: string | null;
+  ageSeconds?: string | number | null;
   source: "push" | "history";
 };
 
@@ -1535,6 +1539,12 @@ function NotificationDetailScreen({
   const symbol = detail.symbol ?? trade.symbol ?? "XAUUSD";
   const isTradeAlert = hasTradeDetails(detail) || entry !== "--" || stopLoss !== "--" || takeProfit !== "--";
   const setupReason = detail.finalReason ?? module?.currentSetup?.final_reason ?? null;
+  const category = notificationCategory(detail);
+  const moduleLabel = detail.moduleName ?? module?.shortName ?? moduleDisplayName(moduleCode);
+  const hasResolvedTradePlan = isTradeAlert || Boolean(trade.id);
+  const showTradePlan = category === "TRADE_SETUP" || hasResolvedTradePlan;
+  const showSetupContext = category === "TRADE_SETUP" || detail.scenario || detail.setupCandidateId || detail.mandatoryPassed != null || detail.confirmationPassed != null || detail.qualityPassed != null;
+  const showOperational = category === "HEALTH" || category === "SYSTEM" || category === "SESSION" || category === "FEED" || !showTradePlan;
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -1554,42 +1564,67 @@ function NotificationDetailScreen({
           <Text style={styles.noticeTime}>{detail.createdAt ? formatTime(detail.createdAt) : detail.source === "push" ? "Opened from push notification" : "--"}</Text>
         </View>
 
-        <View style={styles.moreDiagnosticsCard}>
-          <Text style={styles.sectionMini}>Trade Details</Text>
-          <View style={styles.tradeBadgeRow}>
-            <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
-            <Text style={styles.tradeSymbol}>{symbol}</Text>
-            <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? moduleDisplayName(moduleCode)}</Text>
+        {showTradePlan ? (
+          <View style={[styles.moreDiagnosticsCard, action === "SELL" ? styles.notificationTradeSell : styles.notificationTradeBuy]}>
+            <Text style={styles.sectionMini}>{category === "TRADE_LIFECYCLE" ? "Paper Trade Status" : "Trade Setup"}</Text>
+            <View style={styles.tradeBadgeRow}>
+              <Text style={[styles.tradeDirectionBadge, action === "SELL" && styles.tradeDirectionSell]}>{action}</Text>
+              <Text style={styles.tradeSymbol}>{symbol}</Text>
+              <Text style={styles.tradeModule}>{moduleLabel}</Text>
+            </View>
+            <View style={styles.metricsGrid}>
+              <Metric label="Entry" value={formatDetailValue(entry)} />
+              <Metric label="Stop Loss" value={formatDetailValue(stopLoss)} />
+              <Metric label="Take Profit" value={formatDetailValue(takeProfit)} />
+              <Metric label="Direction" value={String(direction)} />
+              <Metric label="RR" value={formatDetailValue(rr)} />
+              <Metric label="Grade" value={formatDetailValue(detail.grade)} />
+              <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
+              <Metric label="Status" value={formatDetailValue(detail.status)} />
+            </View>
+            {category === "TRADE_LIFECYCLE" ? <Text style={styles.reason}>This alert belongs to an existing paper trade. Review the open module chart or journal before taking manual action.</Text> : null}
           </View>
-          <View style={styles.metricsGrid}>
-            <Metric label="Entry" value={formatDetailValue(entry)} />
-            <Metric label="Stop Loss" value={formatDetailValue(stopLoss)} />
-            <Metric label="Take Profit" value={formatDetailValue(takeProfit)} />
-            <Metric label="Direction" value={String(direction)} />
-            <Metric label="RR" value={formatDetailValue(rr)} />
-            <Metric label="Grade" value={formatDetailValue(detail.grade)} />
-            <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
-            <Metric label="Status" value={formatDetailValue(detail.status)} />
+        ) : null}
+
+        {showOperational ? (
+          <View style={styles.moreDiagnosticsCard}>
+            <Text style={styles.sectionMini}>{category === "HEALTH" ? "Module Health Alert" : category === "SESSION" ? "Session Notice" : category === "FEED" ? "Market Feed Notice" : "Notification Details"}</Text>
+            <View style={styles.metricsGrid}>
+              <Metric label="Module" value={formatDetailValue(moduleLabel)} />
+              <Metric label="Priority" value={formatDetailValue(detail.priority)} />
+              <Metric label="Issue" value={formatDetailValue(detail.issueCode ?? detail.eventType)} />
+              <Metric label="Status" value={formatDetailValue(detail.status)} />
+              <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
+              <Metric label="Source" value={detail.source === "push" ? "Push" : "History"} />
+            </View>
+            <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction(category, detail)}</Text>
           </View>
-          {!isTradeAlert ? <Text style={styles.reason}>This notification does not include a full paper-trade plan. Valid entry alerts will show entry, SL, TP, direction, RR, and module context here.</Text> : null}
-        </View>
+        ) : null}
+
+        {showSetupContext ? (
+          <View style={styles.moreDiagnosticsCard}>
+            <Text style={styles.sectionMini}>Setup Context</Text>
+            <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
+            <Metric label="Confidence" value={detail.confidence == null ? "--" : `${detail.confidence}%`} />
+            <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
+            <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
+            <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
+            <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
+            <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+            <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
+            {setupReason ? <Text style={styles.reason}>{setupReason}</Text> : null}
+          </View>
+        ) : null}
 
         <View style={styles.moreDiagnosticsCard}>
-          <Text style={styles.sectionMini}>Setup Context</Text>
-          <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
-          <Metric label="Confidence" value={detail.confidence == null ? "--" : `${detail.confidence}%`} />
-          <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
-          <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
-          <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
-          <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
-          <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
+          <Text style={styles.sectionMini}>Open Workspace</Text>
+          <Metric label="Module" value={formatDetailValue(moduleLabel)} />
           <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
-          {setupReason ? <Text style={styles.reason}>{setupReason}</Text> : null}
           {moduleCode ? (
             <Pressable style={styles.fullButton} onPress={() => onOpenChart(moduleCode)}>
               <Text style={styles.fullButtonText}>Open Module Chart</Text>
             </Pressable>
-          ) : null}
+          ) : <Text style={styles.reason}>This alert is not tied to a specific strategy module.</Text>}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -2444,6 +2479,10 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
     confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
     qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
+    category: stringOrNull(payload.category),
+    issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
+    recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
+    ageSeconds: payload.ageSeconds ?? payload.age_seconds ?? null,
     source: "push"
   };
 }
@@ -2483,6 +2522,10 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
     confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
     qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
+    category: stringOrNull(payload.category),
+    issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
+    recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
+    ageSeconds: payload.ageSeconds ?? payload.age_seconds ?? null,
     source: "history"
   };
 }
@@ -2554,6 +2597,39 @@ function stringOrNull(value: unknown) {
 
 function hasTradeDetails(detail: NotificationDetail) {
   return detail.entry != null || detail.stopLoss != null || detail.takeProfit != null || detail.direction != null || detail.action != null;
+}
+
+function notificationCategory(detail: NotificationDetail) {
+  const explicit = stringOrNull(detail.category)?.toUpperCase();
+  if (explicit) return explicit;
+  const haystack = `${detail.eventType ?? ""} ${detail.title} ${detail.body}`.toUpperCase();
+  if (hasTradeDetails(detail) || /ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
+  if (/TP_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
+  if (/SESSION|WINDOW|PRESSESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
+  if (/FEED|TWELVE|CANDLE|CACHE|MARKET_DATA/.test(haystack)) return "FEED";
+  if (/REPORT|LEARNING|BACKTEST/.test(haystack)) return "SYSTEM";
+  return "GENERAL";
+}
+
+function notificationRecommendedAction(category: string, detail: NotificationDetail) {
+  const event = `${detail.eventType ?? ""} ${detail.title}`.toUpperCase();
+  if (event.includes("ACTIVE_TRADE_OPEN_TOO_LONG")) return "Review the open paper trade on the module chart. The system will still close it automatically at TP or SL, but this alert means the trade has stayed open longer than expected.";
+  if (event.includes("FEED_STALE")) return "Check market feed status and wait for the next scheduled candle sync before trusting fresh signals.";
+  if (event.includes("SESSION_EXPIRED") || category === "SESSION") return "This is a session timing notice. New entries wait for the next active New York window.";
+  if (category === "HEALTH") return "Open the module chart and System Status to inspect the affected automation, feed, or paper-trade state.";
+  if (category === "FEED") return "Open Data Admin or the live chart to confirm candle cache and provider status.";
+  if (category === "SYSTEM") return "Open the related dashboard screen for report, learning, or platform status details.";
+  return "Open the module chart if this alert is connected to a strategy module.";
+}
+
+function formatDuration(value: unknown) {
+  if (value == null || value === "") return "--";
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return String(value);
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 function formatDetailValue(value: unknown) {
@@ -3104,6 +3180,8 @@ const styles = StyleSheet.create({
   moreMenuSubtitle: { color: "#89938d", fontSize: 12, fontWeight: "700", marginTop: 4 },
   moreMenuValue: { maxWidth: 80, color: "#8d9791", fontSize: 11, fontWeight: "900" },
   moreDiagnosticsCard: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 20, padding: 16, marginBottom: 14 },
+  notificationTradeBuy: { borderColor: "#254f40", backgroundColor: "#101a15" },
+  notificationTradeSell: { borderColor: "#573036", backgroundColor: "#1a1112" },
   moreHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20, marginBottom: 14 },
   moreBackButton: {
     width: 42,
