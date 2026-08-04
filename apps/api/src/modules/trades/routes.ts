@@ -156,9 +156,24 @@ export async function tradeRoutes(app: FastifyInstance) {
       SELECT tp.*, sc.symbol, sc.direction, sc.scenario, sc.module_code, sc.status AS setup_status
       FROM trade_plans tp
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+      LEFT JOIN trades t ON t.trade_plan_id = tp.id AND t.outcome = 'ACTIVE'
+      JOIN LATERAL (
+        SELECT c.timestamp_utc
+        FROM candles c
+        WHERE c.symbol = sc.symbol
+          AND c.timeframe_minutes = 5
+          AND c.source LIKE 'TWELVE_DATA%'
+        ORDER BY c.timestamp_utc DESC
+        LIMIT 1
+      ) latest ON true
       WHERE sc.tenant_id = $1
         AND sc.module_code = $2
-      ORDER BY tp.created_at DESC
+        AND sc.scenario <> 'QA_TEST_SIGNAL'
+        AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+        AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+        AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
+        AND (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc)
+      ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END, tp.created_at DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode]);
     return rows[0] ?? null;
@@ -315,8 +330,22 @@ export async function tradeRoutes(app: FastifyInstance) {
       FROM trades t
       JOIN trade_plans tp ON tp.id = t.trade_plan_id
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+      JOIN LATERAL (
+        SELECT c.timestamp_utc
+        FROM candles c
+        WHERE c.symbol = sc.symbol
+          AND c.timeframe_minutes = 5
+          AND c.source LIKE 'TWELVE_DATA%'
+        ORDER BY c.timestamp_utc DESC
+        LIMIT 1
+      ) latest ON true
       WHERE sc.tenant_id = $1
         AND sc.module_code = $2
+        AND sc.scenario <> 'QA_TEST_SIGNAL'
+        AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+        AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+        AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE')
+        AND (t.outcome = 'ACTIVE' OR sc.detected_at >= latest.timestamp_utc)
       ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, now()) DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode]);
@@ -344,7 +373,12 @@ export async function tradeRoutes(app: FastifyInstance) {
        FROM trades t
        JOIN trade_plans tp ON tp.id = t.trade_plan_id
        JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
-       WHERE sc.symbol = $1 AND sc.tenant_id = $3 AND sc.module_code = $4
+       WHERE sc.symbol = $1
+         AND sc.tenant_id = $3
+         AND sc.module_code = $4
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
        ORDER BY COALESCE(t.opened_at, t.closed_at) DESC
        LIMIT $2`,
       [symbol, limit, auth.tenantId, moduleCode]
