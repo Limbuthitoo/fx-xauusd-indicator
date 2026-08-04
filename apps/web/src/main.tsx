@@ -325,8 +325,9 @@ function App() {
   const enabledModuleCodes = enabledModules.map((module: any) => module.code).join("|");
   const activeModule = enabledModules.find((module: any) => module.code === activeModuleCode) ?? (enabledModules.length === 0 ? null : { code: activeModuleCode, name: moduleShortName(activeModuleCode) });
   const selectedModuleCode = activeModuleCode;
-  const currentModuleSetup = state.currentSetup?.module_code === selectedModuleCode ? state.currentSetup : undefined;
-  const currentModuleTrade = state.currentTrade?.module_code === selectedModuleCode ? state.currentTrade : undefined;
+  const activeCommandSnapshot = (state.moduleCommand ?? []).find((item: any) => item.moduleCode === selectedModuleCode) ?? {};
+  const currentModuleSetup = state.currentSetup?.module_code === selectedModuleCode ? state.currentSetup : activeCommandSnapshot.setup;
+  const currentModuleTrade = state.currentTrade?.module_code === selectedModuleCode ? state.currentTrade : activeCommandSnapshot.trade;
   const currentModuleTradePlan = state.tradePlan?.module_code === selectedModuleCode ? state.tradePlan : undefined;
   const signal = getSignal(currentModuleSetup, currentModuleTrade);
   const orb = state.session?.opening_range;
@@ -3400,6 +3401,8 @@ function AllDayStrategyCenterPanel({
   const allDayRows = rows.filter((row) => strategyRuntimeMode(row.moduleCode) === "All-day");
   const activeTrades = rows.filter((row) => row.trade?.outcome === "ACTIVE").length;
   const liveSignals = activeSignals.length;
+  const selectedRow = rows.find((row) => row.moduleCode === activeModuleCode) ?? rows[0];
+  const selectedSignal = selectedRow ? activeSignals.find((item: any) => item.moduleCode === selectedRow.moduleCode) : null;
   return (
     <Panel icon={<Layers />} title="All-Day Strategy Center">
       <div className="strategy-validation-hero">
@@ -3409,35 +3412,28 @@ function AllDayStrategyCenterPanel({
         </div>
         <em>{activeTrades} active paper trade{activeTrades === 1 ? "" : "s"} · {liveSignals} live setup{liveSignals === 1 ? "" : "s"}</em>
       </div>
-      <div className="strategy-center-module-grid">
-        {rows.map((row) => {
-          const signal = activeSignals.find((item: any) => item.moduleCode === row.moduleCode);
-          const selected = row.moduleCode === activeModuleCode;
-          return (
-            <article className={`strategy-center-module-card ${selected ? "active" : ""}`} key={row.moduleCode}>
-              <header>
-                <div>
-                  <span>{strategyRuntimeMode(row.moduleCode)} runtime · {row.timeframe}</span>
-                  <strong>{row.name}</strong>
-                </div>
-                <em className={`status-pill ${row.signalTone === "good" ? "good" : row.signalTone === "bad" ? "bad" : row.readinessTone}`}>{row.signalLabel}</em>
-              </header>
-              <div className="strategy-center-module-body">
-                <Metric label="Readiness" value={row.readiness} />
-                <Metric label="Paper" value={row.tradeLabel} />
-                <Metric label="Chance" value={signal?.chance == null ? row.confidenceLabel : `${signal.chance}%`} />
-                <Metric label="Checklist" value={signal?.checklist ? `${signal.checklist.passed}/${signal.checklist.total}` : "--"} />
-              </div>
-              <p className="reason">{signal?.reason ?? row.nextAction}</p>
-              <div className="admin-actions inline-actions">
-                <button onClick={() => onSelectModule(row.moduleCode)}>Inspect</button>
-                <button onClick={() => onOpenChart(row.moduleCode)}>Open Chart</button>
-              </div>
-            </article>
-          );
-        })}
-        {rows.length === 0 ? <p className="reason">No enabled strategy modules.</p> : null}
-      </div>
+      {selectedRow ? (
+        <article className="strategy-center-module-card active">
+          <header>
+            <div>
+              <span>{strategyRuntimeMode(selectedRow.moduleCode)} runtime · {selectedRow.timeframe}</span>
+              <strong>{selectedRow.name}</strong>
+            </div>
+            <em className={`status-pill ${selectedRow.signalTone === "good" ? "good" : selectedRow.signalTone === "bad" ? "bad" : selectedRow.readinessTone}`}>{selectedRow.signalLabel}</em>
+          </header>
+          <div className="strategy-center-module-body">
+            <Metric label="Readiness" value={selectedRow.readiness} />
+            <Metric label="Paper" value={selectedRow.tradeLabel} />
+            <Metric label="Chance" value={selectedSignal?.chance == null ? selectedRow.confidenceLabel : `${selectedSignal.chance}%`} />
+            <Metric label="Checklist" value={selectedSignal?.checklist ? `${selectedSignal.checklist.passed}/${selectedSignal.checklist.total}` : checklistCountLabel(selectedRow.setup)} />
+          </div>
+          <p className="reason">{selectedSignal?.reason ?? selectedRow.nextAction}</p>
+          <div className="admin-actions inline-actions">
+            <button onClick={() => onSelectModule(selectedRow.moduleCode)}>Refresh Module</button>
+            <button onClick={() => onOpenChart(selectedRow.moduleCode)}>Open Chart</button>
+          </div>
+        </article>
+      ) : <p className="reason">No enabled strategy modules.</p>}
     </Panel>
   );
 }
@@ -3498,6 +3494,12 @@ function StrategyScenarioEvidencePanel({
       <Metric label="Trend" value={favorabilityFlags.trend ? `${favorabilityFlags.trend}${favorabilityFlags.trendAligned ? " aligned" : ""}` : "--"} />
     </Panel>
   );
+}
+
+function checklistCountLabel(setup: any) {
+  const evaluations = setup?.evaluations ?? [];
+  if (!Array.isArray(evaluations) || evaluations.length === 0) return "--";
+  return `${evaluations.filter((row: any) => row.status === "PASS").length}/${evaluations.length}`;
 }
 
 function strategyRuntimeMode(moduleCode: string) {

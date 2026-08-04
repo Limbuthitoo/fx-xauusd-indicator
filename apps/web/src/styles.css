@@ -1584,12 +1584,6 @@ button:hover,
   grid-template-columns: minmax(280px, 520px);
 }
 
-.strategy-center-module-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(280px, 1fr));
-  gap: 10px;
-}
-
 .command-module-card {
   display: grid;
   gap: 10px;
@@ -4005,7 +3999,6 @@ aside {
   .platform-overview,
   .overview-primary,
   .command-module-grid,
-  .strategy-center-module-grid,
   .usage-strip,
   .tenant-row,
   .automation-row,
