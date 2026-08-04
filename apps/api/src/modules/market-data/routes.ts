@@ -6,6 +6,7 @@ import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
 import { query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
+import { redisClient } from "../../infrastructure/redis/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runModule3LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
@@ -2265,13 +2266,15 @@ async function syncTwelveDataCandlesLocked(options: {
     forced: options.force === true
   });
   await pruneStoredCandles(options.symbol, options.timeframeMinutes, settings.feed.cacheDays);
-  for (const candle of savedCandles) {
+  await redisClient()?.del(`chart:candles:v1:${options.symbol}:${options.timeframeMinutes}:300`).catch(() => undefined);
+  const latestSavedCandle = savedCandles.at(-1);
+  if (latestSavedCandle) {
     broadcastLiveEvent({
       type: "candle",
       provider: "TWELVE_DATA",
       symbol: options.symbol,
       timeframeMinutes: options.timeframeMinutes,
-      candle,
+      candle: latestSavedCandle,
       automation
     });
   }

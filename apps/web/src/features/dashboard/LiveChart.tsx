@@ -51,17 +51,6 @@ type FeedStatus = {
   } | null;
 };
 
-type LiveCacheResponse = {
-  symbol: string;
-  timeframeMinutes: number;
-  cacheDays: number;
-  cacheLimit: number;
-  cachedCandles: number;
-  persistRawCandles: boolean;
-  latestCandle: (TwelveDataCandle & { source?: string; receivedAt?: string }) | null;
-  candles: TwelveDataCandle[];
-};
-
 type LiveEvent =
   | { type: "connected"; sentAt: string }
   | {
@@ -128,6 +117,8 @@ const lineColors = {
 
 const CHART_BAR_SPACING = 2.5;
 const CHART_RIGHT_OFFSET = 16;
+const INITIAL_CHART_CANDLES = 300;
+const OLDER_CANDLE_PAGE = 300;
 
 export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, setup, priceLines, showEma = true, onMessage }: TwelveDataChartProps) {
   const chartCandleLimit = Math.ceil(7 * 24 * (60 / timeframeMinutes)) + 10;
@@ -139,6 +130,11 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const ema200Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const priceLinesRef = useRef<Array<{ applyOptions: (options: { price: number }) => void }>>([]);
+  const renderedCandlesRef = useRef<TwelveDataCandle[]>([]);
+  const renderedShowEmaRef = useRef(showEma);
+  const loadingOlderRef = useRef(false);
+  const hasOlderCandlesRef = useRef(true);
+  const pendingPrependCountRef = useRef(0);
   const didSetInitialRangeRef = useRef(false);
   const isApplyingProgrammaticRangeRef = useRef(false);
   const userAdjustedRangeRef = useRef(false);
@@ -149,6 +145,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [tradeMarkers, setTradeMarkers] = useState<TradeChartMarker[]>([]);
   const [feedStatus, setFeedStatus] = useState<FeedStatus | null>(null);
   const [socketStatus, setSocketStatus] = useState("CONNECTING");
+  const [chartLoading, setChartLoading] = useState(true);
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
   const orbRangeState = useMemo(
     () => moduleCode === "orb_max_options" ? module1OrbRangeState(openingRange, candles, session) : null,
@@ -159,46 +156,62 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     [moduleCode, orbRangeState, openingRange]
   );
 
-  async function loadChartData() {
-    const chartSync = await ensureChartSync().catch(() => null);
-    const [dbCandles, liveCache, nextIndicators, nextTradeMarkers, nextFeedStatus] = await Promise.all([
-      api<TwelveDataCandle[]>(`/api/candles?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}&limit=${chartCandleLimit}`),
-      api<LiveCacheResponse>(`/api/market-data/live/cache?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}&limit=${chartCandleLimit}`).catch(() => null),
-      api<IndicatorSnapshot>(`/api/indicators/live?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`),
+  async function loadChartMetadata() {
+    const [nextIndicators, nextTradeMarkers, nextFeedStatus] = await Promise.all([
+      api<IndicatorSnapshot>(`/api/indicators/live?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`).catch(() => null),
       api<TradeChartMarker[]>(`/api/trades/chart-markers?symbol=${symbol}&moduleCode=${moduleCode}&limit=100`).catch(() => []),
       api<FeedStatus>(`/api/market-data/live/status?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`).catch(() => null)
     ]);
-    const cachedCandles = liveCache?.candles ?? [];
-    setCandles((previous) => normalizeCandles([...dbCandles, ...cachedCandles, ...previous]).slice(-chartCandleLimit));
-    setIndicators(nextIndicators);
+    if (nextIndicators) setIndicators(nextIndicators);
     setTradeMarkers(nextTradeMarkers);
-    setFeedStatus(mergeFeedStatus(nextFeedStatus, liveCache));
-    if (dbCandles.length === 0 && cachedCandles.length === 0) {
-      const reason = chartSync?.reason === "MARKET_CLOSED_WEEKEND"
-        ? "New York market date is weekend, so no Twelve Data credit was spent."
-        : chartSync?.reason === "OUTSIDE_NY_API_WINDOW"
-        ? "NY API window is closed, so no Twelve Data credit was spent."
-        : "Twelve Data has not filled this module cache, or the API was restarted.";
-      onMessage(`${moduleName ?? moduleCode} has no ${timeframeMinutes}m candles yet. ${reason}`);
+    if (nextFeedStatus) setFeedStatus(nextFeedStatus);
+  }
+
+  async function loadInitialChartData() {
+    setChartLoading(true);
+    const initial = await api<TwelveDataCandle[]>(`/api/candles?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}&limit=${INITIAL_CHART_CANDLES}`);
+    setCandles(normalizeCandles(initial));
+    hasOlderCandlesRef.current = initial.length >= INITIAL_CHART_CANDLES;
+    setChartLoading(false);
+    loadChartMetadata().catch(() => undefined);
+    if (initial.length === 0) {
+      onMessage(`${moduleName ?? moduleCode} has no stored ${timeframeMinutes}m candles yet. The scheduler will populate the shared feed without a chart-triggered Twelve Data call.`);
     }
   }
 
-  async function ensureChartSync() {
-    return api<any>("/api/market-data/twelve-data/chart-sync", {
-      method: "POST",
-      body: JSON.stringify({
-        symbol,
-        providerSymbol: "XAU/USD",
-        timeframeMinutes,
-        moduleCode
-      })
-    });
+  async function reconcileRecentCandles() {
+    const latestAt = renderedCandlesRef.current.at(-1)?.timestampUtc;
+    if (!latestAt) return loadInitialChartData();
+    const recent = await api<TwelveDataCandle[]>(`/api/candles?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}&from=${encodeURIComponent(latestAt)}&limit=20`);
+    if (recent.length > 0) {
+      setCandles((previous) => normalizeCandles([...previous, ...recent]).slice(-chartCandleLimit));
+    }
   }
 
-  async function checkBridge() {
-    const status = await api<FeedStatus>(`/api/market-data/live/status?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`);
-    setFeedStatus(status);
-    onMessage(status.live ? `${feedProviderName(status.provider)} is updating the chart.` : "Chart feed is stale. Start Twelve Data.");
+  async function loadOlderCandles() {
+    if (loadingOlderRef.current || !hasOlderCandlesRef.current) return;
+    const current = renderedCandlesRef.current;
+    if (current.length === 0 || current.length >= chartCandleLimit) {
+      hasOlderCandlesRef.current = false;
+      return;
+    }
+    loadingOlderRef.current = true;
+    try {
+      const oldestTime = new Date(current[0].timestampUtc).getTime() - 1;
+      const older = await api<TwelveDataCandle[]>(`/api/candles?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}&to=${encodeURIComponent(new Date(oldestTime).toISOString())}&limit=${OLDER_CANDLE_PAGE}`);
+      if (older.length < OLDER_CANDLE_PAGE) hasOlderCandlesRef.current = false;
+      setCandles((previous) => {
+        const next = normalizeCandles([...older, ...previous]).slice(-chartCandleLimit);
+        pendingPrependCountRef.current = Math.max(0, next.length - previous.length);
+        return next;
+      });
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }
+
+  async function refreshChartData() {
+    await Promise.all([reconcileRecentCandles(), loadChartMetadata()]);
   }
 
   useEffect(() => {
@@ -206,8 +219,13 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     didSetInitialRangeRef.current = false;
     userAdjustedRangeRef.current = false;
     visibleLogicalRangeRef.current = null;
-    loadChartData().catch(() => onMessage("Chart data is unavailable. Confirm the API is running."));
-    const timer = window.setInterval(() => loadChartData().catch(() => undefined), 30_000);
+    renderedCandlesRef.current = [];
+    hasOlderCandlesRef.current = true;
+    loadInitialChartData().catch(() => {
+      setChartLoading(false);
+      onMessage("Chart data is unavailable. Confirm the API is running.");
+    });
+    const timer = window.setInterval(() => refreshChartData().catch(() => undefined), 60_000);
     return () => window.clearInterval(timer);
   }, [symbol, timeframeMinutes, moduleCode]);
 
@@ -237,7 +255,6 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             source: payload.candle.source ?? payload.provider
           }
         });
-        loadChartData().catch(() => undefined);
       };
       socket.onerror = () => setSocketStatus("SOCKET ERROR");
       socket.onclose = () => {
@@ -313,7 +330,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       if (didSetInitialRangeRef.current && !isApplyingProgrammaticRangeRef.current && range) {
         userAdjustedRangeRef.current = true;
       }
-      window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
+      if (range && userAdjustedRangeRef.current && Number(range.from) <= 25) {
+        loadOlderCandles().catch(() => undefined);
+      }
+      window.requestAnimationFrame(() => refreshOverlays(renderedCandlesRef.current));
     });
 
     return () => {
@@ -325,6 +345,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   useEffect(() => {
     if (!candleSeriesRef.current || !ema20Ref.current || !ema50Ref.current || !ema200Ref.current) return;
     const cleanCandles = normalizeCandles(candles);
+    const previouslyRendered = renderedCandlesRef.current;
     const chartCandles = cleanCandles.map((candle) => ({
       time: toChartTime(candle.timestampUtc),
       open: candle.open,
@@ -332,10 +353,39 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       low: candle.low,
       close: candle.close
     }));
-    candleSeriesRef.current.setData(chartCandles);
-    ema20Ref.current.setData(showEma ? emaSeries(cleanCandles, 20) : []);
-    ema50Ref.current.setData(showEma ? emaSeries(cleanCandles, 50) : []);
-    ema200Ref.current.setData(showEma ? emaSeries(cleanCandles, 200) : []);
+    const replacesLatest = cleanCandles.length > 0
+      && cleanCandles.length === previouslyRendered.length
+      && cleanCandles.at(-1)?.timestampUtc === previouslyRendered.at(-1)?.timestampUtc
+      && cleanCandles[0]?.timestampUtc === previouslyRendered[0]?.timestampUtc;
+    const appendsLatest = cleanCandles.length === previouslyRendered.length + 1
+      && cleanCandles.at(-2)?.timestampUtc === previouslyRendered.at(-1)?.timestampUtc;
+    const indicatorModeChanged = renderedShowEmaRef.current !== showEma;
+    const incremental = !indicatorModeChanged && (replacesLatest || appendsLatest);
+    if (incremental) {
+      const latestCandle = chartCandles.at(-1);
+      if (latestCandle) candleSeriesRef.current.update(latestCandle);
+      if (showEma) {
+        updateLatestLinePoint(ema20Ref.current, emaSeries(cleanCandles, 20));
+        updateLatestLinePoint(ema50Ref.current, emaSeries(cleanCandles, 50));
+        updateLatestLinePoint(ema200Ref.current, emaSeries(cleanCandles, 200));
+      }
+    } else {
+      const preservedRange = visibleLogicalRangeRef.current;
+      candleSeriesRef.current.setData(chartCandles);
+      ema20Ref.current.setData(showEma ? emaSeries(cleanCandles, 20) : []);
+      ema50Ref.current.setData(showEma ? emaSeries(cleanCandles, 50) : []);
+      ema200Ref.current.setData(showEma ? emaSeries(cleanCandles, 200) : []);
+      const prepended = pendingPrependCountRef.current;
+      if (prepended > 0 && preservedRange && userAdjustedRangeRef.current) {
+        applyVisibleLogicalRange({
+          from: (Number(preservedRange.from) + prepended) as Logical,
+          to: (Number(preservedRange.to) + prepended) as Logical
+        });
+      }
+      pendingPrependCountRef.current = 0;
+    }
+    renderedCandlesRef.current = cleanCandles;
+    renderedShowEmaRef.current = showEma;
     candleSeriesRef.current.setMarkers(
       [...moduleEvidenceMarkers(activeSetup), ...validSetupMarker(activeSetup), ...paperTradeMarkers(tradeMarkers)]
         .sort((left, right) => Number(left.time) - Number(right.time))
@@ -462,7 +512,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
           <button title="Zoom out" onClick={() => zoom(0.75)}><ZoomOut size={15} /></button>
           <button title="Zoom in" onClick={() => zoom(1.35)}><ZoomIn size={15} /></button>
           <button title="Show latest candles" onClick={showLatestRange}><Maximize2 size={15} /></button>
-          <button title="Refresh chart" onClick={() => loadChartData().catch(() => onMessage("Refresh failed."))}><RefreshCcw size={15} /></button>
+          <button title="Refresh chart" onClick={() => refreshChartData().catch(() => onMessage("Refresh failed."))}><RefreshCcw size={15} /></button>
         </div>
       </div>
       <div className="data-status">
@@ -489,6 +539,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       </div>
       <div className="chart-stage">
         <div className="chart-canvas" ref={containerRef} />
+        {chartLoading ? <div className="chart-loading-state"><span />Loading recent candles...</div> : null}
         <div className="chart-overlays" aria-hidden="true">
           {overlays.map((overlay) => (
             <div
@@ -528,29 +579,6 @@ function feedProviderName(provider?: string) {
   if (provider === "TWELVE_DATA") return "Twelve Data";
   if (provider && provider !== "NONE") return provider;
   return "Waiting";
-}
-
-function mergeFeedStatus(status: FeedStatus | null, cache: LiveCacheResponse | null): FeedStatus | null {
-  if (!cache) return status;
-  return {
-    provider: status?.provider ?? cache.latestCandle?.source ?? "TWELVE_DATA",
-    live: status?.live ?? Boolean(cache.latestCandle),
-    stale: status?.stale ?? !cache.latestCandle,
-    testMode: status?.testMode,
-    ageSeconds: status?.ageSeconds ?? null,
-    testAgeSeconds: status?.testAgeSeconds,
-    persistRawCandles: cache.persistRawCandles,
-    cachedCandles: cache.cachedCandles,
-    latestCandle: status?.latestCandle ?? (
-      cache.latestCandle
-        ? {
-            timestampUtc: cache.latestCandle.timestampUtc,
-            receivedAt: cache.latestCandle.receivedAt ?? cache.latestCandle.timestampUtc,
-            source: cache.latestCandle.source ?? "TWELVE_DATA"
-          }
-        : null
-    )
-  };
 }
 
 function Readout({ label, value }: { label: string; value: string | number }) {
@@ -710,6 +738,11 @@ function emaSeries(candles: TwelveDataCandle[], period: number) {
     data.push({ time: toChartTime(candle.timestampUtc), value: ema });
   }
   return data;
+}
+
+function updateLatestLinePoint(series: ISeriesApi<"Line">, data: Array<{ time: UTCTimestamp; value: number }>) {
+  const latest = data.at(-1);
+  if (latest) series.update(latest);
 }
 
 function indicatorSnapshot(candles: TwelveDataCandle[], fallback: IndicatorSnapshot | null): IndicatorSnapshot {

@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
+import { redisClient } from "../../infrastructure/redis/client.js";
+
+const CHART_SNAPSHOT_CACHE_SECONDS = 10;
 
 export async function candleRoutes(app: FastifyInstance) {
   app.get("/api/candles", async (request) => {
@@ -13,6 +16,18 @@ export async function candleRoutes(app: FastifyInstance) {
     const symbol = search.symbol ?? "XAUUSD";
     const timeframe = Number(search.timeframeMinutes ?? 15);
     const limit = Math.min(Number(search.limit ?? 300), 2000);
+    const cacheKey = !search.from && !search.to && limit <= 300
+      ? `chart:candles:v1:${symbol}:${timeframe}:${limit}`
+      : null;
+    const redis = cacheKey ? redisClient() : null;
+    const cached = redis && cacheKey ? await redis.get(cacheKey).catch(() => null) : null;
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {
+        if (redis && cacheKey) await redis.del(cacheKey).catch(() => undefined);
+      }
+    }
     const { rows } = await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
@@ -24,7 +39,7 @@ export async function candleRoutes(app: FastifyInstance) {
        LIMIT $5`,
       [symbol, timeframe, search.from ?? null, search.to ?? null, limit]
     );
-    return uniqueByChartSecond(
+    const candles = uniqueByChartSecond(
       rows.reverse().map((row) => ({
         timestampUtc: row.timestamp_utc,
         open: Number(row.open),
@@ -35,6 +50,10 @@ export async function candleRoutes(app: FastifyInstance) {
         spread: row.spread == null ? null : Number(row.spread)
       }))
     );
+    if (redis && cacheKey) {
+      await redis.set(cacheKey, JSON.stringify(candles), "EX", CHART_SNAPSHOT_CACHE_SECONDS).catch(() => undefined);
+    }
+    return candles;
   });
 
   app.delete("/api/candles/duplicates", async (request) => {

@@ -948,6 +948,32 @@ button:hover,
   overflow: hidden;
 }
 
+.chart-loading-state {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: #111512;
+  color: #91a097;
+  font-size: 12px;
+}
+
+.chart-loading-state span {
+  width: 15px;
+  height: 15px;
+  border: 2px solid #304138;
+  border-top-color: #35d895;
+  border-radius: 50%;
+  animation: chart-loading-spin 700ms linear infinite;
+}
+
+@keyframes chart-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 .chart-overlay-box {
   position: absolute;
   border: 1px solid rgba(255, 255, 255, 0.28);
