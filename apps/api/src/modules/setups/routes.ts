@@ -69,7 +69,7 @@ const MODULE3_QA_CASES: Array<{
   { code: "NO_PULLBACK", label: "No pullback", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "PULLBACK_ZONE_TOUCHED" },
   { code: "NO_CONFIRMATION", label: "No confirmation candle", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRMATION_CANDLE" },
   { code: "INVALID_RR", label: "Invalid RR", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "QUALITY_RR" },
-  { code: "NO_TRADE", label: "No trade", expected: "HARD_RULE_BLOCK", expectedStatus: "BLOCKED", opensPaperTrade: false, failureRule: "NY_SESSION_ACTIVE" }
+  { code: "NO_TRADE", label: "No trade", expected: "HARD_RULE_BLOCK", expectedStatus: "BLOCKED", opensPaperTrade: false, failureRule: "STRATEGY_CYCLE_ACTIVE" }
 ];
 
 const ORB_QA_CASES: Array<{ code: ReplayCase; label: string; expected: string; tradable: boolean }> = [
@@ -1356,7 +1356,7 @@ async function buildModule3QaSuite(tenantId: string | null) {
   const cases = MODULE3_QA_CASES.map((testCase) => {
     const replay = buildModule3Replay(testCase.code, session);
     const statusByRule = new Map<string, string>(replay.evaluations.map((row) => [String(row.ruleCode), String(row.status)]));
-    const hardRulesPassed = ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED"].every((code) => statusByRule.get(code) === "PASS");
+    const hardRulesPassed = ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED"].every((code) => statusByRule.get(code) === "PASS");
     const entryTriggerPassed = statusByRule.get("CONFIRMATION_CANDLE") === "PASS";
     const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
     const blockingFailure = replay.evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
@@ -1559,7 +1559,7 @@ function buildModule3Replay(replayCase: Module3ReplayCase, session: any) {
       : replayCase === "NO_PULLBACK" ? "PULLBACK_ZONE_TOUCHED"
         : replayCase === "NO_CONFIRMATION" ? "CONFIRMATION_CANDLE"
           : replayCase === "INVALID_RR" ? "QUALITY_RR"
-            : replayCase === "NO_TRADE" ? "NY_SESSION_ACTIVE"
+            : replayCase === "NO_TRADE" ? "STRATEGY_CYCLE_ACTIVE"
               : null;
   const evaluations = module3ReplayEvaluations(failure, replayCase);
   const status = valid ? (isShort ? "SHORT SETUP READY" : "LONG SETUP READY") : replayCase === "WEAK_OPENING_DRIVE" ? "NO TRADE" : replayCase === "NO_TRADE" ? "BLOCKED" : "WAIT";
@@ -1571,7 +1571,7 @@ function buildModule3Replay(replayCase: Module3ReplayCase, session: any) {
   return {
     scenario,
     expectedScenario: MODULE3_QA_CASES.find((item) => item.code === replayCase)?.expected ?? scenario,
-    direction: valid ? direction : failure === "NY_SESSION_ACTIVE" ? null : direction,
+    direction: valid ? direction : failure === "STRATEGY_CYCLE_ACTIVE" ? null : direction,
     status,
     entryPrice: valid || replayCase === "INVALID_RR" ? entry : null,
     stopPrice: valid || replayCase === "INVALID_RR" ? stop : null,
@@ -1590,7 +1590,7 @@ function buildModule3Replay(replayCase: Module3ReplayCase, session: any) {
 
 function module3ReplayEvaluations(failure: string | null, replayCase: Module3ReplayCase) {
   const defaults = [
-    ["NY_SESSION_ACTIVE", "New York session active", true, true, "10:00", "09:30-16:00", "Module 3 only evaluates during its configured New York VWAP window."],
+    ["STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", true, true, "ACTIVE", "Most recent NY open to next eligible NY open", "Module 3 evaluates completed weekday candles against the latest anchored New York opening drive and VWAP."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", true, true, 0, "< 1", "Only one automatic Module 3 paper trade is allowed per session by default."],
     ["OPENING_DRIVE_COMPLETE", "Opening drive complete", true, true, 30, "after 30 minutes", "The first NY impulse window must finish before pullback entries."],
     ["OPENING_DRIVE_STRONG", "Opening drive strength", true, true, "1.4 ATR", ">= 1 ATR", "The opening drive must meet ATR range and candle body requirements."],

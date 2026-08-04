@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
-import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
+import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
 import { API_BASE_URL, ApiError, api, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
@@ -22,7 +22,7 @@ const DEFAULT_PUSH_PREFERENCES = {
   systemDiagnostics: false
 };
 
-type ActiveSection = "command" | "live" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
+type ActiveSection = "command" | "live" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
 type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
@@ -40,6 +40,7 @@ type PanelState = {
   newsStatus?: any;
   tradePlan?: any;
   currentTrade?: any;
+  paperTrading?: { summary?: any; trades?: any[] };
   sessionReview?: any;
   weeklyReport?: any[];
   monthlyReport?: any[];
@@ -218,6 +219,7 @@ function App() {
       productionReadiness: bundle.productionReadiness ?? previous.productionReadiness,
       notifications: bundle.notifications?.length ? bundle.notifications : previous.notifications ?? [],
       notificationSummary: bundle.notificationSummary?.length ? bundle.notificationSummary : previous.notificationSummary ?? [],
+      paperTrading: bundle.paperTrading ?? previous.paperTrading,
       settings: bundle.settings?.length ? bundle.settings : previous.settings ?? [],
       orbModuleSettings: bundle.orbModuleSettings?.length ? bundle.orbModuleSettings : previous.orbModuleSettings ?? [],
       activeModuleSettings: bundle.activeModuleSettings?.length ? bundle.activeModuleSettings : previous.activeModuleSettings ?? [],
@@ -287,7 +289,7 @@ function App() {
     if (!user || isPlatformAdminRoute) return;
     activeModuleCodeRef.current = activeModuleCode;
     refresh(activeModuleCode).catch(() => undefined);
-  }, [activeModuleCode]);
+  }, [activeModuleCode, activeSection]);
 
   useEffect(() => {
     if (!user || isPlatformAdminRoute) return;
@@ -987,6 +989,7 @@ function App() {
         <nav>
           {can("dashboard.view") ? <NavButton icon={<ShieldCheck />} label="Command Center" active={activeSection === "command"} onClick={() => setActiveSection("command")} /> : null}
           {can("chart.view") ? <NavButton icon={<LineChart />} label="Live Chart" active={activeSection === "live"} onClick={() => setActiveSection("live")} /> : null}
+          {can("signals.view") ? <NavButton icon={<Table2 />} label="Paper Trading" active={activeSection === "paper"} onClick={() => setActiveSection("paper")} /> : null}
           {can("dashboard.view") ? <NavButton icon={<Database />} label="System Status" active={activeSection === "health"} onClick={() => setActiveSection("health")} /> : null}
           {can("signals.view") ? <NavButton icon={<Database />} label="Strategy Center" active={activeSection === "orb"} onClick={() => setActiveSection("orb")} /> : null}
           {can("reports.view") ? <NavButton icon={<FileText />} label="Reports" active={activeSection === "reports"} onClick={() => setActiveSection("reports")} /> : null}
@@ -1015,7 +1018,7 @@ function App() {
           </div>
         </header>
 
-        <section className="status-strip auto-status-strip">
+        {activeSection !== "paper" ? <section className="status-strip auto-status-strip">
           <Status label="Symbol" value={activeSymbol} />
           <Status label="Timeframe" value={`${activeTimeframeMinutes}m`} />
           <Status label="Session" value={state.session?.state ?? "AUTO WAITING"} tone={toneFor(state.session?.state)} />
@@ -1024,9 +1027,9 @@ function App() {
           <Status label="Module" value={activeModule?.name ?? "No modules assigned"} tone={activeModule ? "good" : "warn"} />
           <Status label="Paper Mode" value="AUTO" tone="good" />
           <Status label="Real Orders" value="OFF" tone="bad" />
-        </section>
+        </section> : null}
 
-        {!accountLocked ? (
+        {!accountLocked && activeSection !== "paper" ? (
           <section className="module-switcher">
             {enabledModules.map((module: any) => (
               <button
@@ -1090,6 +1093,18 @@ function App() {
               }}
             />
           </section>
+        ) : null}
+
+        {activeSection === "paper" && !accountLocked ? (
+          <PaperTradingWorkspace
+            data={state.paperTrading}
+            modules={enabledModules}
+            onRefresh={() => refresh().catch(() => setMessage("Paper trading refresh failed."))}
+            onOpenChart={(moduleCode) => {
+              setActiveModuleCode(moduleCode);
+              setActiveSection("live");
+            }}
+          />
         ) : null}
 
         {activeSection === "live" && !accountLocked ? (
@@ -4855,7 +4870,7 @@ function Module3StrategyValidationPanel({ setup, evaluations, session }: { setup
     {
       title: "Hard Rules",
       description: "All must pass before Module 3 can create a paper-trade candidate.",
-      codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
+      codes: ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
     },
     {
       title: "Confirmations",
@@ -5483,7 +5498,7 @@ function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: stri
 
 function Module3RuleAuditPanel({ setup }: { setup?: any }) {
   const evaluations = setup?.module_code === "strategy_lab_3" ? setup?.evaluations ?? [] : [];
-  const gates = evaluations.filter((row: any) => ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"].includes(row.rule_code ?? row.ruleCode));
+  const gates = evaluations.filter((row: any) => ["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"].includes(row.rule_code ?? row.ruleCode));
   const confirmations = evaluations.filter((row: any) => ["EMA_ALIGNMENT"].includes(row.rule_code ?? row.ruleCode));
   const filters = evaluations.filter((row: any) => ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
   return (
@@ -7128,8 +7143,8 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Mandatory Entry Checklist",
-        description: "The NY opening drive, VWAP alignment, pullback zone touch, and confirmation candle must all pass.",
-        codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
+        description: "The weekday strategy cycle, anchored NY opening drive, VWAP alignment, pullback-zone touch, and confirmation candle must all pass.",
+        codes: ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
       },
       {
         title: "Confirmation Checklist",
@@ -7180,10 +7195,13 @@ function checklistSections(rows: any[], definitions: Array<{ title: string; desc
 function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
   const flags = setup?.scenario_flags ?? {};
   const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
+  if (!byCode.has("STRATEGY_CYCLE_ACTIVE") && byCode.has("NY_SESSION_ACTIVE")) {
+    byCode.set("STRATEGY_CYCLE_ACTIVE", { ...byCode.get("NY_SESSION_ACTIVE"), rule_code: "STRATEGY_CYCLE_ACTIVE", ruleCode: "STRATEGY_CYCLE_ACTIVE" });
+  }
   const setupState = flags.state ?? setup?.status;
   const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
-    ["NY_SESSION_ACTIVE", "New York session active", "Module 3 only evaluates during its configured New York VWAP window."],
+    ["STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", "Module 3 evaluates completed weekday candles from the latest eligible New York open until the next one."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of Module 3 paper trades can trigger per session."],
     ["OPENING_DRIVE_COMPLETE", "Opening drive complete", "The first NY impulse window must finish before pullback entries."],
     ["OPENING_DRIVE_STRONG", "Opening drive strength", "The opening drive must meet ATR range and candle body requirements."],
@@ -7370,10 +7388,149 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function PaperTradingWorkspace({
+  data,
+  modules,
+  onRefresh,
+  onOpenChart
+}: {
+  data?: { summary?: any; trades?: any[] };
+  modules: any[];
+  onRefresh: () => void;
+  onOpenChart: (moduleCode: string) => void;
+}) {
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [moduleFilter, setModuleFilter] = useState("ALL");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const loading = data == null;
+  const trades = data?.trades ?? [];
+  const summary = data?.summary ?? {};
+  const filtered = trades.filter((trade) =>
+    (statusFilter === "ALL" || trade.status === statusFilter) &&
+    (moduleFilter === "ALL" || trade.moduleCode === moduleFilter)
+  );
+  const selected = filtered.find((trade) => trade.id === selectedId) ?? filtered[0] ?? null;
+
+  return (
+    <section className="paper-trading-workspace admin-section">
+      <div className="paper-trading-head">
+        <div>
+          <h2><Table2 size={20} />Paper Trading Ledger</h2>
+          <p>Automatic simulated positions from every strategy module assigned to your account.</p>
+        </div>
+        <button onClick={onRefresh}><LineChart size={16} />Refresh</button>
+      </div>
+
+      <div className="paper-summary-grid">
+        <Metric label="Active" value={summary.active ?? 0} />
+        <Metric label="Closed" value={Math.max(0, Number(summary.total ?? 0) - Number(summary.active ?? 0))} />
+        <Metric label="Win rate" value={`${Number(summary.winRate ?? 0).toFixed(1)}%`} />
+        <Metric label="Wins / Losses" value={`${summary.wins ?? 0} / ${summary.losses ?? 0}`} />
+        <Metric label="Total R" value={`${formatR(summary.totalR)}R`} />
+        <Metric label="Average R" value={`${formatR(summary.averageR)}R`} />
+      </div>
+
+      <div className="paper-toolbar">
+        <div className="paper-segmented" aria-label="Trade status filter">
+          {["ALL", "ACTIVE", "WIN", "LOSS", "BREAKEVEN"].map((status) => (
+            <button key={status} className={statusFilter === status ? "active" : ""} onClick={() => setStatusFilter(status)}>{status}</button>
+          ))}
+        </div>
+        <label>
+          <span>Strategy</span>
+          <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
+            <option value="ALL">All assigned modules</option>
+            {modules.map((module) => <option key={module.code} value={module.code}>{moduleShortName(module.code, module.name)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      {selected ? (
+        <div className="paper-trade-focus">
+          <div className="paper-trade-focus-title">
+            <span>{moduleShortName(selected.moduleCode)}</span>
+            <strong className={selected.action === "SELL" ? "trade-sell" : "trade-buy"}>{selected.action} {selected.symbol}</strong>
+            <span className={`status-pill ${paperTradeTone(selected.status, selected.condition)}`}>{selected.condition}</span>
+          </div>
+          <div className="paper-focus-metrics">
+            <Metric label="Entry" value={formatPriceValue(selected.entry)} />
+            <Metric label={selected.status === "ACTIVE" ? "Current" : "Exit"} value={formatPriceValue(selected.status === "ACTIVE" ? selected.currentPrice : selected.exit)} />
+            <Metric label="Stop loss" value={formatPriceValue(selected.stopLoss)} />
+            <Metric label="Take profit" value={formatPriceValue(selected.takeProfit)} />
+            <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
+            <Metric label={selected.status === "ACTIVE" ? "Unrealized" : "Result"} value={`${formatR(selected.status === "ACTIVE" ? selected.unrealizedR : selected.resultR)}R`} />
+          </div>
+          <div className="paper-focus-footer">
+            <div>
+              <p>{selected.reason ?? formatScenario(selected.scenario)}</p>
+              {selected.status === "ACTIVE" && selected.currentPriceAt ? <small>Current condition updated {formatNepalTime(selected.currentPriceAt)}.</small> : null}
+            </div>
+            <button onClick={() => onOpenChart(selected.moduleCode)}><LineChart size={16} />Open module chart</button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="table-wrap paper-trade-table-wrap">
+        <table className="data-table paper-trade-table">
+          <thead>
+            <tr>
+              <th>Opened</th>
+              <th>Module</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Current / Exit</th>
+              <th>SL</th>
+              <th>TP</th>
+              <th>RR</th>
+              <th>Condition</th>
+              <th>Status</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((trade) => (
+              <tr
+                key={trade.id}
+                className={selected?.id === trade.id ? "selected-row" : ""}
+                tabIndex={0}
+                onClick={() => setSelectedId(trade.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") setSelectedId(trade.id);
+                }}
+              >
+                <td>{formatNepalTime(trade.openedAt)}</td>
+                <td>{moduleShortName(trade.moduleCode)}</td>
+                <td><strong className={trade.action === "SELL" ? "trade-sell" : "trade-buy"}>{trade.action}</strong></td>
+                <td>{formatPriceValue(trade.entry)}</td>
+                <td>{formatPriceValue(trade.status === "ACTIVE" ? trade.currentPrice : trade.exit)}</td>
+                <td>{formatPriceValue(trade.stopLoss)}</td>
+                <td>{formatPriceValue(trade.takeProfit)}</td>
+                <td>{trade.rewardToRisk == null ? "--" : `${Number(trade.rewardToRisk).toFixed(2)}R`}</td>
+                <td><span className={`status-pill ${paperTradeTone(trade.status, trade.condition)}`}>{trade.condition}</span></td>
+                <td>{trade.status}</td>
+                <td>{formatR(trade.status === "ACTIVE" ? trade.unrealizedR : trade.resultR)}R</td>
+              </tr>
+            ))}
+            {filtered.length === 0 ? <tr><td colSpan={11}>{loading ? "Loading paper trades..." : "No paper trades match this filter. Valid strategy entries will appear here automatically."}</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function paperTradeTone(status: string, condition: string) {
+  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET") return "good";
+  if (status === "LOSS" || condition === "NEAR STOP") return "bad";
+  if (condition === "IN DRAWDOWN") return "warn";
+  return "";
+}
+
 function sectionTitle(section: ActiveSection) {
   const titles: Record<ActiveSection, string> = {
     command: "Command Center",
     live: "Live Chart",
+    paper: "Paper Trading",
     health: "System Status",
     orb: "Strategy Center",
     reports: "Reports",
@@ -7390,6 +7547,7 @@ function sectionSubtitle(section: ActiveSection) {
   const subtitles: Record<ActiveSection, string> = {
     command: "One operational view for all enabled XAUUSD strategy modules, paper trades, confidence, and rehearsals.",
     live: "Realtime XAUUSD candles, live indicators, and automatic paper-trade signal state.",
+    paper: "Monitor simulated entries, current conditions, risk-to-reward, TP/SL, and completed outcomes across assigned modules.",
     health: "Live service checks for Twelve Data, PostgreSQL/cache, NY scheduler, chart readiness, and module automation.",
     orb: "Module-specific setup evidence, generated BUY/SELL records, outcomes, and scenario reasoning.",
     reports: "Weekly, monthly, and scenario performance for the ORB Max options trading logic.",
@@ -7662,7 +7820,7 @@ function module2RuleLayer(code?: string) {
   if (!code) return "other";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "SIGNAL_SCORE") return "quality";
-  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(code)) return "hard";
+  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(code)) return "hard";
   return "other";
 }
 

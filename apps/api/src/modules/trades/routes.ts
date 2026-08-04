@@ -1,8 +1,72 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
-import { requireTenantModule } from "../auth/routes.js";
+import { requirePermission, requireTenantModule } from "../auth/routes.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
+  app.get("/api/trades/paper", async (request) => {
+    const auth = requirePermission(request, "signals.view");
+    if (!auth.tenantId) return { summary: emptyPaperTradeSummary(), trades: [] };
+    const search = request.query as { limit?: string; status?: string; moduleCode?: string };
+    const limit = Math.min(Math.max(Number(search.limit ?? 200), 1), 500);
+    const status = String(search.status ?? "ALL").toUpperCase();
+    const moduleCode = String(search.moduleCode ?? "ALL");
+    const params: unknown[] = [auth.tenantId];
+    const statusFilter = status !== "ALL" ? `AND t.outcome = $${params.push(status)}` : "";
+    const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    params.push(limit);
+    const { rows } = await query(
+      `SELECT
+         t.id,
+         t.outcome,
+         t.actual_entry,
+         t.actual_stop,
+         t.actual_target,
+         t.actual_exit,
+         t.actual_lot,
+         t.result_r,
+         t.result_money,
+         t.opened_at,
+         t.closed_at,
+         tp.reward_to_risk,
+         tp.planned_risk_amount,
+         sc.id AS setup_candidate_id,
+         sc.symbol,
+         sc.direction,
+         sc.scenario,
+         sc.module_code,
+         sc.favorability_grade,
+         sc.favorability_score,
+         sc.final_reason,
+         latest.close AS current_price,
+         latest.timestamp_utc AS current_price_at
+       FROM trades t
+       JOIN trade_plans tp ON tp.id = t.trade_plan_id
+       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+       JOIN platform_strategy_modules sm ON sm.code = sc.module_code
+       JOIN tenant_modules tm ON tm.module_id = sm.id
+         AND tm.tenant_id = sc.tenant_id
+         AND tm.status = 'ENABLED'
+       LEFT JOIN LATERAL (
+         SELECT c.close, c.timestamp_utc
+         FROM candles c
+         WHERE c.symbol = sc.symbol
+           AND c.timeframe_minutes = 5
+           AND c.source LIKE 'TWELVE_DATA%'
+         ORDER BY c.timestamp_utc DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE sc.tenant_id = $1
+         ${statusFilter}
+         ${moduleFilter}
+       ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END,
+         COALESCE(t.opened_at, t.closed_at) DESC
+       LIMIT $${params.length}`,
+      params
+    );
+    const trades = rows.map(paperTradeView);
+    return { summary: summarizePaperTrades(trades), trades };
+  });
+
   app.post("/api/trades/recover-stale", async (request) => {
     const search = request.query as { moduleCode?: string };
     const body = request.body as { olderThanHours?: number };
@@ -523,6 +587,81 @@ export async function tradeRoutes(app: FastifyInstance) {
       }
     };
   });
+}
+
+function emptyPaperTradeSummary() {
+  return { total: 0, active: 0, wins: 0, losses: 0, breakeven: 0, winRate: 0, totalR: 0, averageR: 0 };
+}
+
+function summarizePaperTrades(trades: any[]) {
+  const closed = trades.filter((trade) => trade.status !== "ACTIVE");
+  const wins = closed.filter((trade) => trade.status === "WIN").length;
+  const losses = closed.filter((trade) => trade.status === "LOSS").length;
+  const totalR = closed.reduce((sum, trade) => sum + Number(trade.resultR ?? 0), 0);
+  return {
+    total: trades.length,
+    active: trades.filter((trade) => trade.status === "ACTIVE").length,
+    wins,
+    losses,
+    breakeven: closed.filter((trade) => trade.status === "BREAKEVEN").length,
+    winRate: wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0,
+    totalR,
+    averageR: closed.length > 0 ? totalR / closed.length : 0
+  };
+}
+
+function paperTradeView(row: any) {
+  const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
+  const entry = Number(row.actual_entry);
+  const stop = Number(row.actual_stop);
+  const target = Number(row.actual_target);
+  const currentPrice = row.current_price == null ? null : Number(row.current_price);
+  const stopDistance = Math.abs(entry - stop);
+  const multiplier = direction === "SHORT" ? -1 : 1;
+  const unrealizedR = row.outcome === "ACTIVE" && currentPrice != null && stopDistance > 0
+    ? ((currentPrice - entry) * multiplier) / stopDistance
+    : null;
+  return {
+    id: row.id,
+    setupCandidateId: row.setup_candidate_id,
+    moduleCode: row.module_code,
+    symbol: row.symbol,
+    scenario: row.scenario,
+    direction,
+    action: direction === "SHORT" ? "SELL" : "BUY",
+    entry,
+    stopLoss: stop,
+    takeProfit: target,
+    currentPrice,
+    currentPriceAt: row.current_price_at,
+    lot: row.actual_lot == null ? null : Number(row.actual_lot),
+    rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
+    plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),
+    status: row.outcome,
+    condition: paperTradeCondition(row.outcome, unrealizedR),
+    unrealizedR,
+    exit: row.actual_exit == null ? null : Number(row.actual_exit),
+    resultR: row.result_r == null ? null : Number(row.result_r),
+    resultMoney: row.result_money == null ? null : Number(row.result_money),
+    openedAt: row.opened_at,
+    closedAt: row.closed_at,
+    grade: row.favorability_grade,
+    confidence: row.favorability_score == null ? null : Number(row.favorability_score),
+    reason: row.final_reason
+  };
+}
+
+function paperTradeCondition(status: string, unrealizedR: number | null) {
+  if (status === "WIN") return "TARGET HIT";
+  if (status === "LOSS") return "STOP HIT";
+  if (status === "BREAKEVEN") return "BREAKEVEN";
+  if (status !== "ACTIVE") return status || "CLOSED";
+  if (unrealizedR == null) return "AWAITING PRICE";
+  if (unrealizedR >= 1.5) return "NEAR TARGET";
+  if (unrealizedR > 0) return "IN PROFIT";
+  if (unrealizedR <= -0.7) return "NEAR STOP";
+  if (unrealizedR < 0) return "IN DRAWDOWN";
+  return "AT ENTRY";
 }
 
 function moduleExecutionTimeframeMinutes(moduleCode: string) {

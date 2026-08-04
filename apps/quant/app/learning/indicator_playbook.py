@@ -79,10 +79,15 @@ MODULE2_RULES: dict[str, dict[str, str]] = {
 
 
 MODULE3_RULES: dict[str, dict[str, str]] = {
+    "STRATEGY_CYCLE_ACTIVE": {
+        "indicator": "Weekday strategy cycle",
+        "meaning": "Evaluate completed candles from the latest eligible New York open until the next eligible New York open.",
+        "treatment": "Hard gate. Saturday, Sunday, configured market holidays, and candles outside the anchored cycle remain blocked.",
+    },
     "NY_SESSION_ACTIVE": {
-        "indicator": "New York session",
-        "meaning": "Only evaluate VWAP opening-drive pullbacks during the configured NY session.",
-        "treatment": "Hard gate. Outside NY, the setup context is invalid.",
+        "indicator": "Legacy New York session gate",
+        "meaning": "Historical Module 3 setups used the former New York-only strategy gate.",
+        "treatment": "Compatibility evidence only. New Module 3 setups use STRATEGY_CYCLE_ACTIVE.",
     },
     "OPENING_DRIVE_COMPLETE": {
         "indicator": "Opening drive",

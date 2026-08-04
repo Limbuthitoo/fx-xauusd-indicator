@@ -1351,7 +1351,7 @@ async function runAutoRunCycle() {
       autoRunState.lastActionAt = catchup.syncedAt ?? autoRunState.lastActionAt;
       autoRunState.nextActionAt = catchup.nextSyncAt ?? autoRunState.nextActionAt;
       autoRunState.reason = catchup.performed
-        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Strategy entry evaluation remains paused until the New York window.`
+        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Module 3 evaluated its newly stored candles; Module 1 remains paused until New York.`
         : `Off-session XAUUSD catch-up is current. Next shared sync is scheduled for ${catchup.nextSyncAt}.`;
     }
     return autoRunState;
@@ -1429,6 +1429,9 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
   });
   const moduleTimeframes = tenantCycles.map((item) => moduleTimeframeMinutes(item.tenant.module_code, item.settings));
   await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...moduleTimeframes, 15]);
+  const catchupEvaluations = result.connected
+    ? await evaluateOffSessionStrategyCatchup(tenantCycles)
+    : [];
   const syncedAt = new Date().toISOString();
   twelveDataState.lastSyncAt = syncedAt;
   twelveDataState.lastImported = result.imported ?? 0;
@@ -1440,10 +1443,58 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
     performed: Boolean(result.connected),
     imported: result.imported ?? 0,
     requestedCount,
+    evaluations: catchupEvaluations,
     syncedAt,
     nextSyncAt: new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString(),
     error: result.error ?? null
   };
+}
+
+async function evaluateOffSessionStrategyCatchup(
+  tenantCycles: Array<{ tenant: any; settings: RuntimeSettings; state: TenantAutoRunState }>
+) {
+  const results = [];
+  for (const item of tenantCycles) {
+    if (item.tenant.module_code !== "strategy_lab_3" || item.state.phase !== "CATCH_UP") continue;
+    const timeframe = moduleTimeframeMinutes(item.tenant.module_code, item.settings);
+    const session = await ensureTodayAutoSession(item.settings.symbol, item.settings, item.tenant.id, item.tenant.module_code);
+    const latestEvaluation = await query(
+      `SELECT max(detected_at) AS latest
+       FROM setup_candidates
+       WHERE tenant_id = $1 AND module_code = $2 AND session_id = $3`,
+      [item.tenant.id, item.tenant.module_code, session.id]
+    );
+    const latestAt = latestEvaluation.rows[0]?.latest ?? session.session_start_at;
+    const completedAtOrBefore = new Date(Date.now() - timeframe * 60_000).toISOString();
+    const candles = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND timestamp_utc > $3
+         AND timestamp_utc <= $4
+         AND timestamp_utc <= $5
+       ORDER BY timestamp_utc ASC
+       LIMIT 500`,
+      [item.settings.symbol, timeframe, latestAt, session.signal_window_end_at, completedAtOrBefore]
+    );
+    let evaluated = 0;
+    let latestResult: any = null;
+    for (const candle of candles.rows) {
+      latestResult = await processVwapOpeningDriveSession(item.settings.symbol, timeframe, [], item.tenant.id, candle);
+      evaluated += 1;
+    }
+    const state = tenantAutomationStates.get(tenantStateKey(item.tenant.id, item.tenant.module_code)) ?? item.state;
+    if (candles.rows.length > 0) {
+      state.latestCandleAt = candles.rows.at(-1)?.timestamp_utc ?? state.latestCandleAt;
+      state.latestSetupId = latestResult?.setupId ?? state.latestSetupId;
+      state.lastActionAt = new Date().toISOString();
+      state.reason = `Module 3 evaluated ${evaluated} newly stored 5-minute candle(s) after the shared off-session catch-up.`;
+      await persistTenantAutomationState(state);
+    }
+    results.push({ tenantId: item.tenant.id, moduleCode: item.tenant.module_code, evaluated, latestSetupId: latestResult?.setupId ?? null });
+  }
+  return results;
 }
 
 export function calculateCatchupRequestCount(input: {
@@ -1503,6 +1554,13 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   state.apiStopAt = new Date(apiStop).toISOString();
 
   if (now < apiStart) {
+    if (tenant.module_code === "strategy_lab_3") {
+      state.phase = "CATCH_UP";
+      state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
+      state.reason = `${state.moduleName} remains enabled on completed weekday candles. The shared feed is on its 30-minute catch-up cadence until New York live polling begins.`;
+      state.running = true;
+      return state;
+    }
     state.phase = "PRE_SESSION";
     state.nextActionAt = new Date(apiStart).toISOString();
     state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps earlier candles current.`;
@@ -1526,6 +1584,13 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   }
 
   if (now >= apiStop) {
+    if (tenant.module_code === "strategy_lab_3" && now < sessionEnd) {
+      state.phase = "CATCH_UP";
+      state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
+      state.reason = `${state.moduleName} remains enabled on completed weekday candles. New candles are evaluated after each shared 30-minute catch-up without increasing Twelve Data polling.`;
+      state.running = true;
+      return state;
+    }
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
     state.reason = `${state.moduleName} New York monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence; strategy entries remain paused.`;
@@ -1536,13 +1601,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
       state.reason = closeout?.status === "COMPLETED"
         ? `${state.moduleName} New York window is complete. Daily report, learning, and review queue closeout are done.`
         : state.reason;
-    } else if (tenant.module_code === "strategy_lab_3") {
-      const closeout = await runModule3CloseoutAfterSession(session);
-      state.lastActionAt = closeout?.completed_at ?? state.lastActionAt;
-      state.reason = closeout?.status === "COMPLETED"
-        ? `${state.moduleName} New York window is complete. Daily report and learning closeout are done.`
-        : state.reason;
-    } else {
+    } else if (tenant.module_code !== "strategy_lab_3") {
       await runLearningAfterSession(session);
     }
     return state;
@@ -1672,8 +1731,17 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     error.statusCode = 500;
     throw error;
   }
-  const sessionDate = newYorkDate();
-  const times = sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
+  const module3Window = moduleCode === "strategy_lab_3"
+    ? module3ContinuousStrategyWindow(new Date(), sessionStart)
+    : null;
+  const sessionDate = module3Window?.sessionDate ?? newYorkDate();
+  const times = module3Window
+    ? {
+        sessionStartAt: module3Window.startAt,
+        openingRangeEndAt: module3Window.startAt,
+        signalWindowEndAt: module3Window.endAt
+      }
+    : sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
   const existing = await query(
     `SELECT ts.*, sv.signal_timeframe_minutes
      FROM trading_sessions ts
@@ -1685,6 +1753,25 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
   );
   if (existing.rows[0]) {
     const current = existing.rows[0] as any;
+    const extendsLegacyModule3Cycle = moduleCode === "strategy_lab_3"
+      && new Date(current.signal_window_end_at).getTime() < new Date(times.signalWindowEndAt).getTime()
+      && Date.now() <= new Date(times.signalWindowEndAt).getTime();
+    if (extendsLegacyModule3Cycle) {
+      const updated = await query(
+        `UPDATE trading_sessions
+         SET session_start_at = $2,
+             opening_range_end_at = $3,
+             signal_window_end_at = $4,
+             state = CASE
+               WHEN state IN ('SESSION_COMPLETED', 'SESSION_EXPIRED') THEN 'OPENING_RANGE_LOCKED'
+               ELSE state
+             END
+         WHERE id = $1
+         RETURNING *`,
+        [current.id, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt]
+      );
+      return refreshAutoSessionState({ ...updated.rows[0], signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
+    }
     if (!["TRADE_PLANNED", "TRADE_ACTIVE", "TRADE_CLOSED", "SESSION_COMPLETED", "NO_TRADE"].includes(current.state)) {
       const updated = await query(
         `UPDATE trading_sessions
@@ -1697,6 +1784,25 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     }
     return refreshAutoSessionState({ ...current, signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
   }
+  if (moduleCode === "strategy_lab_3") {
+    const previous = await query(
+      `SELECT ts.*, sv.configuration_json
+       FROM trading_sessions ts
+       JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
+       WHERE ts.symbol = $1
+         AND ts.tenant_id = $2
+         AND ts.module_code = $3
+         AND ts.session_date < $4
+         AND ts.state <> 'SESSION_COMPLETED'
+       ORDER BY ts.session_date DESC
+       LIMIT 1`,
+      [symbol, activeTenantId, moduleCode, sessionDate]
+    );
+    if (previous.rows[0]) {
+      await runModule3CloseoutAfterSession(previous.rows[0]);
+      await query("UPDATE trading_sessions SET state = 'SESSION_COMPLETED' WHERE id = $1", [previous.rows[0].id]);
+    }
+  }
   const created = await query(
     `INSERT INTO trading_sessions (
       tenant_id, module_code, user_id, symbol, strategy_version_id, session_date, session_preset, state,
@@ -1707,6 +1813,36 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     [symbol, version.id, sessionDate, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, moduleCode, activeTenantId, sessionPreset]
   );
   return refreshAutoSessionState({ ...created.rows[0], signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
+}
+
+export function module3ContinuousStrategyWindow(reference = new Date(), sessionStart = "09:30") {
+  let sessionDate = newYorkDate(reference);
+  let startAt = sessionTimesForDate(sessionDate, sessionStart, 0, sessionStart).sessionStartAt;
+  if (reference.getTime() < new Date(startAt).getTime() || !isEligibleStrategyDate(sessionDate)) {
+    do {
+      sessionDate = shiftIsoDate(sessionDate, -1);
+    } while (!isEligibleStrategyDate(sessionDate));
+    startAt = sessionTimesForDate(sessionDate, sessionStart, 0, sessionStart).sessionStartAt;
+  }
+  let nextDate = shiftIsoDate(sessionDate, 1);
+  while (!isEligibleStrategyDate(nextDate)) nextDate = shiftIsoDate(nextDate, 1);
+  const nextStart = sessionTimesForDate(nextDate, sessionStart, 0, sessionStart).sessionStartAt;
+  return {
+    sessionDate,
+    startAt,
+    endAt: new Date(new Date(nextStart).getTime() - 1).toISOString(),
+    nextSessionStartAt: nextStart
+  };
+}
+
+function isEligibleStrategyDate(sessionDate: string) {
+  return !isNewYorkWeekend(sessionDate) && !isConfiguredMarketClosedDate(sessionDate);
+}
+
+function shiftIsoDate(sessionDate: string, days: number) {
+  const date = new Date(`${sessionDate}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 async function refreshAutoSessionState(session: any) {
@@ -2593,7 +2729,13 @@ async function processModuleLiveSession(moduleCode: string, symbol: string, time
   return processLiveSession(symbol, timeframe, persistedOnly, tenantId);
 }
 
-async function processVwapOpeningDriveSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
+async function processVwapOpeningDriveSession(
+  symbol: string,
+  timeframe: number,
+  liveCandles: LiveCandle[] = [],
+  tenantId?: string | null,
+  currentOverride?: any
+) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const moduleCode = "strategy_lab_3";
   const settings = await getRuntimeSettings(activeTenantId);
@@ -2611,18 +2753,20 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
   );
   const session = sessionResult.rows[0] as any;
   if (!session) return { sessionFound: false };
-  const now = new Date();
+  const now = currentOverride?.timestamp_utc
+    ? new Date(new Date(currentOverride.timestamp_utc).getTime() + timeframe * 60_000)
+    : new Date();
   const signalEnd = new Date(session.signal_window_end_at);
   if (now > signalEnd && !["SESSION_EXPIRED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) {
     await query("UPDATE trading_sessions SET state = 'SESSION_EXPIRED' WHERE id = $1", [session.id]);
-    await notifyTenantOnce(session.tenant_id, `module3-session-expired-${session.id}`, "MODULE3_SESSION_EXPIRED", "Module 3 window expired", "No new VWAP opening-drive setups will be accepted for this session.");
+    await notifyTenantOnce(session.tenant_id, `module3-session-expired-${session.id}`, "MODULE3_SESSION_EXPIRED", "Module 3 strategy cycle complete", "The next eligible New York open will start a fresh VWAP opening-drive cycle.");
     await runModule3CloseoutAfterSession({ ...session, state: "SESSION_EXPIRED" });
     return { sessionFound: true, state: "SESSION_EXPIRED" };
   }
-  if (now < new Date(session.session_start_at) || now > signalEnd) return { sessionFound: true, evaluation: "OUTSIDE_MODULE3_WINDOW" };
+  if (now < new Date(session.session_start_at) || now > signalEnd) return { sessionFound: true, evaluation: "OUTSIDE_MODULE3_STRATEGY_CYCLE" };
 
   const completedAtOrBefore = new Date(now.getTime() - timeframe * 60_000).toISOString();
-  const current =
+  const current = currentOverride ??
     latestCachedCandle(liveCandles, session.session_start_at, session.signal_window_end_at, completedAtOrBefore) ??
     ((await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
@@ -2762,7 +2906,7 @@ export function evaluateVwapOpeningDrive(input: {
   const tradeLimitOk = Number(input.tradesTakenThisSession ?? 0) < Number(config.maximumTradesPerSession ?? 1);
   const spreadOk = input.spread == null || input.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(input.newsStatus ?? "CLEAR").includes("BLOCKED");
-  push("NY_SESSION_ACTIVE", "New York session active", sessionActive, true, newYorkClock(current.timestampUtc), `${config.newYorkStartTime ?? "09:30"}-${config.newYorkEndTime ?? "16:00"}`, "Module 3 only trades during its New York VWAP window.");
+  push("STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", sessionActive, true, newYorkClock(current.timestampUtc), "Most recent NY open until next eligible NY open", "Module 3 keeps the latest New York opening drive and anchored VWAP active through the weekday strategy cycle.");
   push("DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, input.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, "Automatic Module 3 paper trades are limited per session so learning can capture multiple valid setups without unlimited stacking.");
   if (!sessionActive || !tradeLimitOk) return module3Decision("HARD_RULE_BLOCK", null, "BLOCKED", "Module 3 hard rules failed before opening-drive evaluation.", evaluations, flags);
 
@@ -2896,7 +3040,7 @@ export function evaluateVwapOpeningDrive(input: {
 
 function module3MandatoryEntryPassed(evaluations: any[]) {
   const required = new Set([
-    "NY_SESSION_ACTIVE",
+    "STRATEGY_CYCLE_ACTIVE",
     "DAILY_TRADE_LIMIT",
     "OPENING_DRIVE_COMPLETE",
     "OPENING_DRIVE_STRONG",
@@ -4174,7 +4318,7 @@ function requiredEntryRules(moduleCode: string) {
     return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"];
   }
   if (moduleCode === "strategy_lab_3") {
-    return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"];
+    return ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"];
   }
   return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
 }

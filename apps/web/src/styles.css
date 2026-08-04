@@ -2006,6 +2006,172 @@ button:hover,
   padding-left: 12px;
 }
 
+.paper-trading-workspace {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  min-width: 0;
+}
+
+.paper-trading-head,
+.paper-focus-footer,
+.paper-trade-focus-title,
+.paper-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.paper-trading-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 20px;
+}
+
+.paper-trading-head p,
+.paper-focus-footer p {
+  margin: 4px 0 0;
+  color: #91a097;
+  font-size: 13px;
+}
+
+.paper-summary-grid,
+.paper-focus-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
+  border-block: 1px solid #253027;
+}
+
+.paper-summary-grid .metric,
+.paper-focus-metrics .metric {
+  min-width: 0;
+  padding: 13px 12px;
+  border-right: 1px solid #253027;
+}
+
+.paper-summary-grid .metric:last-child,
+.paper-focus-metrics .metric:last-child {
+  border-right: 0;
+}
+
+.paper-summary-grid .metric strong,
+.paper-focus-metrics .metric strong {
+  overflow-wrap: anywhere;
+}
+
+.paper-toolbar {
+  align-items: flex-end;
+}
+
+.paper-toolbar label {
+  display: grid;
+  gap: 5px;
+  min-width: 220px;
+  color: #91a097;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.paper-toolbar select {
+  min-height: 36px;
+  border: 1px solid #304138;
+  border-radius: 5px;
+  background: #111914;
+  color: #edf4ef;
+  padding: 0 10px;
+}
+
+.paper-segmented {
+  display: flex;
+  overflow-x: auto;
+  border: 1px solid #304138;
+  border-radius: 5px;
+}
+
+.paper-segmented button {
+  min-height: 34px;
+  border: 0;
+  border-right: 1px solid #304138;
+  border-radius: 0;
+  background: #111914;
+  color: #91a097;
+  padding: 0 13px;
+  font-size: 11px;
+}
+
+.paper-segmented button:last-child {
+  border-right: 0;
+}
+
+.paper-segmented button.active {
+  background: #173427;
+  color: #35d895;
+}
+
+.paper-trade-focus {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #304138;
+  border-radius: 6px;
+  background: #101612;
+  padding: 13px;
+}
+
+.paper-trade-focus-title {
+  justify-content: flex-start;
+}
+
+.paper-trade-focus-title > span:first-child {
+  color: #91a097;
+}
+
+.paper-trade-focus-title .status-pill {
+  margin-left: auto;
+}
+
+.paper-focus-footer {
+  align-items: flex-end;
+}
+
+.paper-focus-footer p {
+  max-width: 75ch;
+}
+
+.paper-focus-footer small {
+  display: block;
+  margin-top: 4px;
+  color: #708078;
+  font-size: 11px;
+}
+
+.trade-buy {
+  color: #35d895;
+}
+
+.trade-sell {
+  color: #ff6b6b;
+}
+
+.paper-trade-table {
+  min-width: 1280px;
+}
+
+.paper-trade-table tbody tr {
+  cursor: pointer;
+}
+
+.paper-trade-table tbody tr:hover td {
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.paper-trade-table tbody tr:focus-visible {
+  outline: 2px solid #35d895;
+  outline-offset: -2px;
+}
+
 .module2-backtest-table {
   min-width: 980px;
 }
@@ -3358,6 +3524,21 @@ aside {
   .subscriber-table {
     overflow-x: auto;
   }
+
+  .paper-summary-grid,
+  .paper-focus-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .paper-summary-grid .metric:nth-child(3),
+  .paper-focus-metrics .metric:nth-child(3) {
+    border-right: 0;
+  }
+
+  .paper-summary-grid .metric:nth-child(-n + 3),
+  .paper-focus-metrics .metric:nth-child(-n + 3) {
+    border-bottom: 1px solid #253027;
+  }
 }
 
 @media (max-width: 760px) {
@@ -3447,5 +3628,62 @@ aside {
 
   .platform-main {
     padding: 10px;
+  }
+
+  .paper-trading-workspace {
+    padding: 12px;
+  }
+
+  .paper-trading-head,
+  .paper-toolbar,
+  .paper-focus-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .paper-trading-head button,
+  .paper-focus-footer button,
+  .paper-toolbar label {
+    width: 100%;
+  }
+
+  .paper-summary-grid,
+  .paper-focus-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .paper-summary-grid .metric,
+  .paper-focus-metrics .metric,
+  .paper-summary-grid .metric:nth-child(3),
+  .paper-focus-metrics .metric:nth-child(3) {
+    border-right: 1px solid #253027;
+    border-bottom: 1px solid #253027;
+  }
+
+  .paper-summary-grid .metric:nth-child(even),
+  .paper-focus-metrics .metric:nth-child(even) {
+    border-right: 0;
+  }
+
+  .paper-summary-grid .metric:nth-last-child(-n + 2),
+  .paper-focus-metrics .metric:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .paper-segmented {
+    width: 100%;
+  }
+
+  .paper-segmented button {
+    flex: 1 0 auto;
+  }
+
+  .paper-trade-focus-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .paper-trade-focus-title .status-pill {
+    margin-left: 0;
   }
 }

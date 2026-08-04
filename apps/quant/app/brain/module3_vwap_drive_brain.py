@@ -7,7 +7,7 @@ MODULE_CODE = "strategy_lab_3"
 MODULE_NAME = "Module 3 VWAP Drive"
 
 MANDATORY_RULES = [
-    "NY_SESSION_ACTIVE",
+    "STRATEGY_CYCLE_ACTIVE",
     "DAILY_TRADE_LIMIT",
     "OPENING_DRIVE_COMPLETE",
     "OPENING_DRIVE_STRONG",
@@ -30,7 +30,7 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
             return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 3 has an active legacy paper trade whose originating setup did not pass the authoritative VWAP-drive checklist.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 3 paper trade is active. Manage the TP/SL lifecycle.", False)
     if not setup:
-        return payload("WAITING_FOR_VWAP_DRIVE_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 3 is waiting for New York opening drive, VWAP alignment, pullback-zone touch, and confirmation candle.", False)
+        return payload("WAITING_FOR_VWAP_DRIVE_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 3 is waiting for the anchored New York opening drive, VWAP alignment, pullback-zone touch, and confirmation candle.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
@@ -59,6 +59,8 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
 
 def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = {code(row): str(row.get("status")) for row in evaluations}
+    if "STRATEGY_CYCLE_ACTIVE" not in statuses and "NY_SESSION_ACTIVE" in statuses:
+        statuses["STRATEGY_CYCLE_ACTIVE"] = statuses["NY_SESSION_ACTIVE"]
     mandatory = all(statuses.get(item) == "PASS" for item in MANDATORY_RULES)
     quality_count = sum(1 for item in QUALITY_RULES if statuses.get(item) == "PASS")
     signal_score_ok = statuses.get("SIGNAL_SCORE") == "PASS"

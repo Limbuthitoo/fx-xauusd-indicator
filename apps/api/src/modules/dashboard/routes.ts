@@ -19,6 +19,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const needsReports = section === "reports";
     const needsLearning = section === "learning";
     const needsNotifications = section === "notifications";
+    const needsPaper = section === "paper";
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
     const needsLive = section === "live";
@@ -77,7 +78,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       orbLearning,
       tenantContext,
       activeModuleSettings,
-      tenantPushStatus
+      tenantPushStatus,
+      paperTrading
     ] = await Promise.all([
       injectJson(app, request, "GET", "/api/clocks", undefined),
       injectJson(app, request, "POST", "/api/sessions/current/refresh-state", { moduleCode }),
@@ -127,11 +129,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
       needsLearning ? injectJson(app, request, "GET", "/api/admin/orb-learning/latest", undefined) : null,
       injectJson(app, request, "GET", "/api/tenant/context", undefined),
       needsSettings ? injectJson(app, request, "GET", `/api/tenant/modules/${moduleCode}/settings`, undefined, []) : [],
-      section === "account" || needsSettings ? injectJson(app, request, "GET", "/api/mobile/push-status", undefined, null) : null
+      section === "account" || needsSettings ? injectJson(app, request, "GET", "/api/mobile/push-status", undefined, null) : null,
+      needsPaper ? injectJson(app, request, "GET", "/api/trades/paper?limit=500", undefined, { summary: {}, trades: [] }) : null
     ]);
 
     const sessionReview = session?.id ? await injectJson(app, request, "GET", `/api/sessions/${session.id}/review`, undefined) : undefined;
-    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module3JournalTrades, module3DataReadiness, module3Learning, module3SessionReports, module3SetupHistory, module3Rehearsals, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus };
+    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module3JournalTrades, module3DataReadiness, module3Learning, module3SessionReports, module3SetupHistory, module3Rehearsals, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading };
   });
 
   app.get("/api/platform/bundle", async (request) => {

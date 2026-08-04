@@ -98,6 +98,16 @@ module3 = decide_module3(
     None,
     HEALTH,
 )
+module3_legacy_cycle_rule = decide_module3(
+    setup(
+        "strategy_lab_3",
+        "LONG",
+        ["NY_SESSION_ACTIVE", *MODULE3_MANDATORY[1:], "HTF_15M_BIAS", "VWAP_DATA_QUALITY", "SIGNAL_SCORE", *MODULE3_QUALITY[:3]],
+        {"mandatoryChecklistMatched": True, "fullChecklistMatched": True, "setupTier": "FULL"},
+    ),
+    None,
+    HEALTH,
+)
 
 module2_incomplete = decide_module2(
     setup("high_probability_strategy_2", "SHORT", MODULE2_MANDATORY[:-1], {"mandatoryChecklistMatched": True, "fullChecklistMatched": True}),
@@ -125,6 +135,7 @@ assert module2["shouldOpenPaperTrade"] and module2["action"] == "SELL"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert module3["shouldOpenPaperTrade"] and module3["action"] == "BUY"
 assert module3["checklist"]["mandatoryPassed"] and module3["checklist"]["fullPassed"]
+assert module3_legacy_cycle_rule["checklist"]["mandatoryPassed"], "Existing Module 3 NY_SESSION_ACTIVE records must remain brain-compatible"
 assert not module1_incomplete["shouldOpenPaperTrade"]
 assert not module2_incomplete["shouldOpenPaperTrade"]
 assert legacy_active["decisionType"] == "ACTIVE_TRADE_CHECKLIST_MISMATCH"
