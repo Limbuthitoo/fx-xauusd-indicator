@@ -669,10 +669,23 @@ function AppContent() {
   async function loadChart(moduleCode: string, authToken = token) {
     if (!authToken) return;
     setChartLoadingModule(moduleCode);
-    const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=90`, {
-      headers: { authorization: `Bearer ${authToken}` }
-    });
     try {
+      await fetch(`${apiBaseUrl}/api/market-data/twelve-data/chart-sync`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          symbol: "XAUUSD",
+          providerSymbol: "XAU/USD",
+          timeframeMinutes: 5,
+          moduleCode
+        })
+      }).catch(() => null);
+      const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=180`, {
+        headers: { authorization: `Bearer ${authToken}` }
+      });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json() as ChartPayload;
       setChart(data);
