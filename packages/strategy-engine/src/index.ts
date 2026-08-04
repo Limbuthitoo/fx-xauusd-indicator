@@ -521,6 +521,7 @@ function orbMandatoryEntryReady(evaluations: ReturnType<typeof evaluateMandatory
     "ORB_LOCKED",
     "INSIDE_SIGNAL_WINDOW",
     direction === "LONG" ? "CLOSE_ABOVE_ORB_HIGH" : "CLOSE_BELOW_ORB_LOW",
+    "ENTRY_NOT_OVEREXTENDED",
     "RISK_PERMISSION"
   ]);
   return evaluations

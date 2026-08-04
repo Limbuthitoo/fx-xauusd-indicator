@@ -85,13 +85,14 @@ export async function backtestRoutes(app: FastifyInstance) {
         : moduleCode === "strategy_lab_3"
           ? await getTenantModuleStrategyConfiguration(auth.tenantId, moduleCode, "vwapOpeningDrive.strategy", version.configuration_json)
         : version.configuration_json;
+      const researchConfiguration = researchBacktestConfiguration(configuration);
       const result = moduleCode === "high_probability_strategy_2"
         ? runLiquiditySweepMemoryCacheBacktest({
           symbol,
           timeframe,
           candles,
           strategyVersionId: version.id,
-          configuration,
+          configuration: researchConfiguration,
           source: candleSource
         })
         : moduleCode === "strategy_lab_3"
@@ -100,7 +101,7 @@ export async function backtestRoutes(app: FastifyInstance) {
             timeframe,
             candles,
             strategyVersionId: version.id,
-            configuration,
+            configuration: researchConfiguration,
             source: candleSource
           })
           : runMemoryCacheBacktest({
@@ -108,7 +109,7 @@ export async function backtestRoutes(app: FastifyInstance) {
             timeframe,
             candles,
             strategyVersionId: version.id,
-            configuration,
+            configuration: researchConfiguration,
             sessionStart: version.session_start,
             openingRangeMinutes: Number(version.opening_range_minutes),
             tradeWindowEnd: version.trade_window_end,
@@ -493,6 +494,15 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
           entryZone: (flags as any).entryZone ?? null,
           htfBias: (flags as any).htfBias ?? null,
           evaluations: decision.evaluations ?? [],
+          instruction: tradeInstruction({
+            moduleCode: "high_probability_strategy_2",
+            direction: decision.direction,
+            entry: decision.entryPrice,
+            stop: decision.stopPrice,
+            target: decision.targetPrice,
+            reason: decision.finalReason,
+            checklist: decision.evaluations ?? []
+          }),
           checklist: (decision.evaluations ?? []).map((evaluation: any) => ({
             ruleCode: evaluation.ruleCode,
             name: evaluation.name,
@@ -505,7 +515,8 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
           scenarioFlags: flags
         }
       });
-      break;
+      if (exit.exitOffset == null) break;
+      index += exit.exitOffset + 1;
     }
   }
 
@@ -632,6 +643,15 @@ function runVwapOpeningDriveMemoryCacheBacktest(input: {
           entryZone: (flags as any).entryZone ?? null,
           riskReward: (flags as any).riskReward ?? null,
           evaluations: decision.evaluations ?? [],
+          instruction: tradeInstruction({
+            moduleCode: "strategy_lab_3",
+            direction: decision.direction as Direction,
+            entry: decision.entryPrice,
+            stop: decision.stopPrice,
+            target: decision.targetPrice,
+            reason: decision.finalReason,
+            checklist: decision.evaluations ?? []
+          }),
           checklist: (decision.evaluations ?? []).map((evaluation: any) => ({
             ruleCode: evaluation.ruleCode,
             name: evaluation.name,
@@ -644,7 +664,8 @@ function runVwapOpeningDriveMemoryCacheBacktest(input: {
           scenarioFlags: flags
         }
       });
-      break;
+      if (exit.exitOffset == null) break;
+      index += exit.exitOffset + 1;
     }
   }
 
@@ -779,10 +800,27 @@ function runMemoryCacheBacktest(input: {
           finalReason: decision.finalReason,
           favorabilityScore: decision.favorabilityScore,
           favorabilityGrade: decision.favorabilityGrade,
+          instruction: tradeInstruction({
+            moduleCode: "orb_max_options",
+            direction: decision.direction,
+            entry: decision.entryPrice,
+            stop: decision.stopPrice,
+            target: decision.targetPrice,
+            reason: decision.finalReason,
+            checklist: decision.evaluations ?? []
+          }),
+          checklist: (decision.evaluations ?? []).map((evaluation: any) => ({
+            ruleCode: evaluation.ruleCode,
+            name: evaluation.name,
+            status: evaluation.status,
+            blocking: evaluation.blocking,
+            explanation: evaluation.explanation
+          })),
           scenarioFlags: decision.scenarioFlags
         }
       });
-      break;
+      if (exit.exitOffset == null) break;
+      index += exit.exitOffset + 1;
     }
   }
 
@@ -823,14 +861,45 @@ function runMemoryCacheBacktest(input: {
 function simulateExit(future: Candle[], direction: Direction, entry: number, stop: number, target: number) {
   const stopDistance = Math.abs(entry - stop);
   const targetR = stopDistance > 0 ? Math.abs(target - entry) / stopDistance : 0;
-  for (const candle of future) {
+  for (let index = 0; index < future.length; index += 1) {
+    const candle = future[index];
     const stopHit = direction === "LONG" ? candle.low <= stop : candle.high >= stop;
     const targetHit = direction === "LONG" ? candle.high >= target : candle.low <= target;
-    if (stopHit && targetHit) return { outcome: "LOSS" as const, resultR: -1, ambiguous: true, exitTime: candle.timestampUtc };
-    if (stopHit) return { outcome: "LOSS" as const, resultR: -1, ambiguous: false, exitTime: candle.timestampUtc };
-    if (targetHit) return { outcome: "WIN" as const, resultR: Number(targetR.toFixed(4)), ambiguous: false, exitTime: candle.timestampUtc };
+    if (stopHit && targetHit) return { outcome: "LOSS" as const, resultR: -1, ambiguous: true, exitTime: candle.timestampUtc, exitOffset: index };
+    if (stopHit) return { outcome: "LOSS" as const, resultR: -1, ambiguous: false, exitTime: candle.timestampUtc, exitOffset: index };
+    if (targetHit) return { outcome: "WIN" as const, resultR: Number(targetR.toFixed(4)), ambiguous: false, exitTime: candle.timestampUtc, exitOffset: index };
   }
-  return { outcome: "BREAKEVEN" as const, resultR: 0, ambiguous: false, exitTime: null };
+  return { outcome: "BREAKEVEN" as const, resultR: 0, ambiguous: false, exitTime: null, exitOffset: null };
+}
+
+function researchBacktestConfiguration(configuration: any) {
+  return {
+    ...(configuration ?? {}),
+    maximumTradesPerSession: 99,
+    paperTrading: {
+      ...(configuration?.paperTrading ?? {}),
+      maximumTradesPerSession: 99
+    }
+  };
+}
+
+function tradeInstruction(input: { moduleCode: string; direction: Direction; entry: number; stop: number; target: number; reason: string; checklist: any[] }) {
+  const risk = Math.abs(input.entry - input.stop);
+  const reward = Math.abs(input.target - input.entry);
+  const rr = risk > 0 ? reward / risk : 0;
+  const mandatory = input.checklist.filter((row) => row.blocking);
+  const passedMandatory = mandatory.filter((row) => row.status === "PASS").length;
+  return {
+    action: input.direction === "SHORT" ? "SELL" : "BUY",
+    moduleCode: input.moduleCode,
+    entry: Number(input.entry.toFixed(5)),
+    stopLoss: Number(input.stop.toFixed(5)),
+    takeProfit: Number(input.target.toFixed(5)),
+    rewardToRisk: Number(rr.toFixed(2)),
+    whyTakeThisTrade: input.reason,
+    mandatoryChecklist: `${passedMandatory}/${mandatory.length} blocking rules passed`,
+    operatorInstruction: `${input.direction === "SHORT" ? "Sell" : "Buy"} XAUUSD at ${input.entry.toFixed(2)}, stop ${input.stop.toFixed(2)}, target ${input.target.toFixed(2)}. This is paper trading only; review checklist evidence before any manual broker action.`
+  };
 }
 
 function buildMetrics(trades: BacktestTrade[], sessionsTested: number, sessionsWithRange: number, skippedSessions: number, candleCount: number) {

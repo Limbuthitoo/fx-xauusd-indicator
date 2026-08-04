@@ -90,7 +90,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
   newYorkStartTime: "09:30",
   newYorkEndTime: "16:00",
-  maximumTradesPerSession: 1,
+  maximumTradesPerSession: 3,
   minimumSweepDistanceATR: 0.1,
   maximumSweepDistanceATR: 1,
   closeBackMaximumBars: 3,

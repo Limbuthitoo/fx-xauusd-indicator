@@ -2481,7 +2481,7 @@ async function processVwapOpeningDriveSession(symbol: string, timeframe: number,
       [symbol, timeframe, startLookback, current.timestamp_utc]
     )).rows;
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "vwapOpeningDrive.strategy", session.configuration_json);
-  const tradesTaken = await tradesTakenForSession(session.id, moduleCode, "FULL");
+  const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
   const decision = evaluateVwapOpeningDrive({
     now: current.timestamp_utc,
     symbol,
@@ -2544,7 +2544,7 @@ export function evaluateVwapOpeningDrive(input: {
     maximumSpread: 0.8,
     enableNewsFilter: true,
     minimumSignalScore: 80,
-    maximumTradesPerSession: 1,
+    maximumTradesPerSession: 3,
     ...(input.configuration ?? {})
   };
   const candles = [...input.candles].filter((candle) => Number.isFinite(candle.close)).sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
@@ -2572,7 +2572,7 @@ export function evaluateVwapOpeningDrive(input: {
   const spreadOk = input.spread == null || input.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(input.newsStatus ?? "CLEAR").includes("BLOCKED");
   push("NY_SESSION_ACTIVE", "New York session active", sessionActive, true, newYorkClock(current.timestampUtc), `${config.newYorkStartTime ?? "09:30"}-${config.newYorkEndTime ?? "16:00"}`, "Module 3 only trades during its New York VWAP window.");
-  push("DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, input.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, "Only one automatic Module 3 paper trade is allowed per session by default.");
+  push("DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, input.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, "Automatic Module 3 paper trades are limited per session so learning can capture multiple valid setups without unlimited stacking.");
   if (!sessionActive || !tradeLimitOk) return module3Decision("HARD_RULE_BLOCK", null, "BLOCKED", "Module 3 hard rules failed before opening-drive evaluation.", evaluations, flags);
 
   const atr = averageRange(candles.slice(-20));
@@ -2823,7 +2823,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
             [symbol, current.timestamp_utc]
           )
         ).rows.reverse();
-  const tradesTaken = await tradesTakenForSession(session.id, moduleCode, "FULL");
+  const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "liquiditySweep.strategy", session.configuration_json);
   const configVersion = await module2ConfigSnapshot(activeTenantId);
   const decision = evaluateLiquiditySweepSetup({
@@ -2976,7 +2976,7 @@ async function runModule2DryRunFromSavedCandles(tenantId: string | null, session
   const version = session ?? (await activeStrategyVersionForModule("high_probability_strategy_2"));
   const baseConfiguration = session?.configuration_json ?? version?.configuration_json ?? {};
   const configuration = await getTenantModuleStrategyConfiguration(tenantId, "high_probability_strategy_2", "liquiditySweep.strategy", baseConfiguration);
-  const tradesTaken = session?.id ? await tradesTakenForSession(session.id, "high_probability_strategy_2", "FULL") : 0;
+  const tradesTaken = session?.id ? await tradesTakenForSession(session.id, "high_probability_strategy_2") : 0;
   const decision = evaluateLiquiditySweepSetup({
     now: rowTimestamp(current),
     symbol,
@@ -3929,23 +3929,6 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
   }
   const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
 
-  const existing = await query(
-    `SELECT t.id, t.outcome, tp.status
-     FROM trades t
-     JOIN trade_plans tp ON tp.id = t.trade_plan_id
-     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
-     WHERE sc.session_id = $1
-       AND sc.module_code = $2
-       AND sc.scenario <> 'QA_TEST_SIGNAL'
-       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'setupTier', 'FULL') = $3
-     LIMIT 1`,
-    [session.id, moduleCode, setupTier]
-  );
-  if (existing.rows[0]) {
-    return { skipped: true, reason: `ONE_${setupTier}_TRADE_PER_SESSION`, tradeId: existing.rows[0].id };
-  }
-
   const rewardToRisk = Number(risk?.rewardToRisk ?? 0);
   const plannedLot = risk?.suggestedLotSize ?? null;
   const plannedRiskAmount = risk?.plannedRiskAmount ?? null;
@@ -4445,7 +4428,11 @@ async function calculateDecisionRisk(session: any, decision: any, currentRow: an
   });
 }
 
-async function tradesTakenForSession(sessionId: string, moduleCode: string, setupTier = "FULL") {
+async function tradesTakenForSession(sessionId: string, moduleCode: string, setupTier?: string | null) {
+  const params: any[] = [sessionId, moduleCode];
+  const tierFilter = setupTier
+    ? `AND COALESCE(sc.scenario_flags->>'setupTier', 'FULL') = $${params.push(setupTier)}`
+    : "";
   const { rows } = await query(
     `SELECT count(*)::int AS count
      FROM trades t
@@ -4455,8 +4442,8 @@ async function tradesTakenForSession(sessionId: string, moduleCode: string, setu
        AND sc.module_code = $2
        AND sc.scenario <> 'QA_TEST_SIGNAL'
        AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'setupTier', 'FULL') = $3`,
-    [sessionId, moduleCode, setupTier]
+       ${tierFilter}`,
+    params
   );
   return Number(rows[0]?.count ?? 0);
 }

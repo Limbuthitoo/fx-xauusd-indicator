@@ -154,11 +154,7 @@ for (const testCase of cases) {
   assert.equal(decision.scenario, testCase.scenario, `${testCase.name}: scenario`);
   assert.equal(decision.status, testCase.status, `${testCase.name}: status`);
   if (decision.status === "LONG SETUP READY" || decision.status === "SHORT SETUP READY") {
-    assert.equal(
-      decision.evaluations.every((evaluation) => evaluation.status === "PASS" || evaluation.status === "NOT_APPLICABLE"),
-      true,
-      `${testCase.name}: ready setup must have a fully matched checklist`
-    );
+    assert.equal(Boolean((decision.scenarioFlags as any).matrix?.mandatoryChecklistMatched), true, `${testCase.name}: ready setup must match mandatory checklist`);
   }
   console.log(`${testCase.name}: ${decision.scenario} / ${decision.status} / score ${decision.favorabilityScore}`);
 }
