@@ -14,13 +14,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const symbol = search.symbol ?? "XAUUSD";
     const timeframeMinutes = Number(search.timeframeMinutes ?? 5);
     const notificationQuery = search.notificationQuery ? decodeURIComponent(search.notificationQuery) : "";
-    const needsCommand = section === "command";
+    const needsCommand = section === "command" || section === "orb";
     const needsStrategy = section === "orb";
     const needsReports = section === "reports";
     const needsLearning = section === "learning";
     const needsNotifications = section === "notifications";
     const needsPaper = section === "paper";
-    const needsSignals = section === "signals";
+    const needsSignals = section === "signals" || section === "orb";
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
     const needsLive = section === "live";

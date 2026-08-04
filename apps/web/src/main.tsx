@@ -1168,22 +1168,28 @@ function App() {
 
         {activeSection === "orb" && !accountLocked ? (
           <section className="admin-page-grid">
+            <AllDayStrategyCenterPanel
+              state={state}
+              modules={enabledModules}
+              activeModuleCode={selectedModuleCode}
+              onSelectModule={(moduleCode) => setActiveModuleCode(moduleCode)}
+              onOpenChart={(moduleCode) => {
+                setActiveModuleCode(moduleCode);
+                setActiveSection("live");
+              }}
+            />
             {selectedModuleCode === "orb_max_options" ? <ModulePerformancePanel state={state} moduleCode={selectedModuleCode} moduleName={activeModule?.name} /> : <ModuleStrategyPanel setup={currentModuleSetup} moduleCode={selectedModuleCode} moduleName={activeModule?.name ?? "Strategy Module"} />}
             <ScenarioStatsPanel state={state} />
             <Panel icon={<CheckCircle2 />} title="Rule Checklist">
               <RuleList evaluations={ruleEvaluations} setup={currentModuleSetup} session={state.session} moduleCode={selectedModuleCode} />
             </Panel>
-            <Panel icon={<Database />} title="Scenario Evidence">
-              <Metric label="Sweep" value={formatSweep(scenarioFlags.sweep)} />
-              <Metric label="Fakeout" value={scenarioFlags.failedBreakoutState ?? "--"} />
-              <Metric label="Prior fakeout" value={scenarioFlags.priorFailedBreakout?.type ?? "--"} />
-              <Metric label="Retest" value={scenarioFlags.retest ?? "--"} />
-              <Metric label="Midpoint crosses" value={scenarioFlags.midpointCrossCount ?? "--"} />
-              <Metric label="Candles after ORB" value={scenarioMatrix.candlesAfterOrb ?? "--"} />
-              <Metric label="Body ratio" value={formatRatio(breakoutProfile.bodyRatio ?? favorabilityFlags.bodyRatio)} />
-              <Metric label="Close location" value={formatRatio(breakoutProfile.closeLocationRatio ?? favorabilityFlags.closeLocationRatio)} />
-              <Metric label="Trend" value={favorabilityFlags.trend ? `${favorabilityFlags.trend}${favorabilityFlags.trendAligned ? " aligned" : ""}` : "--"} />
-            </Panel>
+            <StrategyScenarioEvidencePanel
+              moduleCode={selectedModuleCode}
+              scenarioFlags={scenarioFlags}
+              scenarioMatrix={scenarioMatrix}
+              breakoutProfile={breakoutProfile}
+              favorabilityFlags={favorabilityFlags}
+            />
             <Panel icon={<LineChart />} title="Why">
               <p className="reason">{currentModuleSetup?.final_reason ?? "The system is waiting for this module to produce a completed signal candle."}</p>
               <div className="signal-reasons">
@@ -3374,6 +3380,128 @@ function ModulePerformancePanel({ state, moduleCode, moduleName }: { state: Pane
       </div>
     </Panel>
   );
+}
+
+function AllDayStrategyCenterPanel({
+  state,
+  modules,
+  activeModuleCode,
+  onSelectModule,
+  onOpenChart
+}: {
+  state: PanelState;
+  modules: any[];
+  activeModuleCode: string;
+  onSelectModule: (moduleCode: string) => void;
+  onOpenChart: (moduleCode: string) => void;
+}) {
+  const rows = modules.map((module: any) => commandModuleRow(state, module));
+  const activeSignals = state.tradeSignals?.signals ?? [];
+  const allDayRows = rows.filter((row) => strategyRuntimeMode(row.moduleCode) === "All-day");
+  const activeTrades = rows.filter((row) => row.trade?.outcome === "ACTIVE").length;
+  const liveSignals = activeSignals.length;
+  return (
+    <Panel icon={<Layers />} title="All-Day Strategy Center">
+      <div className="strategy-validation-hero">
+        <div>
+          <span>Runtime coverage</span>
+          <strong>{allDayRows.length}/{rows.length} all-day</strong>
+        </div>
+        <em>{activeTrades} active paper trade{activeTrades === 1 ? "" : "s"} · {liveSignals} live setup{liveSignals === 1 ? "" : "s"}</em>
+      </div>
+      <div className="strategy-center-module-grid">
+        {rows.map((row) => {
+          const signal = activeSignals.find((item: any) => item.moduleCode === row.moduleCode);
+          const selected = row.moduleCode === activeModuleCode;
+          return (
+            <article className={`strategy-center-module-card ${selected ? "active" : ""}`} key={row.moduleCode}>
+              <header>
+                <div>
+                  <span>{strategyRuntimeMode(row.moduleCode)} runtime · {row.timeframe}</span>
+                  <strong>{row.name}</strong>
+                </div>
+                <em className={`status-pill ${row.signalTone === "good" ? "good" : row.signalTone === "bad" ? "bad" : row.readinessTone}`}>{row.signalLabel}</em>
+              </header>
+              <div className="strategy-center-module-body">
+                <Metric label="Readiness" value={row.readiness} />
+                <Metric label="Paper" value={row.tradeLabel} />
+                <Metric label="Chance" value={signal?.chance == null ? row.confidenceLabel : `${signal.chance}%`} />
+                <Metric label="Checklist" value={signal?.checklist ? `${signal.checklist.passed}/${signal.checklist.total}` : "--"} />
+              </div>
+              <p className="reason">{signal?.reason ?? row.nextAction}</p>
+              <div className="admin-actions inline-actions">
+                <button onClick={() => onSelectModule(row.moduleCode)}>Inspect</button>
+                <button onClick={() => onOpenChart(row.moduleCode)}>Open Chart</button>
+              </div>
+            </article>
+          );
+        })}
+        {rows.length === 0 ? <p className="reason">No enabled strategy modules.</p> : null}
+      </div>
+    </Panel>
+  );
+}
+
+function StrategyScenarioEvidencePanel({
+  moduleCode,
+  scenarioFlags,
+  scenarioMatrix,
+  breakoutProfile,
+  favorabilityFlags
+}: {
+  moduleCode: string;
+  scenarioFlags: any;
+  scenarioMatrix: any;
+  breakoutProfile: any;
+  favorabilityFlags: any;
+}) {
+  if (moduleCode === "high_probability_strategy_2") {
+    const sweep = scenarioFlags.sweep ?? {};
+    const displacement = scenarioFlags.displacement ?? {};
+    const bos = scenarioFlags.bos ?? {};
+    const zone = scenarioFlags.entryZone ?? {};
+    return (
+      <Panel icon={<Database />} title="Module 2 Evidence">
+        <Metric label="Liquidity" value={sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`} />
+        <Metric label="Sweep" value={formatSweep(sweep)} />
+        <Metric label="Displacement" value={displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`} />
+        <Metric label="BOS / CHoCH" value={bos?.level == null ? "--" : Number(bos.level).toFixed(2)} />
+        <Metric label="Entry zone" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
+        <Metric label="Quality" value={scenarioFlags.qualityLayer?.passed == null ? "--" : `${scenarioFlags.qualityLayer.passed}/${scenarioFlags.qualityLayer.total}`} />
+      </Panel>
+    );
+  }
+  if (moduleCode === "strategy_lab_3") {
+    const drive = scenarioFlags.drive ?? {};
+    const zone = scenarioFlags.entryZone ?? {};
+    return (
+      <Panel icon={<Database />} title="Module 3 Evidence">
+        <Metric label="Opening drive" value={drive?.rangeAtr == null ? "--" : `${Number(drive.rangeAtr).toFixed(2)} ATR`} />
+        <Metric label="Direction" value={scenarioFlags.driveDirection ?? scenarioFlags.direction ?? "--"} />
+        <Metric label="VWAP" value={scenarioFlags.vwapAlignment ?? scenarioFlags.vwapBias ?? "--"} />
+        <Metric label="Pullback zone" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
+        <Metric label="Confirmation" value={scenarioFlags.confirmationCandle?.timestampUtc ? formatNepalTime(scenarioFlags.confirmationCandle.timestampUtc) : "--"} />
+        <Metric label="HTF bias" value={scenarioFlags.htfBias ?? "--"} />
+      </Panel>
+    );
+  }
+  return (
+    <Panel icon={<Database />} title="ORB Scenario Evidence">
+      <Metric label="Sweep" value={formatSweep(scenarioFlags.sweep)} />
+      <Metric label="Fakeout" value={scenarioFlags.failedBreakoutState ?? "--"} />
+      <Metric label="Prior fakeout" value={scenarioFlags.priorFailedBreakout?.type ?? "--"} />
+      <Metric label="Retest" value={scenarioFlags.retest ?? "--"} />
+      <Metric label="Midpoint crosses" value={scenarioFlags.midpointCrossCount ?? "--"} />
+      <Metric label="Candles after ORB" value={scenarioMatrix.candlesAfterOrb ?? "--"} />
+      <Metric label="Body ratio" value={formatRatio(breakoutProfile.bodyRatio ?? favorabilityFlags.bodyRatio)} />
+      <Metric label="Close location" value={formatRatio(breakoutProfile.closeLocationRatio ?? favorabilityFlags.closeLocationRatio)} />
+      <Metric label="Trend" value={favorabilityFlags.trend ? `${favorabilityFlags.trend}${favorabilityFlags.trendAligned ? " aligned" : ""}` : "--"} />
+    </Panel>
+  );
+}
+
+function strategyRuntimeMode(moduleCode: string) {
+  return moduleCode === "orb_max_options" ? "NY-only" : "All-day";
 }
 
 function CrossModuleCommandCenter({

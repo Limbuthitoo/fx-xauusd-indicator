@@ -1584,6 +1584,12 @@ button:hover,
   grid-template-columns: minmax(280px, 520px);
 }
 
+.strategy-center-module-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(280px, 1fr));
+  gap: 10px;
+}
+
 .command-module-card {
   display: grid;
   gap: 10px;
@@ -1597,6 +1603,55 @@ button:hover,
 .command-module-card.active {
   border-color: #23c483;
   background: #102019;
+}
+
+.strategy-center-module-card {
+  display: grid;
+  gap: 11px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #24342b;
+  border-radius: 8px;
+  background: #101612;
+}
+
+.strategy-center-module-card.active {
+  border-color: #23c483;
+  background: #102019;
+}
+
+.strategy-center-module-card header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.strategy-center-module-card header div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.strategy-center-module-card header span {
+  color: #8f9d94;
+  font-size: 12px;
+}
+
+.strategy-center-module-card header strong {
+  color: #edf4ef;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.strategy-center-module-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(132px, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #253027;
 }
 
 .command-module-card header,
@@ -3950,6 +4005,7 @@ aside {
   .platform-overview,
   .overview-primary,
   .command-module-grid,
+  .strategy-center-module-grid,
   .usage-strip,
   .tenant-row,
   .automation-row,
