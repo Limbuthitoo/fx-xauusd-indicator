@@ -1323,7 +1323,7 @@ function App() {
                     <div>
                       <strong>{item.title}</strong>
                       <span>{item.body}</span>
-                      <NotificationTradeDetails item={item} />
+                      <NotificationDetails item={item} />
                       <em>{formatNepalTime(item.created_at)} · {item.priority}</em>
                     </div>
                     {item.acknowledged_at ? <span className="pill good">ACK</span> : <button onClick={() => acknowledgeNotification(item.id).catch(() => setMessage("Notification ack failed."))}>Acknowledge</button>}
@@ -5948,7 +5948,7 @@ function ModuleNotificationSummaryPanel({ summary, notifications }: { summary?: 
   );
 }
 
-function NotificationTradeDetails({ item }: { item: any }) {
+function NotificationDetails({ item }: { item: any }) {
   const data = notificationPayload(item);
   const moduleCode = data.moduleCode ?? data.module_code ?? moduleCodeFromNotification(item);
   const moduleName = data.moduleName ?? data.module_name ?? moduleShortName(String(moduleCode ?? ""));
@@ -5962,26 +5962,71 @@ function NotificationTradeDetails({ item }: { item: any }) {
   const scenario = data.scenario ?? extractNotificationScenario(item.body);
   const grade = data.grade ?? extractNotificationField(item.body, "grade");
   const confidence = data.confidence ?? extractNotificationField(item.body, "confidence");
+  const category = notificationCategory(item, data);
+  const issueCode = data.issueCode ?? data.issue_code ?? item.event_type;
+  const status = data.status ?? notificationStatusFromPriority(item.priority);
+  const recommendedAction = data.recommendedAction ?? data.recommended_action ?? notificationRecommendedAction(category, item);
   const hasTradeDetails = [entry, stop, target, direction, action, scenario, setupTier, grade, confidence].some((value) => value != null && value !== "");
-  if (!hasTradeDetails) return null;
+  const showTrade = category === "TRADE_SETUP" || hasTradeDetails;
+  const showSetup = showTrade || [scenario, setupTier, grade, confidence, data.setupCandidateId, data.setup_candidate_id].some((value) => value != null && value !== "");
+  const showOperational = category !== "TRADE_SETUP" || !showTrade;
   return (
-    <div className="notification-detail-card">
-      <div className="notification-detail-head">
-        <span>{moduleName}</span>
-        <strong>{action ?? direction ?? "UPDATE"}</strong>
-      </div>
-      <div className="notification-detail-grid">
-        <Metric label="Entry" value={formatNotificationValue(entry, "price")} />
-        <Metric label="SL" value={formatNotificationValue(stop, "price")} />
-        <Metric label="TP" value={formatNotificationValue(target, "price")} />
-        <Metric label="RR" value={formatNotificationValue(rewardToRisk)} />
-        <Metric label="Scenario" value={scenario ? formatScenario(String(scenario)) : "--"} />
-        <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
-        <Metric label="Grade" value={grade ?? "--"} />
-        <Metric label="Confidence" value={confidence == null ? "--" : `${confidence}%`} />
-      </div>
-      {data.finalReason || data.final_reason ? <p className="reason">{String(data.finalReason ?? data.final_reason)}</p> : null}
-    </div>
+    <>
+      {showTrade ? (
+        <div className={`notification-detail-card ${action === "SELL" ? "sell" : "buy"}`}>
+          <div className="notification-detail-head">
+            <span>{moduleName}</span>
+            <strong>{action ?? direction ?? "TRADE UPDATE"}</strong>
+          </div>
+          <div className="notification-detail-grid">
+            <Metric label="Entry" value={formatNotificationValue(entry, "price")} />
+            <Metric label="SL" value={formatNotificationValue(stop, "price")} />
+            <Metric label="TP" value={formatNotificationValue(target, "price")} />
+            <Metric label="RR" value={formatNotificationValue(rewardToRisk)} />
+            <Metric label="Direction" value={direction ?? "--"} />
+            <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
+            <Metric label="Grade" value={grade ?? "--"} />
+            <Metric label="Confidence" value={confidence == null ? "--" : `${confidence}%`} />
+          </div>
+          {data.finalReason || data.final_reason ? <p className="reason">{String(data.finalReason ?? data.final_reason)}</p> : null}
+        </div>
+      ) : null}
+
+      {showOperational ? (
+        <div className={`notification-detail-card ${notificationToneClass(category, item.priority)}`}>
+          <div className="notification-detail-head">
+            <span>{notificationCategoryLabel(category)}</span>
+            <strong>{status}</strong>
+          </div>
+          <div className="notification-detail-grid">
+            <Metric label="Module" value={moduleName} />
+            <Metric label="Issue" value={formatNotificationCode(issueCode)} />
+            <Metric label="Priority" value={item.priority ?? "--"} />
+            <Metric label="Age" value={formatNotificationDuration(data.ageSeconds ?? data.age_seconds)} />
+          </div>
+          <p className="reason">{recommendedAction}</p>
+        </div>
+      ) : null}
+
+      {showSetup ? (
+        <div className="notification-detail-card context">
+          <div className="notification-detail-head">
+            <span>Setup Context</span>
+            <strong>{scenario ? formatScenario(String(scenario)) : item.event_type ?? "EVENT"}</strong>
+          </div>
+          <div className="notification-detail-grid">
+            <Metric label="Scenario" value={scenario ? formatScenario(String(scenario)) : "--"} />
+            <Metric label="Mandatory" value={formatNotificationValue(data.mandatoryPassed ?? data.mandatory_passed)} />
+            <Metric label="Confirmations" value={formatNotificationValue(data.confirmationPassed ?? data.confirmation_passed)} />
+            <Metric label="Quality" value={formatNotificationValue(data.qualityPassed ?? data.quality_passed)} />
+            <Metric label="Setup ID" value={formatNotificationValue(data.setupCandidateId ?? data.setup_candidate_id)} />
+            <Metric label="Trade ID" value={formatNotificationValue(data.tradeId ?? data.trade_id)} />
+            <Metric label="Event Key" value={formatNotificationValue(data.eventKey ?? data.event_key ?? item.event_key)} />
+            <Metric label="Source" value="Dashboard" />
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -6005,6 +6050,68 @@ function moduleCodeFromNotification(item: any) {
   if (haystack.includes("MODULE3") || haystack.includes("MODULE 3")) return "strategy_lab_3";
   if (haystack.includes("MODULE1") || haystack.includes("MODULE 1") || haystack.includes("ORB")) return "orb_max_options";
   return null;
+}
+
+function notificationCategory(item: any, data: any) {
+  const explicit = String(data.category ?? "").trim().toUpperCase();
+  if (explicit) return explicit;
+  const haystack = `${item?.event_type ?? ""} ${item?.title ?? ""} ${item?.body ?? ""}`.toUpperCase();
+  if (data.entry || data.entryPrice || data.entry_price || data.stopLoss || data.stop_loss || data.takeProfit || data.take_profit) return "TRADE_SETUP";
+  if (/ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
+  if (/TP_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
+  if (/SESSION|WINDOW|PRESESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
+  if (/FEED|TWELVE|CANDLE|CACHE|MARKET_DATA/.test(haystack)) return "FEED";
+  if (/REPORT|LEARNING|BACKTEST/.test(haystack)) return "SYSTEM";
+  return "GENERAL";
+}
+
+function notificationCategoryLabel(category: string) {
+  if (category === "TRADE_LIFECYCLE") return "Paper Trade Status";
+  if (category === "HEALTH") return "Module Health";
+  if (category === "SESSION") return "Session Notice";
+  if (category === "FEED") return "Market Feed";
+  if (category === "SYSTEM") return "System Notice";
+  return "Notification";
+}
+
+function notificationToneClass(category: string, priority?: string) {
+  const severity = String(priority ?? "").toUpperCase();
+  if (severity === "CRITICAL" || severity === "HIGH") return "warn";
+  if (category === "FEED" || category === "SESSION") return "info";
+  return "context";
+}
+
+function notificationStatusFromPriority(priority?: string) {
+  const severity = String(priority ?? "").toUpperCase();
+  if (severity === "CRITICAL") return "CRITICAL";
+  if (severity === "HIGH") return "WARNING";
+  if (severity) return severity;
+  return "INFO";
+}
+
+function notificationRecommendedAction(category: string, item: any) {
+  const event = `${item?.event_type ?? ""} ${item?.title ?? ""}`.toUpperCase();
+  if (event.includes("ACTIVE_TRADE_OPEN_TOO_LONG")) return "Review the active paper trade on the module chart or journal. The system will still close it automatically at TP or SL.";
+  if (event.includes("FEED_STALE")) return "Check market feed status and wait for the next scheduled candle sync before trusting fresh signals.";
+  if (event.includes("SESSION_EXPIRED") || category === "SESSION") return "This is a session timing notice. New entries wait for the next active New York window.";
+  if (category === "HEALTH") return "Open the module chart and System Status to inspect the affected automation, feed, or paper-trade state.";
+  if (category === "FEED") return "Open Data Admin or the live chart to confirm candle cache and provider status.";
+  if (category === "SYSTEM") return "Open the related dashboard screen for report, learning, or platform status details.";
+  return "Open the related module chart if this alert belongs to a strategy module.";
+}
+
+function formatNotificationCode(value: unknown) {
+  return String(value ?? "--").replace(/^MODULE\d_/, "").replaceAll("_", " ");
+}
+
+function formatNotificationDuration(value: unknown) {
+  if (value == null || value === "") return "--";
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return String(value);
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 function extractNotificationField(body: unknown, key: string) {

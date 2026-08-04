@@ -2223,6 +2223,27 @@ button:hover,
   background: #0d1511;
 }
 
+.notification-detail-card.buy {
+  border-color: #254f40;
+  background: #0f1914;
+}
+
+.notification-detail-card.sell,
+.notification-detail-card.warn {
+  border-color: #5c3538;
+  background: #191011;
+}
+
+.notification-detail-card.info {
+  border-color: #294454;
+  background: #0d1519;
+}
+
+.notification-detail-card.context {
+  border-color: #30382f;
+  background: #101411;
+}
+
 .notification-detail-head {
   display: flex;
   align-items: center;
