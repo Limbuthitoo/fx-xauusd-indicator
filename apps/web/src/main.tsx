@@ -347,6 +347,7 @@ function App() {
   }, [user, enabledModuleCodes, activeModuleCode]);
 
   async function login(email: string, password: string, otp?: string) {
+    clearAuthToken();
     const result = await api<{ token: string; user: AdminUser }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password, otp })
@@ -356,7 +357,7 @@ function App() {
       clearAuthToken();
       throw new Error(routeError);
     }
-    clearAuthToken();
+    setAuthToken(result.token);
     setUser(result.user);
     setMessage("Admin dashboard unlocked.");
     if (!result.user.passwordChangeRequired) refresh().catch(() => setMessage("API offline. Start PostgreSQL and the API server."));
