@@ -3,10 +3,12 @@ import { promisify } from "node:util";
 import { config } from "../../infrastructure/config.js";
 
 const execFileAsync = promisify(execFile);
+const pythonBin = process.env.PYTHON_BIN || "python3";
+const pythonCwd = process.cwd().replace(/\/apps\/api$/, "");
 
 export async function runOrbLearningPython() {
-  const { stdout } = await execFileAsync("python3", ["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl], {
-    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+  const { stdout } = await execFileAsync(pythonBin, ["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl], {
+    cwd: pythonCwd,
     timeout: 120_000
   });
   return JSON.parse(stdout);
@@ -14,10 +16,10 @@ export async function runOrbLearningPython() {
 
 export async function runModule2LearningPython(tenantId: string) {
   const { stdout } = await execFileAsync(
-    "python3",
+    pythonBin,
     ["-m", "apps.quant.app.learning.module2_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId],
     {
-      cwd: process.cwd().replace(/\/apps\/api$/, ""),
+      cwd: pythonCwd,
       timeout: 120_000
     }
   );
@@ -26,10 +28,10 @@ export async function runModule2LearningPython(tenantId: string) {
 
 export async function runModule3LearningPython(tenantId: string) {
   const { stdout } = await execFileAsync(
-    "python3",
+    pythonBin,
     ["-m", "apps.quant.app.learning.module3_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId],
     {
-      cwd: process.cwd().replace(/\/apps\/api$/, ""),
+      cwd: pythonCwd,
       timeout: 120_000
     }
   );
@@ -38,7 +40,7 @@ export async function runModule3LearningPython(tenantId: string) {
 
 export async function runGenericModuleLearningPython(tenantId: string, moduleCode: string) {
   const { stdout } = await execFileAsync(
-    "python3",
+    pythonBin,
     [
       "-m",
       "apps.quant.app.learning.generic_module_learning",
@@ -50,7 +52,7 @@ export async function runGenericModuleLearningPython(tenantId: string, moduleCod
       moduleCode
     ],
     {
-      cwd: process.cwd().replace(/\/apps\/api$/, ""),
+      cwd: pythonCwd,
       timeout: 120_000
     }
   );
@@ -77,8 +79,8 @@ export async function runStrategyIndicatorAuditPython(tenantId: string, moduleCo
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
-  const { stdout } = await execFileAsync("python3", args, {
-    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+  const { stdout } = await execFileAsync(pythonBin, args, {
+    cwd: pythonCwd,
     timeout: 120_000
   });
   return JSON.parse(stdout);
@@ -94,8 +96,8 @@ export async function runDeterministicStrategyCoachPython(tenantId: string, modu
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
-  const { stdout } = await execFileAsync("python3", args, {
-    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+  const { stdout } = await execFileAsync(pythonBin, args, {
+    cwd: pythonCwd,
     timeout: 180_000
   });
   return JSON.parse(stdout);
@@ -111,8 +113,8 @@ export async function runMainBrainPython(tenantId: string, moduleCode?: string) 
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
-  const { stdout } = await execFileAsync("python3", args, {
-    cwd: process.cwd().replace(/\/apps\/api$/, ""),
+  const { stdout } = await execFileAsync(pythonBin, args, {
+    cwd: pythonCwd,
     timeout: 60_000
   });
   return JSON.parse(stdout);
