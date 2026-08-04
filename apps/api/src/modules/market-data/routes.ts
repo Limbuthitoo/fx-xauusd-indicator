@@ -861,14 +861,16 @@ async function runLearningAfterSession(sessionId: string) {
   if (autoRunState.lastLearningSessionId === sessionId) return;
   try {
     const result = await runOrbLearningPython();
+    const tenantId = await defaultTenantId();
+    const coach = await runProductionLearningCoach(tenantId, "orb_max_options", sessionId);
     autoRunState.lastLearningSessionId = sessionId;
     autoRunState.lastLearningRunAt = new Date().toISOString();
-    autoRunState.lastLearningResult = result;
+    autoRunState.lastLearningResult = { ...result, coach };
     await notifyOnce(
       `orb-learning-${sessionId}`,
       "ORB_LEARNING_COMPLETED",
       "ORB learning updated",
-      `Python learning reviewed ${result.sampleSize ?? 0} results and produced ${result.recommendations ?? 0} recommendations.`
+      `Python learning reviewed ${result.sampleSize ?? 0} results and produced ${result.recommendations ?? 0} recommendations. Coach ${coach.status}.`
     );
   } catch (error) {
     autoRunState.lastLearningRunAt = new Date().toISOString();
@@ -898,6 +900,7 @@ async function runModule2CloseoutAfterSession(session: any) {
     const report = await generateModule2AutoSessionReport(session);
     const closedTrades = Number(report.summary?.paperTrades ?? 0) - Number(report.summary?.active ?? 0);
     const learning = closedTrades > 0 && session.tenant_id ? await runModule2LearningPython(session.tenant_id) : null;
+    const coach = await runProductionLearningCoach(session.tenant_id, moduleCode, session.id);
     const reviewItemsCreated = learning ? await seedModule2LearningReviewItems(session.tenant_id, learning.runId) : 0;
     const updated = await query(
       `UPDATE module_session_closeouts
@@ -915,7 +918,7 @@ async function runModule2CloseoutAfterSession(session: any) {
         report.id,
         learning?.runId ?? null,
         reviewItemsCreated,
-        JSON.stringify({ reportStatus: report.final_status, trades: report.summary?.paperTrades ?? 0, totalR: report.summary?.totalR ?? 0, learning: learning?.status ?? "SKIPPED" })
+        JSON.stringify({ reportStatus: report.final_status, trades: report.summary?.paperTrades ?? 0, totalR: report.summary?.totalR ?? 0, learning: learning?.status ?? "SKIPPED", coach })
       ]
     );
     await notifyTenantOnce(
@@ -984,6 +987,7 @@ async function runModule3CloseoutAfterSession(session: any) {
     const report = await generateGenericModuleSessionReport(session, moduleCode, "vwapOpeningDrive.strategy");
     const closedTrades = Number(report.summary?.paperTrades ?? 0) - Number(report.summary?.active ?? 0);
     const learning = closedTrades > 0 && session.tenant_id ? await runModule3LearningPython(session.tenant_id) : null;
+    const coach = await runProductionLearningCoach(session.tenant_id, moduleCode, session.id);
     const updated = await query(
       `UPDATE module_session_closeouts
        SET status = 'COMPLETED',
@@ -998,7 +1002,7 @@ async function runModule3CloseoutAfterSession(session: any) {
         closeout.id,
         report.id,
         learning?.runId ?? null,
-        JSON.stringify({ reportStatus: report.final_status, trades: report.summary?.paperTrades ?? 0, totalR: report.summary?.totalR ?? 0, learning: learning?.status ?? "SKIPPED" })
+        JSON.stringify({ reportStatus: report.final_status, trades: report.summary?.paperTrades ?? 0, totalR: report.summary?.totalR ?? 0, learning: learning?.status ?? "SKIPPED", coach })
       ]
     );
     await notifyTenantOnce(
@@ -1020,6 +1024,36 @@ async function runModule3CloseoutAfterSession(session: any) {
     );
     await notifyTenantOnce(session.tenant_id, `module3-closeout-failed-${session.id}`, "MODULE3_CLOSEOUT_FAILED", "Module 3 closeout failed", (error as Error).message, "HIGH");
     return failed.rows[0];
+  }
+}
+
+async function runProductionLearningCoach(tenantId: string | null, moduleCode: string, sessionId: string) {
+  if (!tenantId) return { status: "SKIPPED", reason: "TENANT_REQUIRED" };
+  try {
+    const result = await runDeterministicStrategyCoachPython(tenantId, moduleCode);
+    return {
+      status: result?.status ?? "COMPLETED",
+      moduleCode,
+      sessionId,
+      recommendations: Number(result?.summary?.recommendations ?? result?.modules?.[0]?.recommendations ?? 0),
+      readySetupsWithoutPaperTrade: Number(result?.summary?.readySetupsWithoutPaperTrade ?? result?.modules?.[0]?.summary?.automation?.readyWithoutPaperTrade ?? 0),
+      closedPaperTrades: Number(result?.summary?.closedPaperTrades ?? result?.modules?.[0]?.summary?.outcomes?.trades ?? 0)
+    };
+  } catch (error) {
+    await query(
+      `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
+       VALUES ('ERROR', 'SYSTEM', 'LEARNING_COACH_FAILED', 'market-data-worker', $1, $2, $3::jsonb)`,
+      [
+        tenantId,
+        `Python learning coach failed for ${moduleCode}.`,
+        JSON.stringify({
+          moduleCode,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      ]
+    );
+    return { status: "FAILED", moduleCode, sessionId, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
