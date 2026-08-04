@@ -2441,6 +2441,53 @@ aside {
   padding: 10px;
 }
 
+.live-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "chart"
+    "side";
+  align-items: start;
+}
+
+.live-workspace .auto-chart-shell {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.live-workspace .chart-canvas {
+  height: clamp(620px, 72vh, 920px);
+  min-height: 620px;
+}
+
+.live-support-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-support-panels .panel {
+  min-width: 0;
+}
+
+.live-support-panels .live-side-hero,
+.live-support-panels .live-signal-summary,
+.live-support-panels .live-side-metrics,
+.live-support-panels .live-trade-plan {
+  min-width: 0;
+}
+
+.live-support-panels .metric strong,
+.live-support-panels .live-side-hero strong,
+.live-support-panels .live-signal-summary strong {
+  overflow-wrap: anywhere;
+}
+
+.live-support-panels .metric strong {
+  font-size: 17px;
+  line-height: 1.1;
+}
+
 .signal-panel {
   grid-area: signal;
   display: grid;
@@ -3251,6 +3298,15 @@ aside {
     grid-template-columns: 1fr;
   }
 
+  .live-workspace .chart-canvas {
+    height: clamp(540px, 68vh, 760px);
+    min-height: 520px;
+  }
+
+  .live-support-panels {
+    grid-template-columns: 1fr;
+  }
+
   .admin-page-grid {
     grid-template-columns: 1fr;
   }
@@ -3361,6 +3417,11 @@ aside {
   .chart-canvas {
     height: 380px;
     min-height: 340px;
+  }
+
+  .live-workspace .chart-canvas {
+    height: 520px;
+    min-height: 420px;
   }
 
   .platform-main {

@@ -1093,7 +1093,7 @@ function App() {
         ) : null}
 
         {activeSection === "live" && !accountLocked ? (
-          <section className="auto-layout admin-section">
+          <section className="auto-layout live-workspace admin-section">
             <section className="chart-shell auto-chart-shell">
               <div className="chart-head">
                 <div>
@@ -1120,7 +1120,7 @@ function App() {
               />
             </section>
 
-            <aside className="auto-sidebar">
+            <aside className="auto-sidebar live-support-panels">
               <LiveSystemStatusPanel state={state} moduleCode={selectedModuleCode} setup={currentModuleSetup} trade={currentModuleTrade} feedHealth={feedHealth} />
               <LiveStrategyCenterPanel
                 moduleCode={selectedModuleCode}
