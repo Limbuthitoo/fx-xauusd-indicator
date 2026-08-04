@@ -11,6 +11,9 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     evaluations = setup.get("evaluations", []) if setup else []
     checklist = checklist_summary(evaluations)
     if trade and trade.get("outcome") == "ACTIVE":
+        setup_status = str(setup.get("status") or "") if setup else ""
+        if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 1 has an active legacy paper trade whose originating setup is not a valid opened ORB checklist. Do not use it as learning evidence.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 paper trade is active. Monitor TP/SL lifecycle.", False)
     if not setup:
         return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed NY ORB signal candle.", False)
@@ -19,12 +22,12 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
     status = str(setup.get("status") or "")
     flags = setup.get("scenario_flags") or {}
-    mandatory = bool(flags.get("mandatoryChecklistMatched")) or checklist["mandatoryPassed"]
+    mandatory = checklist["mandatoryPassed"]
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
         should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
-        tier = flags.get("setupTier") or "FULL"
+        tier = setup_tier(flags, checklist)
         reason = f"Module 1 {tier} ORB setup passed. {action} plan is ready with entry, SL, and TP."
         return payload("ORB_PAPER_ENTRY_READY" if should_open else "ORB_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
 
@@ -75,7 +78,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
     entry = number(setup.get("entry_price")) if setup else None
     stop = number(setup.get("stop_price")) if setup else None
     target = number(setup.get("target_price")) if setup else None
-    setup_tier = (setup.get("scenario_flags") or {}).get("setupTier") if setup else None
+    setup_tier_value = setup_tier(setup.get("scenario_flags") or {}, checklist) if setup else None
     title_action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else action
     return {
         "moduleCode": module_code,
@@ -93,14 +96,14 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
         "grade": setup.get("favorability_grade") if setup else None,
         "scenario": setup.get("scenario") if setup else None,
         "setupStatus": setup.get("status") if setup else None,
-        "setupTier": setup_tier,
+        "setupTier": setup_tier_value,
         "setupId": str(setup.get("id")) if setup and setup.get("id") else None,
         "tradeId": str(trade.get("id")) if trade and trade.get("id") else None,
         "candleStatus": candle_health.get("status"),
         "checklist": checklist,
         "notification": {
             "title": f"{module_name}: {title_action} {direction or ''}".strip(),
-            "body": notification_body(setup_tier, setup, entry, stop, target),
+            "body": notification_body(setup_tier_value, setup, entry, stop, target),
             "data": {
                 "moduleCode": module_code,
                 "moduleName": module_name,
@@ -112,7 +115,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
                 "setupCandidateId": str(setup.get("id")) if setup and setup.get("id") else None,
                 "tradeId": str(trade.get("id")) if trade and trade.get("id") else None,
                 "scenario": setup.get("scenario") if setup else None,
-                "setupTier": setup_tier,
+                "setupTier": setup_tier_value,
                 "finalReason": setup.get("final_reason") if setup else reason,
             },
         },
@@ -134,6 +137,16 @@ def notification_body(setup_tier: Any, setup: dict[str, Any] | None, entry: floa
         ]
         if item
     )
+
+
+def setup_tier(flags: dict[str, Any], checklist: dict[str, Any]) -> str:
+    matrix = flags.get("matrix") if isinstance(flags.get("matrix"), dict) else {}
+    saved = flags.get("setupTier") or matrix.get("setupTier")
+    if saved:
+        return str(saved)
+    if checklist.get("mandatoryPassed"):
+        return "MANDATORY" if checklist.get("blockingFailures") else "FULL"
+    return "WATCH"
 
 
 def first_blocker(checklist: dict[str, Any]) -> dict[str, Any] | None:

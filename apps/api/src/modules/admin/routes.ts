@@ -999,8 +999,9 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/admin/orb-learning/latest", async (request) => {
-    requirePermission(request, "reports.view");
-    const run = await query("SELECT * FROM orb_learning_runs ORDER BY started_at DESC LIMIT 1");
+    const session = requirePermission(request, "reports.view");
+    if (!session.tenantId) throw tenantContextRequired();
+    const run = await query("SELECT * FROM orb_learning_runs WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 1", [session.tenantId]);
     if (!run.rows[0]) return null;
     const recommendations = await query(
       `SELECT *
@@ -1016,10 +1017,17 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/api/admin/orb-learning/run", async (request) => {
     const session = requirePermission(request, "reports.view");
-    const result = await runOrbLearningPython();
+    if (!session.tenantId) throw tenantContextRequired();
+    const result = await runOrbLearningPython(session.tenantId);
     await writeAudit(session.sub, "ORB_LEARNING_RUN", "orb_learning_run", result.runId ?? null, null, result);
     return result;
   });
+}
+
+function tenantContextRequired() {
+  const error = new Error("Subscriber account context required for Module 1 learning.") as Error & { statusCode?: number };
+  error.statusCode = 403;
+  return error;
 }
 
 async function platformBusinessSettings() {

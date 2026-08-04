@@ -863,16 +863,18 @@ async function refreshRuntimeSettings() {
   return runtimeSettings;
 }
 
-async function runLearningAfterSession(sessionId: string) {
+async function runLearningAfterSession(session: any) {
+  const sessionId = String(session.id);
+  const tenantId = String(session.tenant_id);
   if (autoRunState.lastLearningSessionId === sessionId) return;
   try {
-    const result = await runOrbLearningPython();
-    const tenantId = await defaultTenantId();
+    const result = await runOrbLearningPython(tenantId);
     const coach = await runProductionLearningCoach(tenantId, "orb_max_options", sessionId);
     autoRunState.lastLearningSessionId = sessionId;
     autoRunState.lastLearningRunAt = new Date().toISOString();
     autoRunState.lastLearningResult = { ...result, coach };
-    await notifyOnce(
+    await notifyTenantOnce(
+      tenantId,
       `orb-learning-${sessionId}`,
       "ORB_LEARNING_COMPLETED",
       "ORB learning updated",
@@ -1565,7 +1567,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
         ? `${state.moduleName} New York window is complete. Daily report and learning closeout are done.`
         : state.reason;
     } else {
-      await runLearningAfterSession(session.id);
+      await runLearningAfterSession(session);
     }
     return state;
   }

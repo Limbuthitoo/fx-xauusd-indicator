@@ -25,6 +25,9 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     evaluations = setup.get("evaluations", []) if setup else []
     checklist = checklist_summary(evaluations)
     if trade and trade.get("outcome") == "ACTIVE":
+        setup_status = str(setup.get("status") or "") if setup else ""
+        if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 3 has an active legacy paper trade whose originating setup did not pass the authoritative VWAP-drive checklist.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 3 paper trade is active. Manage the TP/SL lifecycle.", False)
     if not setup:
         return payload("WAITING_FOR_VWAP_DRIVE_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 3 is waiting for New York opening drive, VWAP alignment, pullback-zone touch, and confirmation candle.", False)
@@ -33,8 +36,8 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
     status = str(setup.get("status") or "")
     flags = setup.get("scenario_flags") or {}
-    mandatory = bool(flags.get("mandatoryChecklistMatched")) or checklist["mandatoryPassed"]
-    full = bool(flags.get("fullChecklistMatched")) or checklist["fullPassed"]
+    mandatory = checklist["mandatoryPassed"]
+    full = checklist["fullPassed"]
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:

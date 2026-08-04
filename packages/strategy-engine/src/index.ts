@@ -612,7 +612,7 @@ function orbMandatoryEntryReady(evaluations: ReturnType<typeof evaluateMandatory
     "ENTRY_NOT_OVEREXTENDED",
     "RISK_PERMISSION"
   ]);
-  return evaluations
-    .filter((evaluation) => required.has(evaluation.ruleCode))
-    .every((evaluation) => evaluation.status === "PASS");
+  return [...required].every((ruleCode) =>
+    evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
+  );
 }

@@ -157,7 +157,7 @@ def latest_setup(cur, tenant_id: str, module_code: str) -> dict[str, Any] | None
           AND sc.scenario <> 'QA_TEST_SIGNAL'
           AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         GROUP BY sc.id, t.id
-        ORDER BY sc.detected_at DESC
+        ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, sc.detected_at DESC
         LIMIT 1
         """,
         (tenant_id, module_code),

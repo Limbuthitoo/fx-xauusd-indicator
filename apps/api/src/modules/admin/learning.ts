@@ -6,8 +6,8 @@ const execFileAsync = promisify(execFile);
 const pythonBin = process.env.PYTHON_BIN || "python3";
 const pythonCwd = process.cwd().replace(/\/apps\/api$/, "");
 
-export async function runOrbLearningPython() {
-  const { stdout } = await execFileAsync(pythonBin, ["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl], {
+export async function runOrbLearningPython(tenantId: string) {
+  const { stdout } = await execFileAsync(pythonBin, ["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId], {
     cwd: pythonCwd,
     timeout: 120_000
   });

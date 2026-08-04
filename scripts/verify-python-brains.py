@@ -100,7 +100,12 @@ module3 = decide_module3(
 )
 
 module2_incomplete = decide_module2(
-    setup("high_probability_strategy_2", "SHORT", MODULE2_MANDATORY[:-1], {}),
+    setup("high_probability_strategy_2", "SHORT", MODULE2_MANDATORY[:-1], {"mandatoryChecklistMatched": True, "fullChecklistMatched": True}),
+    None,
+    HEALTH,
+)
+module1_incomplete = decide_module1(
+    setup("orb_max_options", "LONG", module1_rules[:-1], {"mandatoryChecklistMatched": True, "setupTier": "FULL"}),
     None,
     HEALTH,
 )
@@ -109,13 +114,20 @@ module3_proxy_only = decide_module3(
     None,
     HEALTH,
 )
+legacy_active = decide_module1(
+    setup("orb_max_options", "LONG", module1_rules[:-1], {"mandatoryChecklistMatched": True}),
+    {"id": "legacy-trade", "outcome": "ACTIVE", "direction": "LONG"},
+    HEALTH,
+)
 
 assert module1["shouldOpenPaperTrade"] and module1["action"] == "BUY"
 assert module2["shouldOpenPaperTrade"] and module2["action"] == "SELL"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert module3["shouldOpenPaperTrade"] and module3["action"] == "BUY"
 assert module3["checklist"]["mandatoryPassed"] and module3["checklist"]["fullPassed"]
+assert not module1_incomplete["shouldOpenPaperTrade"]
 assert not module2_incomplete["shouldOpenPaperTrade"]
+assert legacy_active["decisionType"] == "ACTIVE_TRADE_CHECKLIST_MISMATCH"
 assert module3_proxy_only["shouldOpenPaperTrade"]
 assert not module3_proxy_only["checklist"]["fullPassed"]
 
@@ -126,7 +138,7 @@ print(
             "module1": module1["decisionType"],
             "module2": module2["decisionType"],
             "module3": module3["decisionType"],
-            "negativeChecks": [module2_incomplete["decisionType"], module3_proxy_only["decisionType"]],
+            "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], module3_proxy_only["decisionType"], legacy_active["decisionType"]],
         },
         indent=2,
     )

@@ -32,12 +32,12 @@ class Recommendation:
     suggested_action: dict[str, Any]
 
 
-def run_learning(database_url: str, source: str = "PAPER_AND_BACKTEST") -> dict[str, Any]:
+def run_learning(database_url: str, tenant_id: str, source: str = "PAPER_AND_BACKTEST") -> dict[str, Any]:
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            run_id = create_run(cur, source)
+            run_id = create_run(cur, tenant_id, source)
             try:
-                rows = load_results(cur)
+                rows = load_results(cur, tenant_id)
                 recommendations = build_recommendations(rows)
                 for item in recommendations:
                     insert_recommendation(cur, run_id, item)
@@ -65,15 +65,15 @@ def run_learning(database_url: str, source: str = "PAPER_AND_BACKTEST") -> dict[
                 raise
 
 
-def create_run(cur, source: str):
+def create_run(cur, tenant_id: str, source: str):
     cur.execute(
-        "INSERT INTO orb_learning_runs (source, status) VALUES (%s, 'RUNNING') RETURNING id",
-        (source,),
+        "INSERT INTO orb_learning_runs (tenant_id, source, status) VALUES (%s, %s, 'RUNNING') RETURNING id",
+        (tenant_id, source),
     )
     return cur.fetchone()["id"]
 
 
-def load_results(cur) -> list[dict[str, Any]]:
+def load_results(cur, tenant_id: str) -> list[dict[str, Any]]:
     cur.execute(
         """
         SELECT
@@ -82,7 +82,7 @@ def load_results(cur) -> list[dict[str, Any]]:
           sc.direction,
           sc.favorability_score,
           sc.favorability_grade,
-          COALESCE(sc.scenario_flags->>'setupTier', 'FULL') AS setup_tier,
+          COALESCE(sc.scenario_flags->>'setupTier', sc.scenario_flags->'matrix'->>'setupTier', 'WATCH') AS setup_tier,
           t.outcome,
           t.result_r::float AS result_r,
           t.opened_at AS occurred_at
@@ -90,7 +90,9 @@ def load_results(cur) -> list[dict[str, Any]]:
         JOIN trade_plans tp ON tp.id = t.trade_plan_id
         JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
         WHERE t.outcome IN ('WIN', 'LOSS', 'BREAKEVEN')
+          AND sc.tenant_id = %s
           AND sc.module_code = %s
+          AND COALESCE(sc.scenario_flags->>'mandatoryChecklistMatched', sc.scenario_flags->'matrix'->>'mandatoryChecklistMatched', 'false') = 'true'
           AND sc.scenario <> 'QA_TEST_SIGNAL'
           AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         UNION ALL
@@ -107,10 +109,12 @@ def load_results(cur) -> list[dict[str, Any]]:
         FROM backtest_trades bt
         JOIN backtest_runs br ON br.id = bt.backtest_run_id
         WHERE bt.outcome IN ('WIN', 'LOSS', 'BREAKEVEN')
+          AND br.tenant_id = %s
           AND COALESCE(br.module_code, %s) = %s
+          AND COALESCE(bt.details->'scenarioFlags'->>'mandatoryChecklistMatched', bt.details->'scenarioFlags'->'matrix'->>'mandatoryChecklistMatched', 'false') = 'true'
         ORDER BY occurred_at NULLS LAST
         """,
-        (MODULE_CODE, MODULE_CODE, MODULE_CODE),
+        (tenant_id, MODULE_CODE, tenant_id, MODULE_CODE, MODULE_CODE),
     )
     return list(cur.fetchall())
 
@@ -266,11 +270,12 @@ def pretty(value: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Learn from ORB paper/backtest results and write recommendations to PostgreSQL.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
+    parser.add_argument("--tenant-id", required=True)
     parser.add_argument("--source", default="PAPER_AND_BACKTEST")
     args = parser.parse_args()
     if not args.database_url:
         raise SystemExit("DATABASE_URL is required.")
-    print(json.dumps(run_learning(args.database_url, args.source), indent=2))
+    print(json.dumps(run_learning(args.database_url, args.tenant_id, args.source), indent=2))
 
 
 if __name__ == "__main__":
