@@ -687,7 +687,7 @@ function paperTradeView(row: any) {
 
 function paperTradeCondition(status: string, unrealizedR: number | null) {
   if (status === "WIN") return "TARGET HIT";
-  if (status === "LOSS") return "STOP HIT";
+  if (status === "LOSS") return "SL HIT";
   if (status === "BREAKEVEN") return "BREAKEVEN";
   if (status !== "ACTIVE") return status || "CLOSED";
   if (unrealizedR == null) return "AWAITING PRICE";
