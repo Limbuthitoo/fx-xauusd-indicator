@@ -20,6 +20,7 @@ const apiBase = process.env.API_BASE_URL ?? "http://localhost:7073";
 const webBase = process.env.WEB_BASE_URL ?? "http://localhost:3000";
 const adminEmail = process.env.ADMIN_EMAIL ?? "admin@orb.local";
 const adminPassword = process.env.ADMIN_PASSWORD ?? process.env.LOCAL_PIN ?? "1234";
+const adminOtp = process.env.ADMIN_OTP ?? process.env.ADMIN_MFA_CODE ?? "";
 const requestTimeoutMs = Number(process.env.LAUNCH_VALIDATE_TIMEOUT_MS ?? 5_000);
 
 const failures: string[] = [];
@@ -62,7 +63,7 @@ async function login() {
   const response = await timedFetch(`${apiBase}/api/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: adminEmail, password: adminPassword })
+    body: JSON.stringify({ email: adminEmail, password: adminPassword, ...(adminOtp ? { otp: adminOtp } : {}) })
   }).catch((error) => {
     failures.push(`Admin login request failed: ${(error as Error).message}`);
     return null;

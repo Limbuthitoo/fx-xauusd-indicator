@@ -1,6 +1,7 @@
 const baseUrl = process.env.API_BASE_URL ?? process.env.PUBLIC_API_BASE_URL ?? "http://localhost:7073";
 const email = process.env.ADMIN_EMAIL ?? "admin@orb.local";
 const password = process.env.ADMIN_PASSWORD ?? process.env.LOCAL_PIN ?? "1234";
+const otp = process.env.ADMIN_OTP ?? process.env.ADMIN_MFA_CODE ?? "";
 
 async function json(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, options);
@@ -15,7 +16,7 @@ async function main() {
   const login = await json("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password, ...(otp ? { otp } : {}) })
   });
   const headers = { authorization: `Bearer ${login.token}` };
   const [system, backups, usage, push] = await Promise.all([
