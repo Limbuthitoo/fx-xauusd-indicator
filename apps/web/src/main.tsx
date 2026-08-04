@@ -5427,11 +5427,14 @@ function ModuleJournalPanel({ moduleName, trades, setup, selectedTradeId, detail
 
 function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: string; learning?: any; onRun: () => Promise<void> }) {
   const summary = learning?.summary ?? {};
+  const indicatorRows = summary.indicatorPlaybook?.indicators ?? [];
+  const weakRows = summary.indicatorPlaybook?.weakestIndicators ?? [];
   return (
     <Panel icon={<LineChart />} title={`${moduleName} Learning`}>
       <div className="metrics-grid compact">
         <Metric label="Status" value={learning?.status ?? "NOT RUN"} />
         <Metric label="Sample size" value={learning?.sample_size ?? 0} />
+        <Metric label="Paper / backtest" value={`${summary.sampleSources?.paperTrades ?? 0} / ${summary.sampleSources?.backtestTrades ?? 0}`} />
         <Metric label="Recommendations" value={(learning?.recommendations ?? []).length} />
         <Metric label="Win rate" value={formatPercent(summary.overall?.winRate)} />
         <Metric label="Expectancy" value={formatR(summary.overall?.expectancy)} />
@@ -5449,6 +5452,23 @@ function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: stri
         ))}
         {!learning ? <p className="reason">No learning run yet.</p> : null}
       </div>
+      {indicatorRows.length > 0 ? (
+        <div className="journal-detail-card">
+          <div>
+            <strong>Indicator Learning</strong>
+            <span>{weakRows.length} weak indicator focus area{weakRows.length === 1 ? "" : "s"} found from saved checklist evidence.</span>
+          </div>
+          <div className="module2-breakdown-grid">
+            {indicatorRows.slice(0, 6).map((row: any) => (
+              <div className="mini-breakdown" key={row.ruleCode}>
+                <strong>{row.indicator}</strong>
+                <span>{formatPercent(row.passRate)} pass · {row.total} evaluation{row.total === 1 ? "" : "s"}</span>
+                <em>{row.treatment}</em>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -5519,6 +5539,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
           </div>
           <div className="evidence-notes">
             <strong>Backtest Evidence</strong>
+            {detail.instruction ? <span>{detail.instruction.operatorInstruction}</span> : null}
             <span>{detail.finalReason ?? detail.reason ?? "Backtest evidence is stored in the trade details snapshot."}</span>
             <span>Checklist rows: {(detail.evaluations ?? detail.checklist ?? []).length || "not stored for this older run"}</span>
           </div>
@@ -5546,7 +5567,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
               const zone = details.entryZone ?? {};
               return (
                 <tr key={`${trade.date ?? trade.entryTime}-${index}`}>
-                  <td>{formatNepalTime(trade.entryTime ?? trade.date)}</td>
+                  <td>{formatNepalTime(details.entryTime ?? trade.entryTime ?? trade.date)}</td>
                   <td>{trade.direction ?? "--"}</td>
                   <td>{details.liquidityType ?? details.sweep?.level?.type ?? "--"}</td>
                   <td>{details.sweepDistanceAtr == null ? "--" : Number(details.sweepDistanceAtr).toFixed(2)}</td>
@@ -5624,6 +5645,7 @@ function Module3BacktestTable({ latest }: { latest?: any }) {
           </div>
           <div className="evidence-notes">
             <strong>Backtest Evidence</strong>
+            {detail.instruction ? <span>{detail.instruction.operatorInstruction}</span> : null}
             <span>{detail.finalReason ?? detail.reason ?? "Backtest evidence is stored in the Module 3 details snapshot."}</span>
             <span>Checklist rows: {(detail.evaluations ?? detail.checklist ?? []).length || "not stored for this older run"}</span>
           </div>
@@ -5652,7 +5674,7 @@ function Module3BacktestTable({ latest }: { latest?: any }) {
               const openingDrive = details.drive ?? {};
               return (
                 <tr key={`${trade.date ?? trade.entryTime}-${index}`}>
-                  <td>{formatNepalTime(trade.entryTime ?? trade.date)}</td>
+                  <td>{formatNepalTime(details.entryTime ?? trade.entryTime ?? trade.date)}</td>
                   <td>{trade.direction ?? "--"}</td>
                   <td>{details.vwap == null ? "--" : Number(details.vwap).toFixed(2)}</td>
                   <td>{openingDrive.low == null ? "--" : `${Number(openingDrive.low).toFixed(2)}-${Number(openingDrive.high).toFixed(2)}`}</td>

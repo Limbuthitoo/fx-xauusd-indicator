@@ -147,9 +147,7 @@ export async function backtestRoutes(app: FastifyInstance) {
           [run.id, key, typeof value === "number" ? value : null, typeof value === "number" ? null : value]
         );
       }
-      const learning = moduleCode === "high_probability_strategy_2" && auth.tenantId
-        ? await insertModule2BacktestLearningRun(auth.tenantId, result.summary, result.metrics)
-        : null;
+      const learning = await runPostBacktestLearning(auth.tenantId, moduleCode);
       const updated = await query(
         "UPDATE backtest_runs SET status = 'COMPLETED', completed_at = now(), summary = $2 WHERE id = $1 RETURNING *",
         [run.id, { ...result.summary, moduleCode, learningRunId: learning?.runId ?? null }]
@@ -422,6 +420,20 @@ export async function backtestRoutes(app: FastifyInstance) {
     const { rows } = await query("SELECT * FROM backtest_metrics WHERE backtest_run_id = $1 ORDER BY metric_key", [id]);
     return rows;
   });
+}
+
+async function runPostBacktestLearning(tenantId: string | null, moduleCode: string) {
+  if (!tenantId) return null;
+  if (!["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"].includes(moduleCode)) return null;
+  try {
+    return await runStrategyModuleLearningPython(tenantId, moduleCode);
+  } catch (error) {
+    return {
+      status: "FAILED",
+      moduleCode,
+      error: (error as Error).message
+    };
+  }
 }
 
 function runLiquiditySweepMemoryCacheBacktest(input: {

@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from .indicator_playbook import indicator_summary
+
 try:
     import psycopg
     from psycopg.rows import dict_row
@@ -24,9 +26,12 @@ def run_learning(database_url: str, tenant_id: str, source: str = "MODULE2_PAPER
             run_id = create_run(cur, tenant_id, source)
             try:
                 trades = load_module2_trades(cur, tenant_id)
+                backtest_trades = load_module2_backtest_trades(cur, tenant_id)
+                all_trades = [*trades, *backtest_trades]
                 setup_failures = load_setup_failures(cur, tenant_id)
-                recommendations = build_recommendations(trades, setup_failures)
-                summary = build_summary(trades, setup_failures, recommendations)
+                indicator_rows = load_indicator_evidence(cur, tenant_id)
+                recommendations = build_recommendations(all_trades, setup_failures, indicator_rows)
+                summary = build_summary(all_trades, setup_failures, recommendations, indicator_rows, len(trades), len(backtest_trades))
                 for recommendation in recommendations:
                     insert_recommendation(cur, run_id, recommendation)
                 cur.execute(
@@ -35,13 +40,13 @@ def run_learning(database_url: str, tenant_id: str, source: str = "MODULE2_PAPER
                     SET status = 'COMPLETED', completed_at = now(), sample_size = %s, summary = %s::jsonb
                     WHERE id = %s
                     """,
-                    (len(trades), json.dumps(summary), run_id),
+                    (len(all_trades), json.dumps(summary), run_id),
                 )
                 conn.commit()
                 return {
                     "runId": str(run_id),
                     "status": "COMPLETED",
-                    "sampleSize": len(trades),
+                    "sampleSize": len(all_trades),
                     "recommendations": len(recommendations),
                     "summary": summary,
                 }
@@ -97,7 +102,40 @@ def load_module2_trades(cur, tenant_id: str) -> list[dict[str, Any]]:
         """,
         (tenant_id, MODULE_CODE),
     )
-    return list(cur.fetchall())
+    rows = list(cur.fetchall())
+    for row in rows:
+        row["sample_source"] = "LIVE_PAPER"
+    return rows
+
+
+def load_module2_backtest_trades(cur, tenant_id: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+          bt.id AS setup_id,
+          bt.scenario,
+          bt.direction,
+          COALESCE((bt.details->>'favorabilityScore')::numeric, 0)::float AS favorability_score,
+          COALESCE(bt.details->>'favorabilityGrade', 'UNKNOWN') AS favorability_grade,
+          COALESCE(bt.details->'scenarioFlags', '{}'::jsonb) AS scenario_flags,
+          COALESCE(bt.details->'scenarioFlags'->>'setupTier', 'FULL') AS setup_tier,
+          bt.outcome,
+          bt.result_r::float AS result_r,
+          COALESCE(bt.details->>'entryTime', br.started_at::text) AS opened_at,
+          COALESCE(bt.details->>'exitTime', br.completed_at::text) AS closed_at
+        FROM backtest_trades bt
+        JOIN backtest_runs br ON br.id = bt.backtest_run_id
+        WHERE br.tenant_id = %s
+          AND COALESCE(br.module_code, br.parameters->>'moduleCode') = %s
+          AND bt.outcome IN ('WIN', 'LOSS', 'BREAKEVEN')
+        ORDER BY bt.session_date, opened_at
+        """,
+        (tenant_id, MODULE_CODE),
+    )
+    rows = list(cur.fetchall())
+    for row in rows:
+        row["sample_source"] = "BACKTEST"
+    return rows
 
 
 def load_setup_failures(cur, tenant_id: str) -> list[dict[str, Any]]:
@@ -125,21 +163,55 @@ def load_setup_failures(cur, tenant_id: str) -> list[dict[str, Any]]:
     return list(cur.fetchall())
 
 
-def build_summary(trades: list[dict[str, Any]], failures: list[dict[str, Any]], recommendations: list[dict[str, Any]]) -> dict[str, Any]:
+def load_indicator_evidence(cur, tenant_id: str) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+          sre.rule_code,
+          sre.name,
+          sre.status,
+          sre.blocking,
+          max(sre.explanation) AS explanation,
+          count(*)::int AS count
+        FROM setup_rule_evaluations sre
+        JOIN setup_candidates sc ON sc.id = sre.setup_candidate_id
+        WHERE sc.tenant_id = %s
+          AND sc.module_code = %s
+          AND sc.status <> 'TEST_CLEARED'
+          AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+        GROUP BY sre.rule_code, sre.name, sre.status, sre.blocking
+        ORDER BY sre.rule_code, count(*) DESC
+        """,
+        (tenant_id, MODULE_CODE),
+    )
+    return list(cur.fetchall())
+
+
+def build_summary(
+    trades: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]],
+    indicator_rows: list[dict[str, Any]],
+    paper_count: int,
+    backtest_count: int,
+) -> dict[str, Any]:
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "sampleSources": {"paperTrades": paper_count, "backtestTrades": backtest_count},
         "overall": metrics_for(trades),
+        "bySampleSource": bucket_metrics(trades, lambda row: row.get("sample_source") or "UNKNOWN"),
         "bySetupTier": bucket_metrics(trades, lambda row: row.get("setup_tier") or "FULL"),
         "byGrade": bucket_metrics(trades, lambda row: row.get("favorability_grade") or "UNKNOWN"),
         "byDirection": bucket_metrics(trades, lambda row: row.get("direction") or "UNKNOWN"),
         "byLiquidity": bucket_metrics(trades, liquidity_bucket),
+        "indicatorPlaybook": indicator_summary(MODULE_CODE, indicator_rows),
         "failureRules": failures[:12],
         "recommendations": len(recommendations),
         "sampleWarning": len(trades) < MIN_SAMPLE_FOR_CHANGE,
     }
 
 
-def build_recommendations(trades: list[dict[str, Any]], failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_recommendations(trades: list[dict[str, Any]], failures: list[dict[str, Any]], indicator_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     recommendations: list[dict[str, Any]] = []
     overall = metrics_for(trades)
     if overall["trades"] == 0:
@@ -244,6 +316,22 @@ def build_recommendations(trades: list[dict[str, Any]], failures: list[dict[str,
                 f"This is the most common failed rule in saved Module 2 evaluations: {top_failure['count']} occurrences.",
                 {"ruleCode": top_failure["rule_code"], "count": top_failure["count"], "blocking": top_failure["blocking"]},
                 {"action": "REVIEW_RULE", "ruleCode": top_failure["rule_code"]},
+            )
+        )
+
+    playbook = indicator_summary(MODULE_CODE, indicator_rows)
+    weakest = (playbook.get("weakestIndicators") or [])[:3]
+    for item in weakest:
+        if int(item.get("total") or 0) < 3:
+            continue
+        recommendations.append(
+            recommendation(
+                "INDICATOR_WEAKNESS",
+                "MEDIUM" if int(item["total"]) >= 10 else "LOW",
+                f"Improve Module 2 {item['indicator']} handling",
+                f"{item['indicator']} passed {item['passRate']:.1%} across {item['total']} saved evaluations. Treatment: {item['treatment']}",
+                item,
+                {"action": "REVIEW_INDICATOR_LOGIC", "moduleCode": MODULE_CODE, "ruleCode": item["ruleCode"]},
             )
         )
 
