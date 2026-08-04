@@ -1,6 +1,18 @@
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:7073";
 const TOKEN_KEY = "orb_admin_token";
 
+export class ApiError extends Error {
+  status: number;
+  retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 export function getAuthToken() {
   return window.localStorage.getItem(TOKEN_KEY);
 }
@@ -49,7 +61,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
         parsed = null;
       }
       const message = parsed?.message ?? parsed?.error ?? body;
-      throw new Error(message || `${response.status} ${response.statusText}`);
+      throw new ApiError(message || `${response.status} ${response.statusText}`, response.status, parsed?.retryAfterSeconds);
     }
     return response.json() as Promise<T>;
   } catch (error) {

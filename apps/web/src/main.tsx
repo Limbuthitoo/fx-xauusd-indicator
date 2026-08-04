@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
-import { API_BASE_URL, api, clearAuthToken, setAuthToken } from "./shared/api";
+import { API_BASE_URL, ApiError, api, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
@@ -1431,6 +1431,7 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
       await onLogin(email, password, otp);
     } catch (error) {
       const message = (error as Error).message;
+<<<<<<< HEAD
       setError(
         message.includes("Too many login attempts")
           ? message
@@ -1440,6 +1441,14 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
               ? message
               : "Invalid admin email or password."
       );
+=======
+      if (error instanceof ApiError && error.status === 429) {
+        const minutes = error.retryAfterSeconds ? Math.ceil(error.retryAfterSeconds / 60) : null;
+        setError(minutes ? `Too many login attempts. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.` : message);
+      } else {
+        setError(message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : message.includes("Platform admin") || message.includes("Subscriber account") ? message : "Invalid admin email or password.");
+      }
+>>>>>>> cb90034 (-fixes and updates)
     } finally {
       setLoading(false);
     }
