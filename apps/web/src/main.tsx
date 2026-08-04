@@ -1431,24 +1431,12 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
       await onLogin(email, password, otp);
     } catch (error) {
       const message = (error as Error).message;
-<<<<<<< HEAD
-      setError(
-        message.includes("Too many login attempts")
-          ? message
-          : message.includes("Two-factor")
-            ? "Enter your 6-digit two-factor code."
-            : message.includes("Platform admin") || message.includes("Subscriber account")
-              ? message
-              : "Invalid admin email or password."
-      );
-=======
       if (error instanceof ApiError && error.status === 429) {
         const minutes = error.retryAfterSeconds ? Math.ceil(error.retryAfterSeconds / 60) : null;
         setError(minutes ? `Too many login attempts. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.` : message);
       } else {
         setError(message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : message.includes("Platform admin") || message.includes("Subscriber account") ? message : "Invalid admin email or password.");
       }
->>>>>>> cb90034 (-fixes and updates)
     } finally {
       setLoading(false);
     }
@@ -3375,6 +3363,7 @@ function CrossModuleCommandCenter({
   const activeTrades = rows.filter((row) => row.trade?.outcome === "ACTIVE").length;
   const buySellSignals = rows.filter((row) => ["BUY", "SELL"].includes(row.signalLabel)).length;
   const blockedRows = rows.filter((row) => row.readiness === "BLOCKED").length;
+  const selectedRow = rows.find((row) => row.moduleCode === activeModuleCode) ?? rows[0];
   return (
     <>
       <Panel icon={<ShieldCheck />} title="Strategy Command Center">
@@ -3397,43 +3386,43 @@ function CrossModuleCommandCenter({
       </Panel>
 
       <Panel icon={<Layers />} title="Strategy Center">
-        <div className="command-module-grid">
-          {rows.map((row) => (
-            <article className={`command-module-card ${row.moduleCode === activeModuleCode ? "active" : ""}`} key={row.moduleCode}>
+        <div className="command-module-grid single">
+          {selectedRow ? (
+            <article className="command-module-card active" key={selectedRow.moduleCode}>
               <header>
                 <div>
-                  <span>{row.timeframe}</span>
-                  <strong>{row.name}</strong>
+                  <span>{selectedRow.timeframe}</span>
+                  <strong>{selectedRow.name}</strong>
                 </div>
-                <em className={`status-pill ${row.readinessTone}`}>{row.readiness}</em>
+                <em className={`status-pill ${selectedRow.readinessTone}`}>{selectedRow.readiness}</em>
               </header>
               <div className="command-signal-row">
                 <div>
                   <span>Signal</span>
-                  <strong className={row.signalTone === "good" ? "good-text" : row.signalTone === "bad" ? "bad-text" : "warn-text"}>{row.signalLabel}</strong>
+                  <strong className={selectedRow.signalTone === "good" ? "good-text" : selectedRow.signalTone === "bad" ? "bad-text" : "warn-text"}>{selectedRow.signalLabel}</strong>
                 </div>
                 <div>
                   <span>Paper trade</span>
-                  <strong>{row.tradeLabel}</strong>
+                  <strong>{selectedRow.tradeLabel}</strong>
                 </div>
               </div>
               <div className="command-metrics">
-                <Metric label="Confidence" value={row.confidenceLabel} />
-                <Metric label="Samples" value={row.sampleSize} />
-                <Metric label="Rehearsal" value={row.rehearsalStatus} />
-                <Metric label="Audit" value={row.auditStatus} />
+                <Metric label="Confidence" value={selectedRow.confidenceLabel} />
+                <Metric label="Samples" value={selectedRow.sampleSize} />
+                <Metric label="Rehearsal" value={selectedRow.rehearsalStatus} />
+                <Metric label="Audit" value={selectedRow.auditStatus} />
               </div>
               <div className="command-setup-plan">
-                <span>{row.setup?.scenario ? formatScenario(row.setup.scenario) : "Waiting for setup"}</span>
-                <strong>{row.setup?.direction ?? row.trade?.direction ?? "--"}</strong>
-                <em>{row.nextAction}</em>
+                <span>{selectedRow.setup?.scenario ? formatScenario(selectedRow.setup.scenario) : "Waiting for setup"}</span>
+                <strong>{selectedRow.setup?.direction ?? selectedRow.trade?.direction ?? "--"}</strong>
+                <em>{selectedRow.nextAction}</em>
               </div>
               <div className="admin-actions inline-actions">
-                <button onClick={() => onOpenModule(row.moduleCode)}>Open Chart</button>
-                <button onClick={() => onRunRehearsal(row.moduleCode).catch(() => undefined)}>Run Rehearsal</button>
+                <button onClick={() => onOpenModule(selectedRow.moduleCode)}>Open Chart</button>
+                <button onClick={() => onRunRehearsal(selectedRow.moduleCode).catch(() => undefined)}>Run Rehearsal</button>
               </div>
             </article>
-          ))}
+          ) : null}
           {rows.length === 0 ? <p className="reason">No enabled strategy modules.</p> : null}
         </div>
       </Panel>

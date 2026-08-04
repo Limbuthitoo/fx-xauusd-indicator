@@ -1554,6 +1554,10 @@ button:hover,
   gap: 10px;
 }
 
+.command-module-grid.single {
+  grid-template-columns: minmax(280px, 520px);
+}
+
 .command-module-card {
   display: grid;
   gap: 10px;
