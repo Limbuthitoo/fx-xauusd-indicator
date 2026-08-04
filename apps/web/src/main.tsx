@@ -271,7 +271,7 @@ function App() {
             setMessage(routeError);
             return;
           }
-          clearAuthToken();
+          setAuthToken(result.token);
           setUser(result.user);
         })
         .catch(() => {
@@ -1431,7 +1431,15 @@ function LoginScreen({ mode, onLogin }: { mode: "platform" | "tenant"; onLogin: 
       await onLogin(email, password, otp);
     } catch (error) {
       const message = (error as Error).message;
-      setError(message.includes("Two-factor") ? "Enter your 6-digit two-factor code." : message.includes("Platform admin") || message.includes("Subscriber account") ? message : "Invalid admin email or password.");
+      setError(
+        message.includes("Too many login attempts")
+          ? message
+          : message.includes("Two-factor")
+            ? "Enter your 6-digit two-factor code."
+            : message.includes("Platform admin") || message.includes("Subscriber account")
+              ? message
+              : "Invalid admin email or password."
+      );
     } finally {
       setLoading(false);
     }
