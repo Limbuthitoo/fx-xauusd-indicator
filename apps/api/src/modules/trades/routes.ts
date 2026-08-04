@@ -10,6 +10,7 @@ export async function tradeRoutes(app: FastifyInstance) {
     const limit = Math.min(Math.max(Number(search.limit ?? 200), 1), 500);
     const status = String(search.status ?? "ALL").toUpperCase();
     const moduleCode = String(search.moduleCode ?? "ALL");
+    await settleOpenPaperTrades(auth.tenantId, moduleCode);
     const params: unknown[] = [auth.tenantId];
     const statusFilter = status !== "ALL" ? `AND t.outcome = $${params.push(status)}` : "";
     const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
@@ -644,6 +645,82 @@ function summarizePaperTrades(trades: any[]) {
   };
 }
 
+async function settleOpenPaperTrades(tenantId: string, moduleCode: string) {
+  const params: unknown[] = [tenantId];
+  const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+  const active = await query(
+    `SELECT
+       t.*,
+       tp.id AS trade_plan_id,
+       tp.setup_candidate_id,
+       sc.tenant_id,
+       sc.session_id,
+       sc.symbol,
+       sc.direction,
+       sc.scenario,
+       sc.module_code
+     FROM trades t
+     JOIN trade_plans tp ON tp.id = t.trade_plan_id
+     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     WHERE sc.tenant_id = $1
+       AND t.outcome = 'ACTIVE'
+       AND t.opened_at IS NOT NULL
+       ${moduleFilter}
+     ORDER BY t.opened_at ASC`,
+    params
+  );
+
+  for (const trade of active.rows as any[]) {
+    const candles = await query(
+      `SELECT timestamp_utc, open, high, low, close
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND source LIKE 'TWELVE_DATA%'
+         AND timestamp_utc >= $3
+       ORDER BY timestamp_utc ASC`,
+      [trade.symbol, moduleExecutionTimeframeMinutes(trade.module_code), trade.opened_at]
+    );
+    const exit = recoverPaperExit(trade, candles.rows as any[]);
+    if (!exit) continue;
+    const entry = Number(trade.actual_entry);
+    const stop = Number(trade.actual_stop);
+    const stopDistance = Math.abs(entry - stop);
+    const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
+    const resultR = stopDistance > 0 ? ((exit.price - entry) * directionMultiplier) / stopDistance : 0;
+    const outcome = exit.reason === "TARGET" ? "WIN" : exit.reason === "STOP" ? "LOSS" : resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN";
+    await query(
+      `UPDATE trades SET
+         actual_exit = $2,
+         result_r = $3,
+         outcome = $4,
+         closed_at = $5
+       WHERE id = $1
+         AND outcome = 'ACTIVE'`,
+      [trade.id, exit.price, resultR, outcome, exit.timestampUtc]
+    );
+    await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
+    await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_AUTO_CLOSE',$2)", [
+      trade.id,
+      { mode: "PAPER", moduleCode: trade.module_code, exitReason: exit.reason, candle: exit.candle, settledFrom: "paper-ledger" }
+    ]);
+    await query(
+      `INSERT INTO journal_entries (
+        tenant_id, setup_candidate_id, trade_id, session_id, decision, emotion_after,
+        rule_violations, lesson, process_grade, outcome
+      ) VALUES ($6,$1,$2,$3,'PAPER_AUTO_CLOSE','AUTO','NONE',$4,'A',$5)`,
+      [
+        trade.setup_candidate_id,
+        trade.id,
+        trade.session_id,
+        `Paper trade auto-closed by ${exit.reason}. Result ${resultR.toFixed(2)}R.`,
+        outcome,
+        trade.tenant_id
+      ]
+    );
+  }
+}
+
 function paperTradeView(row: any) {
   const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
   const entry = Number(row.actual_entry);
@@ -672,7 +749,7 @@ function paperTradeView(row: any) {
     rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
     plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),
     status: row.outcome,
-    condition: paperTradeCondition(row.outcome, unrealizedR),
+    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk)),
     unrealizedR,
     exit: row.actual_exit == null ? null : Number(row.actual_exit),
     resultR: row.result_r == null ? null : Number(row.result_r),
@@ -685,12 +762,14 @@ function paperTradeView(row: any) {
   };
 }
 
-function paperTradeCondition(status: string, unrealizedR: number | null) {
+function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null) {
   if (status === "WIN") return "TARGET HIT";
   if (status === "LOSS") return "SL HIT";
   if (status === "BREAKEVEN") return "BREAKEVEN";
   if (status !== "ACTIVE") return status || "CLOSED";
   if (unrealizedR == null) return "AWAITING PRICE";
+  if (unrealizedR <= -1) return "SL HIT";
+  if (rewardToRisk != null && unrealizedR >= rewardToRisk) return "TARGET HIT";
   if (unrealizedR >= 1.5) return "NEAR TARGET";
   if (unrealizedR > 0) return "IN PROFIT";
   if (unrealizedR <= -0.7) return "NEAR STOP";
