@@ -2213,6 +2213,71 @@ button:hover,
   font-style: normal;
 }
 
+.notification-detail-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: #0d1511;
+}
+
+.notification-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notification-detail-head span {
+  margin: 0;
+  color: #9ba8a0;
+  font-size: 11px;
+}
+
+.notification-detail-head strong {
+  color: #edf4ef;
+  font-size: 13px;
+}
+
+.notification-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(86px, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #253027;
+  border-radius: 5px;
+  background: #253027;
+}
+
+.notification-detail-grid .metric {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  min-height: 52px;
+  padding: 7px 8px;
+  border: 0;
+  background: #172119;
+}
+
+.notification-detail-grid .metric span,
+.notification-detail-grid .metric strong {
+  text-align: left;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.notification-detail-grid .metric span {
+  color: #8f9d94;
+  font-size: 10px;
+}
+
+.notification-detail-grid .metric strong {
+  color: #edf4ef;
+  font-size: 12px;
+}
+
 .settings-list {
   display: grid;
   gap: 9px;

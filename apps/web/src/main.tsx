@@ -1323,6 +1323,7 @@ function App() {
                     <div>
                       <strong>{item.title}</strong>
                       <span>{item.body}</span>
+                      <NotificationTradeDetails item={item} />
                       <em>{formatNepalTime(item.created_at)} · {item.priority}</em>
                     </div>
                     {item.acknowledged_at ? <span className="pill good">ACK</span> : <button onClick={() => acknowledgeNotification(item.id).catch(() => setMessage("Notification ack failed."))}>Acknowledge</button>}
@@ -5945,6 +5946,98 @@ function ModuleNotificationSummaryPanel({ summary, notifications }: { summary?: 
       <p className="reason">Duplicate guard is backed by unique notification event keys and insert-on-conflict protection in the API.</p>
     </Panel>
   );
+}
+
+function NotificationTradeDetails({ item }: { item: any }) {
+  const data = notificationPayload(item);
+  const moduleCode = data.moduleCode ?? data.module_code ?? moduleCodeFromNotification(item);
+  const moduleName = data.moduleName ?? data.module_name ?? moduleShortName(String(moduleCode ?? ""));
+  const direction = data.direction ?? extractNotificationField(item.body, "direction");
+  const action = data.action ?? (direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : null);
+  const entry = data.entry ?? data.entryPrice ?? data.entry_price ?? extractNotificationField(item.body, "entry");
+  const stop = data.stopLoss ?? data.stop_loss ?? data.sl ?? extractNotificationField(item.body, "sl") ?? extractNotificationField(item.body, "stop");
+  const target = data.takeProfit ?? data.take_profit ?? data.tp ?? extractNotificationField(item.body, "tp") ?? extractNotificationField(item.body, "target");
+  const rewardToRisk = data.rewardToRisk ?? data.reward_to_risk ?? data.rr ?? extractNotificationField(item.body, "rr");
+  const setupTier = data.setupTier ?? data.setup_tier ?? extractNotificationField(item.body, "setup");
+  const scenario = data.scenario ?? extractNotificationScenario(item.body);
+  const grade = data.grade ?? extractNotificationField(item.body, "grade");
+  const confidence = data.confidence ?? extractNotificationField(item.body, "confidence");
+  const hasTradeDetails = [entry, stop, target, direction, action, scenario, setupTier, grade, confidence].some((value) => value != null && value !== "");
+  if (!hasTradeDetails) return null;
+  return (
+    <div className="notification-detail-card">
+      <div className="notification-detail-head">
+        <span>{moduleName}</span>
+        <strong>{action ?? direction ?? "UPDATE"}</strong>
+      </div>
+      <div className="notification-detail-grid">
+        <Metric label="Entry" value={formatNotificationValue(entry, "price")} />
+        <Metric label="SL" value={formatNotificationValue(stop, "price")} />
+        <Metric label="TP" value={formatNotificationValue(target, "price")} />
+        <Metric label="RR" value={formatNotificationValue(rewardToRisk)} />
+        <Metric label="Scenario" value={scenario ? formatScenario(String(scenario)) : "--"} />
+        <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
+        <Metric label="Grade" value={grade ?? "--"} />
+        <Metric label="Confidence" value={confidence == null ? "--" : `${confidence}%`} />
+      </div>
+      {data.finalReason || data.final_reason ? <p className="reason">{String(data.finalReason ?? data.final_reason)}</p> : null}
+    </div>
+  );
+}
+
+function notificationPayload(item: any) {
+  const data = item?.data;
+  if (!data) return {};
+  if (typeof data === "object") return data;
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function moduleCodeFromNotification(item: any) {
+  const haystack = `${item?.event_type ?? ""} ${item?.title ?? ""} ${item?.body ?? ""}`.toUpperCase();
+  if (haystack.includes("MODULE2") || haystack.includes("MODULE 2")) return "high_probability_strategy_2";
+  if (haystack.includes("MODULE3") || haystack.includes("MODULE 3")) return "strategy_lab_3";
+  if (haystack.includes("MODULE1") || haystack.includes("MODULE 1") || haystack.includes("ORB")) return "orb_max_options";
+  return null;
+}
+
+function extractNotificationField(body: unknown, key: string) {
+  const text = String(body ?? "");
+  const aliases: Record<string, string[]> = {
+    entry: ["Entry"],
+    sl: ["SL"],
+    stop: ["Stop"],
+    tp: ["TP"],
+    target: ["Target"],
+    rr: ["RR"],
+    grade: ["Grade"],
+    confidence: ["Confidence"],
+    direction: ["Direction"],
+    setup: ["Setup"]
+  };
+  for (const alias of aliases[key] ?? [key]) {
+    const match = text.match(new RegExp(`${alias}\\s+([^|·,]+)`, "i"));
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function extractNotificationScenario(body: unknown) {
+  const parts = String(body ?? "").split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts[1];
+  return null;
+}
+
+function formatNotificationValue(value: unknown, kind?: "price") {
+  if (value == null || value === "") return "--";
+  if (kind === "price") return formatPriceValue(value);
+  return String(value);
 }
 
 function NotificationFilters({ filters, onChange, onRefresh }: { filters: any; onChange: (filters: any) => void; onRefresh: () => void }) {
