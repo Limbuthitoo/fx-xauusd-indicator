@@ -7,7 +7,7 @@ import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantModuleStrategyConfiguration, updateTenantModuleSetting } from "../admin/settings.js";
 import { runModule2LearningPython, runStrategyIndicatorAuditPython, runStrategyModuleLearningPython } from "../admin/learning.js";
 import { requireTenantModule } from "../auth/routes.js";
-import { evaluateVwapOpeningDrive, getCachedCandles } from "../market-data/routes.js";
+import { evaluateVwapOpeningDrive } from "../market-data/routes.js";
 
 type BacktestTrade = {
   sessionDate: string;
@@ -30,19 +30,10 @@ export async function backtestRoutes(app: FastifyInstance) {
     const symbol = body.symbol ?? "XAUUSD";
     const timeframe = moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" || moduleCode === "strategy_lab_3" ? 5 : body.timeframeMinutes ?? 5;
     const version = await selectedStrategyVersion(moduleCode);
-    const memoryCandles = getCachedCandles(symbol, timeframe).map((candle) => ({
-      timestampUtc: candle.timestampUtc,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-      volume: candle.volume,
-      spread: candle.spread
-    }));
-    const postgresCandles = memoryCandles.length > 0 ? [] : (await query(
+    const candles = (await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2
+       WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'
        ORDER BY timestamp_utc ASC
        LIMIT 5000`,
       [symbol, timeframe]
@@ -55,8 +46,7 @@ export async function backtestRoutes(app: FastifyInstance) {
       volume: row.volume == null ? null : Number(row.volume),
       spread: row.spread == null ? null : Number(row.spread)
     }));
-    const candles = memoryCandles.length > 0 ? memoryCandles : postgresCandles;
-    const candleSource = memoryCandles.length > 0 ? "LIVE_MEMORY_CACHE" : "POSTGRESQL_CANDLES";
+    const candleSource = "POSTGRESQL_CANDLES";
     const runResult = await query(
       `INSERT INTO backtest_runs (strategy_version_id, symbol, status, parameters, tenant_id, module_code)
        VALUES ($1,$2,'RUNNING',$3,$4,$5)
@@ -70,8 +60,8 @@ export async function backtestRoutes(app: FastifyInstance) {
           source: candleSource,
           timeframeMinutes: timeframe,
           candleCount: candles.length,
-          cacheOnly: memoryCandles.length > 0,
-          persistRawCandles: false
+          cacheOnly: false,
+          persistRawCandles: true
         },
         auth.tenantId,
         moduleCode
@@ -1258,14 +1248,21 @@ async function buildModule2TuningLab(tenantId: string | null, symbol: string) {
   const timeframe = 5;
   const version = await selectedStrategyVersion("high_probability_strategy_2");
   const baseConfiguration = await getTenantModuleStrategyConfiguration(tenantId, "high_probability_strategy_2", "liquiditySweep.strategy", version.configuration_json);
-  const candles = getCachedCandles(symbol, timeframe).map((candle) => ({
-    timestampUtc: candle.timestampUtc,
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close,
-    volume: candle.volume,
-    spread: candle.spread
+  const candles = (await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread
+     FROM candles
+     WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'
+     ORDER BY timestamp_utc ASC
+     LIMIT 5000`,
+    [symbol, timeframe]
+  )).rows.map((row: any) => ({
+    timestampUtc: new Date(row.timestamp_utc).toISOString(),
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume == null ? null : Number(row.volume),
+    spread: row.spread == null ? null : Number(row.spread)
   }));
   const presets = module2TuningPresets(baseConfiguration);
   const results = presets.map((preset) => {

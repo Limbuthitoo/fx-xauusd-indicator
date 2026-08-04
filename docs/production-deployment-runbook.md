@@ -186,7 +186,9 @@ npm run qa:final
 
 The production worker uses one shared XAUUSD Twelve Data feed. Strategy modules derive their own candle logic from that feed, so adding subscribers does not multiply Twelve Data credits for the same symbol/timeframe source.
 
-Set `TWELVE_DATA_CATCHUP_SECONDS=1800`. On a weekday worker start, the first request gap-fills up to 2,016 recent 5-minute candles, covering seven calendar days in one XAUUSD request. Outside the New York strategy window, the worker performs one shared gap-aware request every 30 minutes. During the New York window it switches to the existing one-request-per-minute live cadence. Saturday and Sunday New York dates remain paused. Every source update is persisted to PostgreSQL and derives completed 15-minute candles locally for strategy context.
+Set `TWELVE_DATA_CATCHUP_SECONDS=1800`. On a weekday worker start, the first request gap-fills up to 2,016 recent 5-minute candles, covering seven calendar days in one XAUUSD request. Outside 09:30-16:00 New York, the worker performs one shared gap-aware request every 30 minutes. During that New York window it switches to one shared request per minute. Saturday and Sunday New York dates remain paused. Every source update is persisted to PostgreSQL before strategy evaluation and derives completed 15-minute candles locally for context.
+
+Tenant chart refreshes, readiness actions, strategy engines, and backtests are PostgreSQL-only and never call Twelve Data. The only provider-capable paths are the dedicated worker (`MARKET_DATA_WORKER` / `MARKET_DATA_CATCH_UP`) and the authenticated platform super-admin force-sync endpoint. The normal weekday estimate is approximately 424-425 credits, including one startup recovery call when needed.
 
 ## Mobile APK
 

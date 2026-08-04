@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { calculateCatchupRequestCount, evaluateVwapOpeningDrive } from "../apps/api/src/modules/market-data/routes.js";
+import { calculateCatchupRequestCount, evaluateVwapOpeningDrive, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 
 const module2Candles: Candle[] = Array.from({ length: 24 }, (_, index) => {
   const base = 103.6 + Math.sin(index / 2) * 0.35;
@@ -103,6 +103,16 @@ assert.equal(module3WithoutHtf.scenarioFlags.fullChecklistMatched, false, "Modul
 assert.equal(calculateCatchupRequestCount({ latestAt: null, now: Date.now(), timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: true }), 2016);
 assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 30 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 8);
 assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 10 * 60 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 122);
+assert.equal(isNewYorkWeekend("2026-08-08"), true, "Saturday must block shared polling and live strategy evaluation");
+assert.equal(isNewYorkWeekend("2026-08-09"), true, "Sunday must block shared polling and live strategy evaluation");
+assert.equal(isNewYorkWeekend("2026-08-10"), false, "Monday must remain eligible");
+assert.equal(isScheduledTwelveDataTrigger("MARKET_DATA_WORKER"), true);
+assert.equal(isScheduledTwelveDataTrigger("MARKET_DATA_CATCH_UP"), true);
+assert.equal(isScheduledTwelveDataTrigger("TENANT_CHART_SYNC"), false, "Chart refresh must never call Twelve Data");
+assert.equal(isScheduledTwelveDataTrigger("TENANT_BACKFILL"), false, "Tenant readiness must never call Twelve Data");
+const summerFeedWindow = sharedNewYorkFeedWindow("2026-08-10");
+assert.equal(summerFeedWindow.startAt, "2026-08-10T13:30:00.000Z", "Shared live polling starts at 09:30 New York");
+assert.equal(summerFeedWindow.endAt, "2026-08-10T20:00:00.000Z", "Shared live polling ends at 16:00 New York");
 
 console.log(JSON.stringify({
   status: "PASS",

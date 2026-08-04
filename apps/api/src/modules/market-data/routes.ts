@@ -92,7 +92,6 @@ type TenantAutoRunState = AutoRunState & {
 
 const AUTO_API_START_LEAD_MINUTES = 15;
 const DEFAULT_TENANT_SLUG = "default-orb-tenant";
-const PERSIST_TWELVE_DATA_CANDLES = true;
 const LIVE_CANDLE_CACHE_DAYS = 7;
 const TWELVE_DATA_STARTUP_BACKFILL_COUNT = 7 * 24 * 12;
 const TWELVE_DATA_LIVE_POLL_COUNT = 2;
@@ -127,7 +126,6 @@ type LiveCandle = {
 };
 
 const liveCandleCache = new Map<string, LiveCandle[]>();
-const chartSyncThrottle = new Map<string, { requestedAt: number; promise?: Promise<any> }>();
 
 let twelveDataTimer: NodeJS.Timeout | null = null;
 const twelveDataState: TwelveDataWorkerState = {
@@ -301,6 +299,12 @@ export async function marketDataRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/market-data/twelve-data/live/start", async (request) => {
+    const session = requireAdmin(request);
+    if (!session.platformSuperAdmin) {
+      const error = new Error("Platform super-admin access required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
+    }
     const settings = await refreshRuntimeSettings();
     const body = request.body as { symbol?: string; providerSymbol?: string; timeframeMinutes?: number; interval?: string; pollSeconds?: number; count?: number };
     return startTwelveDataLive({
@@ -314,7 +318,13 @@ export async function marketDataRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/api/market-data/twelve-data/live/stop", async () => {
+  app.post("/api/market-data/twelve-data/live/stop", async (request) => {
+    const session = requireAdmin(request);
+    if (!session.platformSuperAdmin) {
+      const error = new Error("Platform super-admin access required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
+    }
     return stopTwelveDataLive({ notify: true });
   });
 
@@ -403,31 +413,18 @@ export async function marketDataRoutes(app: FastifyInstance) {
   app.post("/api/orb/data-readiness/backfill", async (request) => {
     const session = await requireTenantModule(request, "orb_max_options");
     const settings = await getRuntimeSettings(session.tenantId);
-    const body = request.body as { count?: number };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 20), 5000);
-    const before = await buildOrbDataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays, settings);
-    const result = await syncTwelveDataCandles({
-      symbol: settings.symbol,
-      providerSymbol: settings.feed.providerSymbol,
-      timeframeMinutes: settings.timeframeMinutes,
-      interval: timeframeToTwelveInterval(settings.timeframeMinutes),
-      count,
-      autoEvaluate: false,
-      usageTenantIds: session.tenantId ? [session.tenantId] : [],
-      triggerSource: "TENANT_BACKFILL",
-      usageReason: "ORB data-readiness backfill"
-    });
-    const after = await buildOrbDataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays, settings);
+    await hydrateChartCacheFromPostgres(settings.symbol, settings.timeframeMinutes, settings.feed.startupBackfillCount);
+    const readiness = await buildOrbDataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays, settings);
     return {
       provider: "TWELVE_DATA",
       symbol: settings.symbol,
       timeframeMinutes: settings.timeframeMinutes,
-      requestedCount: count,
-      estimatedApiCreditsUsed: 1,
+      requestedCount: 0,
+      estimatedApiCreditsUsed: 0,
       persistRawCandles: settings.feed.rawCandleStorage,
-      result,
-      before,
-      after
+      result: { connected: true, skipped: true, reason: "SHARED_POSTGRES_FEED_ONLY" },
+      before: readiness,
+      after: readiness
     };
   });
 
@@ -505,31 +502,18 @@ export async function marketDataRoutes(app: FastifyInstance) {
   app.post("/api/module2/data-readiness/backfill", async (request) => {
     const session = await requireTenantModule(request, "high_probability_strategy_2");
     const settings = await getRuntimeSettings(session.tenantId);
-    const body = request.body as { count?: number; persist?: boolean };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 20), 5000);
-    const before = await buildModule2DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
-    const result = await syncTwelveDataCandles({
-      symbol: settings.symbol,
-      providerSymbol: settings.feed.providerSymbol,
-      timeframeMinutes: 5,
-      interval: "5min",
-      count,
-      autoEvaluate: false,
-      usageTenantIds: session.tenantId ? [session.tenantId] : [],
-      triggerSource: "TENANT_BACKFILL",
-      usageReason: "Module 2 data-readiness backfill"
-    });
-    const after = await buildModule2DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
+    await hydrateChartCacheFromPostgres(settings.symbol, 5, settings.feed.startupBackfillCount);
+    const readiness = await buildModule2DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
     return {
       provider: "TWELVE_DATA",
       symbol: settings.symbol,
       timeframeMinutes: 5,
-      requestedCount: count,
-      estimatedApiCreditsUsed: 1,
+      requestedCount: 0,
+      estimatedApiCreditsUsed: 0,
       persistRawCandles: settings.feed.rawCandleStorage,
-      result,
-      before,
-      after
+      result: { connected: true, skipped: true, reason: "SHARED_POSTGRES_FEED_ONLY" },
+      before: readiness,
+      after: readiness
     };
   });
 
@@ -542,30 +526,17 @@ export async function marketDataRoutes(app: FastifyInstance) {
   app.post("/api/module3/data-readiness/backfill", async (request) => {
     const session = await requireTenantModule(request, "strategy_lab_3");
     const settings = await getRuntimeSettings(session.tenantId);
-    const body = request.body as { count?: number };
-    const count = Math.min(Math.max(Number(body.count ?? settings.feed.startupBackfillCount ?? TWELVE_DATA_STARTUP_BACKFILL_COUNT), 25), 5000);
-    const before = await buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
-    const result = await syncTwelveDataCandles({
-      symbol: settings.symbol,
-      providerSymbol: settings.feed.providerSymbol,
-      timeframeMinutes: 5,
-      interval: "5min",
-      count,
-      autoEvaluate: false,
-      usageTenantIds: session.tenantId ? [session.tenantId] : [],
-      triggerSource: "TENANT_BACKFILL",
-      usageReason: "Module 3 data-readiness backfill"
-    });
-    const after = await buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
+    await hydrateChartCacheFromPostgres(settings.symbol, 5, settings.feed.startupBackfillCount);
+    const readiness = await buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
     return {
       provider: "TWELVE_DATA",
       symbol: settings.symbol,
       timeframeMinutes: 5,
-      requestedCount: count,
-      estimatedApiCreditsUsed: 1,
-      result,
-      before,
-      after
+      requestedCount: 0,
+      estimatedApiCreditsUsed: 0,
+      result: { connected: true, skipped: true, reason: "SHARED_POSTGRES_FEED_ONLY" },
+      before: readiness,
+      after: readiness
     };
   });
 
@@ -1522,14 +1493,19 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   const now = Date.now();
   const sessionStart = new Date(session.session_start_at).getTime();
   const sessionEnd = new Date(session.signal_window_end_at).getTime();
-  const apiStart = sessionStart - settings.orb.apiStartLeadMinutes * 60_000;
+  const sharedFeedWindow = sharedNewYorkFeedWindow(newYorkDate());
+  const apiStart = Math.max(
+    sessionStart - settings.orb.apiStartLeadMinutes * 60_000,
+    new Date(sharedFeedWindow.startAt).getTime()
+  );
+  const apiStop = Math.min(sessionEnd, new Date(sharedFeedWindow.endAt).getTime());
   state.apiStartAt = new Date(apiStart).toISOString();
-  state.apiStopAt = new Date(sessionEnd).toISOString();
+  state.apiStopAt = new Date(apiStop).toISOString();
 
   if (now < apiStart) {
     state.phase = "PRE_SESSION";
     state.nextActionAt = new Date(apiStart).toISOString();
-    state.reason = `Scheduled. Twelve Data starts ${settings.orb.apiStartLeadMinutes} minutes before the ${state.moduleName} New York window.`;
+    state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps earlier candles current.`;
     state.running = false;
     const minutesUntilApiStart = Math.round((apiStart - now) / 60_000);
     if (minutesUntilApiStart <= settings.orb.apiStartLeadMinutes && minutesUntilApiStart >= 0) {
@@ -1543,13 +1519,13 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
         `mobile-ny-pre-session-${tenant.module_code}-${session.id}`,
         `${modulePrefix}_NY_PRE_SESSION`,
         `${state.moduleName} starts soon`,
-        `XAUUSD New York monitoring starts at ${new Date(session.session_start_at).toISOString()}. Get ready for paper-trade alerts.`
+        `XAUUSD live monitoring starts at ${new Date(apiStart).toISOString()}. Get ready for paper-trade alerts.`
       );
     }
     return state;
   }
 
-  if (now >= sessionEnd) {
+  if (now >= apiStop) {
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
     state.reason = `${state.moduleName} New York monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence; strategy entries remain paused.`;
@@ -1581,9 +1557,14 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   return state;
 }
 
-function isNewYorkWeekend(sessionDate: string) {
+export function isNewYorkWeekend(sessionDate: string) {
   const day = new Date(`${sessionDate}T12:00:00.000Z`).getUTCDay();
   return day === 0 || day === 6;
+}
+
+export function sharedNewYorkFeedWindow(sessionDate: string) {
+  const times = sessionTimesForDate(sessionDate, "09:30", 0, "16:00");
+  return { startAt: times.sessionStartAt, endAt: times.signalWindowEndAt };
 }
 
 function nextNewYorkTradingApiStart(settings: RuntimeSettings) {
@@ -1592,8 +1573,7 @@ function nextNewYorkTradingApiStart(settings: RuntimeSettings) {
     next.setUTCDate(next.getUTCDate() + 1);
   } while (next.getUTCDay() === 0 || next.getUTCDay() === 6 || isConfiguredMarketClosedDate(next.toISOString().slice(0, 10)));
   const sessionDate = next.toISOString().slice(0, 10);
-  const times = sessionTimesForDate(sessionDate, settings.orb.sessionStart, settings.orb.openingRangeMinutes, settings.orb.tradeWindowEnd);
-  return new Date(new Date(times.sessionStartAt).getTime() - settings.orb.apiStartLeadMinutes * 60_000).toISOString();
+  return sharedNewYorkFeedWindow(sessionDate).startAt;
 }
 
 function isConfiguredMarketClosedDate(sessionDate: string) {
@@ -1616,6 +1596,10 @@ function marketClosedReason(sessionDate = newYorkDate()) {
     };
   }
   return { closed: false, reason: "MARKET_OPEN_DAY", message: "Market date is eligible for NY session monitoring." };
+}
+
+export function isScheduledTwelveDataTrigger(triggerSource?: string) {
+  return triggerSource === "MARKET_DATA_WORKER" || triggerSource === "MARKET_DATA_CATCH_UP";
 }
 
 async function twelveDataCallPolicy(options: {
@@ -1642,7 +1626,7 @@ async function twelveDataCallPolicy(options: {
     };
   }
 
-  if (["MARKET_DATA_WORKER", "MARKET_DATA_CATCH_UP", "TENANT_CHART_SYNC"].includes(options.triggerSource ?? "")) {
+  if (isScheduledTwelveDataTrigger(options.triggerSource)) {
     return {
       allowed: true,
       reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "OFF_SESSION_CATCH_UP" : "NY_API_WINDOW_ACTIVE",
@@ -1870,10 +1854,22 @@ async function runTwelveDataCycle() {
       twelveDataState.timeframeMinutes = sourceTimeframe;
       twelveDataState.interval = timeframeToTwelveInterval(sourceTimeframe);
       twelveDataState.pollSeconds = settings.feed.pollSeconds;
-      const cachedBeforeSync = getCachedCandles(settings.symbol, sourceTimeframe).length;
-      const requestedCount = cachedBeforeSync === 0
-        ? Math.min(twelveDataState.count, settings.feed.startupBackfillCount)
-        : settings.feed.livePollCount;
+      const latestPersisted = await query(
+        `SELECT max(timestamp_utc) AS latest
+         FROM candles
+         WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'`,
+        [settings.symbol, sourceTimeframe]
+      );
+      const latestPersistedAt = latestPersisted.rows[0]?.latest
+        ? new Date(latestPersisted.rows[0].latest).getTime()
+        : null;
+      const requestedCount = calculateCatchupRequestCount({
+        latestAt: latestPersistedAt,
+        now: Date.now(),
+        timeframeMinutes: sourceTimeframe,
+        startupBackfillCount: Math.min(twelveDataState.count, settings.feed.startupBackfillCount),
+        firstWorkerSync: latestPersistedAt == null
+      });
       const result = await syncTwelveDataCandles({
         symbol: settings.symbol,
         providerSymbol: settings.feed.providerSymbol,
@@ -1895,7 +1891,7 @@ async function runTwelveDataCycle() {
         state.latestCandleAt = candles.at(-1)?.timestampUtc ?? null;
         state.lastActionAt = new Date().toISOString();
         try {
-          const evaluation = await processModuleLiveSession(tenant.module_code, settings.symbol, timeframe, candles, tenant.id);
+          const evaluation = await processModuleLiveSession(tenant.module_code, settings.symbol, timeframe, [], tenant.id);
           state.latestSetupId = evaluation.setupId ?? state.latestSetupId ?? null;
           state.lastError = result.connected ? null : result.error ?? null;
           state.reason = evaluation.evaluation ?? evaluation.setupStatus ?? state.reason;
@@ -1971,85 +1967,25 @@ async function syncTwelveDataChartCandles(options: {
       )
     : automationState;
   await persistTenantAutomationState(refreshedSchedule);
-  const now = Date.now();
-  const apiStart = refreshedSchedule.apiStartAt ? new Date(refreshedSchedule.apiStartAt).getTime() : null;
-  const apiStop = refreshedSchedule.apiStopAt ? new Date(refreshedSchedule.apiStopAt).getTime() : null;
-  const insideApiWindow = apiStart != null && apiStop != null && now >= apiStart && now <= apiStop;
-  const sourceTimeframe = preferredTwelveDataSourceTimeframe(options.timeframeMinutes);
-  const key = cacheKey(options.symbol, sourceTimeframe);
-  const cached = getCachedCandles(options.symbol, options.timeframeMinutes);
-  const latest = cached.at(-1);
-  if (!insideApiWindow) {
-    return {
-      connected: Boolean(latest),
-      provider: "TWELVE_DATA",
-      symbol: options.symbol,
-      timeframeMinutes: options.timeframeMinutes,
-      imported: 0,
-      skipped: true,
-      reason: refreshedSchedule.sessionState === "MARKET_CLOSED" ? "MARKET_CLOSED_WEEKEND" : "OUTSIDE_NY_API_WINDOW",
-      apiStartAt: refreshedSchedule.apiStartAt,
-      apiStopAt: refreshedSchedule.apiStopAt,
-      cachedCandles: cached.length,
-      latestCandle: latest ?? null
-    };
-  }
-  const latestAgeMs = latest ? Date.now() - new Date(latest.timestampUtc).getTime() : Number.POSITIVE_INFINITY;
-  const timeframeMs = options.timeframeMinutes * 60_000;
-  const throttle = chartSyncThrottle.get(key);
-  if (throttle?.promise) return throttle.promise;
-  if (latest && latestAgeMs < timeframeMs) {
-    return {
-      connected: true,
-      provider: "TWELVE_DATA",
-      symbol: options.symbol,
-      timeframeMinutes: options.timeframeMinutes,
-      imported: 0,
-      skipped: true,
-      reason: "CHART_CACHE_FRESH",
-      cachedCandles: cached.length,
-      latestCandle: latest
-    };
-  }
-  if (throttle && Date.now() - throttle.requestedAt < 60_000) {
-    return {
-      connected: true,
-      provider: "TWELVE_DATA",
-      symbol: options.symbol,
-      timeframeMinutes: options.timeframeMinutes,
-      imported: 0,
-      skipped: true,
-      reason: "CHART_SYNC_THROTTLED",
-      cachedCandles: cached.length,
-      latestCandle: latest ?? null
-    };
-  }
-  const promise = syncTwelveDataCandles({
+  const candles = await hydrateChartCacheFromPostgres(
+    options.symbol,
+    options.timeframeMinutes,
+    options.startupBackfillCount
+  );
+  return {
+    connected: candles.length > 0,
+    provider: "TWELVE_DATA",
     symbol: options.symbol,
-    providerSymbol: options.providerSymbol,
-    timeframeMinutes: sourceTimeframe,
-    interval: timeframeToTwelveInterval(sourceTimeframe),
-    count: getCachedCandles(options.symbol, sourceTimeframe).length === 0 ? options.startupBackfillCount : options.livePollCount,
-    autoEvaluate: false,
-    usageTenantIds: options.tenantId ? [options.tenantId] : [],
-    triggerSource: "TENANT_CHART_SYNC",
-    usageReason: `${options.moduleCode} chart refresh inside NY API window`
-  }).then(async (result) => {
-    await refreshDerivedCandles(options.symbol, sourceTimeframe, [options.timeframeMinutes]);
-    const nextCached = getCachedCandles(options.symbol, options.timeframeMinutes);
-    return {
-      ...result,
-      timeframeMinutes: options.timeframeMinutes,
-      sourceTimeframeMinutes: sourceTimeframe,
-      cachedCandles: nextCached.length,
-      latestCandle: nextCached.at(-1) ?? null
-    };
-  }).finally(() => {
-    const current = chartSyncThrottle.get(key);
-    if (current?.promise === promise) chartSyncThrottle.set(key, { requestedAt: Date.now() });
-  });
-  chartSyncThrottle.set(key, { requestedAt: Date.now(), promise });
-  return promise;
+    timeframeMinutes: options.timeframeMinutes,
+    sourceTimeframeMinutes: preferredTwelveDataSourceTimeframe(options.timeframeMinutes),
+    imported: 0,
+    skipped: true,
+    reason: candles.length > 0 ? "SHARED_POSTGRES_FEED" : "WAITING_FOR_SHARED_FEED",
+    apiStartAt: refreshedSchedule.apiStartAt,
+    apiStopAt: refreshedSchedule.apiStopAt,
+    cachedCandles: candles.length,
+    latestCandle: candles.at(-1) ?? null
+  };
 }
 
 async function syncTwelveDataCandles(options: {
@@ -2164,26 +2100,22 @@ async function syncTwelveDataCandlesLocked(options: {
   let imported = 0;
   const savedCandles = [];
   for (const candle of parseTwelveDataCandles(response)) {
-    const savedCandle = settings.feed.rawCandleStorage
-      ? await upsertCandle(options.symbol, options.timeframeMinutes, candle)
-      : cacheLiveCandle(options.symbol, options.timeframeMinutes, candle);
-    if (settings.feed.rawCandleStorage) {
-      cacheLiveCandle(options.symbol, options.timeframeMinutes, {
-        timestamp: savedCandle.timestampUtc,
-        open: savedCandle.open,
-        high: savedCandle.high,
-        low: savedCandle.low,
-        close: savedCandle.close,
-        volume: savedCandle.volume,
-        spread: savedCandle.spread,
-        source: savedCandle.source
-      });
-    }
+    const savedCandle = await upsertCandle(options.symbol, options.timeframeMinutes, candle);
+    cacheLiveCandle(options.symbol, options.timeframeMinutes, {
+      timestamp: savedCandle.timestampUtc,
+      open: savedCandle.open,
+      high: savedCandle.high,
+      low: savedCandle.low,
+      close: savedCandle.close,
+      volume: savedCandle.volume,
+      spread: savedCandle.spread,
+      source: savedCandle.source
+    });
     savedCandles.push(savedCandle);
     imported += 1;
   }
 
-  const automation = options.autoEvaluate ? await processLiveSession(options.symbol, options.timeframeMinutes, savedCandles, await defaultTenantId()) : null;
+  const automation = options.autoEvaluate ? await processLiveSession(options.symbol, options.timeframeMinutes, [], await defaultTenantId()) : null;
   await recordTwelveDataUsage({
     symbol: options.symbol,
     timeframeMinutes: options.timeframeMinutes,
@@ -2196,9 +2128,7 @@ async function syncTwelveDataCandlesLocked(options: {
     usageReason: options.usageReason ?? policy.message,
     forced: options.force === true
   });
-  if (settings.feed.rawCandleStorage) {
-    await pruneStoredCandles(options.symbol, options.timeframeMinutes, settings.feed.cacheDays);
-  }
+  await pruneStoredCandles(options.symbol, options.timeframeMinutes, settings.feed.cacheDays);
   for (const candle of savedCandles) {
     broadcastLiveEvent({
       type: "candle",
@@ -2306,6 +2236,42 @@ export function getCachedCandles(symbol: string, timeframe: number) {
   return liveCandleCache.get(cacheKey(symbol, timeframe)) ?? [];
 }
 
+async function hydrateChartCacheFromPostgres(symbol: string, timeframe: number, limit: number) {
+  const sourceTimeframe = preferredTwelveDataSourceTimeframe(timeframe);
+  const hydrate = async (targetTimeframe: number, rowLimit: number) => {
+    const stored = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread, source
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND source LIKE 'TWELVE_DATA%'
+       ORDER BY timestamp_utc DESC
+       LIMIT $3`,
+      [symbol, targetTimeframe, Math.min(Math.max(rowLimit, 1), 5000)]
+    );
+    for (const row of stored.rows.reverse()) {
+      cacheLiveCandle(symbol, targetTimeframe, {
+        timestamp: row.timestamp_utc,
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        volume: row.volume == null ? null : Number(row.volume),
+        spread: row.spread == null ? null : Number(row.spread),
+        source: row.source
+      });
+    }
+    return getCachedCandles(symbol, targetTimeframe);
+  };
+
+  await hydrate(sourceTimeframe, limit);
+  if (timeframe !== sourceTimeframe) {
+    await refreshDerivedCandles(symbol, sourceTimeframe, [timeframe]);
+    await hydrate(timeframe, limit);
+  }
+  return getCachedCandles(symbol, timeframe);
+}
+
 function normalizeLiveCandles(candles: LiveCandle[]) {
   const byTime = new Map<string, LiveCandle>();
   for (const candle of candles) {
@@ -2315,8 +2281,42 @@ function normalizeLiveCandles(candles: LiveCandle[]) {
 }
 
 async function refreshDerivedCandles(symbol: string, sourceTimeframe: number, targetTimeframes: number[]) {
-  const sourceCandles = getCachedCandles(symbol, sourceTimeframe);
+  const stored = await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread, source
+     FROM candles
+     WHERE symbol = $1
+       AND timeframe_minutes = $2
+       AND source LIKE 'TWELVE_DATA%'
+     ORDER BY timestamp_utc DESC
+     LIMIT 5000`,
+    [symbol, sourceTimeframe]
+  );
+  const sourceCandles = stored.rows.length > 0
+    ? stored.rows.reverse().map((row: any) => ({
+        timestampUtc: new Date(row.timestamp_utc).toISOString(),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        volume: row.volume == null ? null : Number(row.volume),
+        spread: row.spread == null ? null : Number(row.spread),
+        source: row.source,
+        receivedAt: new Date().toISOString()
+      }))
+    : getCachedCandles(symbol, sourceTimeframe);
   if (sourceCandles.length === 0) return;
+  for (const candle of sourceCandles) {
+    cacheLiveCandle(symbol, sourceTimeframe, {
+      timestamp: candle.timestampUtc,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+      spread: candle.spread,
+      source: candle.source
+    });
+  }
   const uniqueTargets = [...new Set(targetTimeframes)]
     .filter((timeframe) => timeframe > sourceTimeframe && timeframe % sourceTimeframe === 0);
   for (const timeframe of uniqueTargets) {
@@ -2459,7 +2459,7 @@ function normalizeToTimeframe(timestamp: string, timeframeMinutes: number) {
   return new Date(Math.floor(date.getTime() / bucketMs) * bucketMs).toISOString();
 }
 
-async function processLiveSession(symbol: string, timeframe: number, liveCandles = getCachedCandles(symbol, timeframe), tenantId?: string | null) {
+async function processLiveSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const settings = await getRuntimeSettings(activeTenantId);
   const sessionResult = await query(
@@ -2581,17 +2581,19 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   return { sessionFound: true, rangeStatus: range.status, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, paperTrade, tradeLifecycle, brainDecision };
 }
 
-async function processModuleLiveSession(moduleCode: string, symbol: string, timeframe: number, liveCandles = getCachedCandles(symbol, timeframe), tenantId?: string | null) {
+async function processModuleLiveSession(moduleCode: string, symbol: string, timeframe: number, _liveCandles: LiveCandle[] = [], tenantId?: string | null) {
+  // PostgreSQL is the strategy source of truth. Memory candles are chart/websocket acceleration only.
+  const persistedOnly: LiveCandle[] = [];
   if (moduleCode === "high_probability_strategy_2") {
-    return processLiquiditySweepSession(symbol, timeframe, liveCandles, tenantId);
+    return processLiquiditySweepSession(symbol, timeframe, persistedOnly, tenantId);
   }
   if (moduleCode === "strategy_lab_3") {
-    return processVwapOpeningDriveSession(symbol, timeframe, liveCandles, tenantId);
+    return processVwapOpeningDriveSession(symbol, timeframe, persistedOnly, tenantId);
   }
-  return processLiveSession(symbol, timeframe, liveCandles, tenantId);
+  return processLiveSession(symbol, timeframe, persistedOnly, tenantId);
 }
 
-async function processVwapOpeningDriveSession(symbol: string, timeframe: number, liveCandles = getCachedCandles(symbol, timeframe), tenantId?: string | null) {
+async function processVwapOpeningDriveSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const moduleCode = "strategy_lab_3";
   const settings = await getRuntimeSettings(activeTenantId);
@@ -2981,7 +2983,7 @@ function newYorkClock(timestampUtc: string) {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(timestampUtc));
 }
 
-async function processLiquiditySweepSession(symbol: string, timeframe: number, liveCandles = getCachedCandles(symbol, timeframe), tenantId?: string | null) {
+async function processLiquiditySweepSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const moduleCode = "high_probability_strategy_2";
   const settings = await getRuntimeSettings(activeTenantId);
@@ -4586,18 +4588,13 @@ async function getOpeningRange(sessionId: string) {
 
 async function lockOpeningRangeForSession(session: any) {
   const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
-  const liveCandles = getCachedCandles(session.symbol, timeframe);
-  const cachedRows = cachedCandlesBetween(liveCandles, session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
-  const candlesResult =
-    cachedRows.length >= ORB_RANGE_SOURCE_CANDLES
-      ? { rows: cachedRows }
-      : await query(
-          `SELECT timestamp_utc, open, high, low, close, volume, spread
-           FROM candles
-           WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
-           ORDER BY timestamp_utc`,
-          [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
-        );
+  const candlesResult = await query(
+    `SELECT timestamp_utc, open, high, low, close, volume, spread
+     FROM candles
+     WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
+     ORDER BY timestamp_utc`,
+    [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
+  );
   const candles: Candle[] = candlesResult.rows.map((row: any) => ({
     timestampUtc: row.timestamp_utc ?? row.timestampUtc,
     open: Number(row.open),
@@ -4663,19 +4660,15 @@ async function repairOpeningRangeIfNeeded(session: any, savedRange: any) {
 
 async function calculateCanonicalOrbRange(session: any) {
   const timeframe = ORB_RANGE_TIMEFRAME_MINUTES;
-  const cachedRows = cachedCandlesBetween(getCachedCandles(session.symbol, timeframe), session.session_start_at, session.opening_range_end_at, { exclusiveEnd: true });
-  const rows =
-    cachedRows.length >= ORB_RANGE_SOURCE_CANDLES
-      ? cachedRows
-      : (
-          await query(
-            `SELECT timestamp_utc, open, high, low, close, volume, spread
-             FROM candles
-             WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
-             ORDER BY timestamp_utc ASC`,
-            [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
-          )
-        ).rows;
+  const rows = (
+    await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread
+       FROM candles
+       WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc < $4
+       ORDER BY timestamp_utc ASC`,
+      [session.symbol, timeframe, session.session_start_at, session.opening_range_end_at]
+    )
+  ).rows;
   const candles: Candle[] = rows.slice(0, ORB_RANGE_SOURCE_CANDLES).map((row: any) => ({
     timestampUtc: row.timestamp_utc ?? row.timestampUtc,
     open: Number(row.open),

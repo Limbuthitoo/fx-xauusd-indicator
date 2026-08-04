@@ -474,16 +474,18 @@ docker compose --env-file .env.production.example -f docker-compose.yml -f docke
 
 ## Market Data Notes
 
-The production worker uses one shared XAUUSD Twelve Data feed. Multiple users and multiple modules do not multiply Twelve Data credits for the same shared source fetch. Modules derive their own strategy timeframes from the shared candle cache.
+The production worker uses one shared XAUUSD Twelve Data feed. Multiple users and multiple modules do not multiply Twelve Data credits for the same shared source fetch. Every provider candle is persisted first; live strategies and backtests use PostgreSQL as their source of truth, while memory is used only to accelerate charts and websocket delivery.
 
 Twelve Data free-tier planning currently assumes:
 
 - 800 credits/day
 - 8 credits/minute
-- 1 shared XAUUSD poll/minute during the configured New York session window
+- 1 shared XAUUSD poll/minute from 09:30 through 16:00 New York
 - 1 shared catch-up request every 30 minutes outside the New York window on weekdays
 - a one-credit startup request of up to 2,016 recent 5-minute candles (seven calendar days) after deployment or restart
 - no scheduled market-data requests on Saturday or Sunday New York dates
+
+The expected weekday baseline is about 390 live-window requests plus about 34 off-session catch-ups and, when needed after a restart, one startup recovery request: approximately 424-425 credits. Chart refreshes and tenant readiness checks read PostgreSQL and consume zero Twelve Data credits. Only the dedicated worker and an explicit platform super-admin force sync can call the provider.
 
 The shared source interval is always 5 minutes. Module 1 builds its 15-minute opening range from the first three completed 5-minute New York candles. Modules 2 and 3 execute on completed 5-minute candles and derive completed 15-minute context from the same stored source, so they do not consume separate Twelve Data calls.
 
