@@ -182,6 +182,7 @@ type Module2Variant = {
   category: "RESEARCH" | "ENTRY_GRADE" | "PRODUCTION";
   approvalStatus: "RESEARCH_ONLY" | "PAPER_APPROVED" | "PRODUCTION_APPROVED";
   status: "PASS" | "WAIT" | "RESEARCH_ONLY";
+  decision: "BUY_READY" | "SELL_READY" | "WAIT" | "RESEARCH_ONLY";
   paperEligible: boolean;
   score: number;
   requiredRules: string[];
@@ -337,8 +338,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const direction: Direction = sequence?.direction ?? (sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT");
   const displacement = sequence?.displacement ?? null;
   push(evaluations, "DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, Boolean(displacement), true, "AUTOMATIC", displacement?.rangeAtr == null ? null : Number(displacement.rangeAtr.toFixed(2)), `>= ${config.minimumDisplacementRangeATR} ATR`, displacement ? "A strong directional candle appeared after the sweep." : "No strong displacement candle appeared after the sweep.");
-  if (!displacement) return waitDecision("WAITING_FOR_DISPLACEMENT", "Sweep found. Waiting for displacement in the reversal direction.", evaluations, flags, levels, htfBias, sweep, direction);
-  flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_CONFIRMATION", displacement.candle.timestampUtc, "Displacement confirmed; waiting for protected-structure break.");
+  if (displacement) {
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_CONFIRMATION", displacement.candle.timestampUtc, "Displacement confirmed; waiting for protected-structure break.");
+  }
 
   const bos = sequence?.bos ?? null;
   const structureType = bos?.subtype ?? (htfBias === "NEUTRAL"
@@ -346,26 +348,29 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "CONTINUATION_BOS" : "REVERSAL_MSS");
   push(evaluations, "PROTECTED_POINT_CONFIDENCE", "Protected structure point has usable confidence", Boolean(bos?.protectedPoint && protectedConfidenceRank(bos.protectedPoint.confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)), true, "AUTOMATIC", bos?.protectedPoint?.confidence ?? null, `>= ${config.protectedPointMinimumConfidence}`, bos?.protectedPoint ? `${bos.protectedPoint.type} at ${bos.protectedPoint.price.toFixed(2)} selected with ${bos.protectedPoint.confidence} confidence.` : "No protected structure point is available yet.");
   push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close BOS/MSS has confirmed yet.");
-  if (!bos) return waitDecision("WAITING_FOR_BOS", "Displacement found. Waiting for candle-close BOS/CHoCH.", evaluations, flags, levels, htfBias, sweep, direction);
-  flags.stateMachine = appendStateTransition(flags.stateMachine, "STRUCTURE_BREAK_CONFIRMED", bos.candle.timestampUtc, `${structureType} confirmed by candle close beyond protected structure.`);
+  if (bos) {
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "STRUCTURE_BREAK_CONFIRMED", bos.candle.timestampUtc, `${structureType} confirmed by candle close beyond protected structure.`);
+  }
 
   const currentIndex = setupCandles.length - 1;
   const fvg = sequence?.fvg ?? null;
   const orderBlock = sequence?.orderBlock ?? null;
   const zone = sequence?.zone ?? null;
 
-  const setupFresh = currentIndex - bos.index <= config.maximumBarsAfterBosForEntry;
+  const setupFresh = bos ? currentIndex - bos.index <= config.maximumBarsAfterBosForEntry : currentIndex - sweep.index <= config.maximumBarsAfterSweep;
   if (!setupFresh) return blockedDecision("SETUP_TIMEOUT", "Module 2 setup expired before a valid candidate trade.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
 
   push(evaluations, "ENTRY_ZONE_READY", "Fresh entry zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "fresh FVG or order block", zone ? "A fresh imbalance/order-block zone is available for entry." : "No fresh FVG or order-block zone is available after BOS/CHoCH.");
-  if (!zone) return waitDecision("WAITING_FOR_ENTRY_ZONE", "BOS/CHoCH is confirmed. Waiting for a fresh FVG/order-block entry zone.", evaluations, flags, levels, htfBias, sweep, direction, zone);
-  flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
-  flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
+  if (zone) {
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
+  }
 
   const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
-  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
-  if (!retrace) return waitDecision("WAITING_FOR_RETRACE", "Fresh entry zone is ready. Waiting for price to retrace into it before any paper entry.", evaluations, flags, levels, htfBias, sweep, direction, zone);
-  flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
+  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
+  if (retrace) {
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
+  }
 
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
   const engulfingOk = confirmsEngulfingReversal(setupCandles, currentIndex, direction);
@@ -421,7 +426,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, blocking: true, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
     { code: "QUALITY_RR", name: "Minimum RR 2:1", passed: rrOk, blocking: true, actual: Number(plan.rr.toFixed(2)), required: `>= ${config.minimumRiskReward}`, explanation: rrOk ? "Reward-to-risk meets the minimum." : "Reward-to-risk is below the minimum." },
     { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR`, explanation: plan.stopValid ? "Stop size is acceptable." : "Stop size is too large." },
-    { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: currentIndex - bos.index, required: `<= ${config.maximumBarsAfterBosForEntry} candles after BOS`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
+    { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: bos ? currentIndex - bos.index : currentIndex - sweep.index, required: bos ? `<= ${config.maximumBarsAfterBosForEntry} candles after BOS` : `<= ${config.maximumBarsAfterSweep} candles after sweep`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
   ];
   for (const item of quality) {
     push(evaluations, item.code, item.name, item.passed, "blocking" in item ? Boolean(item.blocking) : false, "AUTOMATIC", item.actual, item.required, item.explanation);
@@ -430,11 +435,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
   push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
   push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
+  const riskOk = spreadOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk;
+  push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop <= ${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
   const scoreOk = score >= config.minimumSignalScore;
   const variants = module2VariantCandidates({
+    direction,
     sweep,
     displacement,
     bos,
@@ -455,10 +463,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     score
   });
   const selectedVariant = selectModule2Variant(variants);
-  push(evaluations, "VARIANT_SELECTED", "Entry-grade strategy variant selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "BOS/MSS + retest/confirmation variant", selectedVariant ? selectedVariant.reason : "No entry-grade Module 2 variant has completed its required evidence chain.");
+  push(evaluations, "VARIANT_SELECTED", "Confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "A-I profile mandatory rules pass; J remains backtest-only", selectedVariant ? selectedVariant.reason : "No paper-approved Module 2 confirmation profile has completed its mandatory rule chain.");
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
-  const mandatoryEntryPassed = module2MandatoryEntryPassed(evaluations);
-  const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && emaModeOk && volumeModeOk;
+  const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
+  const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
   flags.levels = levels;
   flags.htfBias = htfBias;
   flags.vwap = vwap;
@@ -485,7 +493,18 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.variantVersion = selectedVariant?.version ?? MODULE2_VARIANT_VERSION;
   flags.tradeGrade = gradeValue;
   flags.confidence = score;
-  flags.mandatoryChecklistMatched = mandatoryEntryPassed;
+  flags.profileEngine = {
+    baseConditions: {
+      sessionActive,
+      healthyData: setupCandles.length >= 20,
+      validLiquidityLevel: Boolean(sweep?.level),
+      sweepDetected: Boolean(sweep)
+    },
+    finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
+    selectedProfile: selectedVariant?.code ?? null,
+    riskOk
+  };
+  flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk;
   flags.fullChecklistMatched = fullChecklistPassed;
   flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
   flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
@@ -493,24 +512,28 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.stateMachine = appendStateTransition(flags.stateMachine, mandatoryEntryPassed ? "ENTRY_READY" : "RETEST_REACHED", current.timestampUtc, mandatoryEntryPassed ? "Risk and checklist gates produced setup-ready decision." : "Retest happened but entry gates are still waiting or blocked.");
 
   if (!mandatoryEntryPassed) {
-    if (!entryConfirmation) {
+    if (!selectedVariant && variants.some((item) => item.status === "WAIT")) {
       return {
-        scenario: "WAITING_FOR_ENTRY_CONFIRMATION",
+        scenario: "WAITING_FOR_PROFILE_CONFIRMATION",
         direction,
         status: "WAIT",
         state: "ENTRY_CONFIRMATION",
-        finalReason: `Entry zone was reached after sweep, displacement, and BOS/CHoCH. Waiting for a valid ${direction} confirmation candle before any paper entry. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6.`,
+        finalReason: `Sweep is confirmed. Waiting for one paper-approved confirmation profile to complete. Best waiting profile: ${variants.find((item) => item.status === "WAIT")?.name ?? "none"}.`,
         evaluations,
         scenarioFlags: flags,
         favorabilityScore: score,
         favorabilityGrade: gradeValue,
         favorabilityReasons: [
-          "Sweep, displacement, BOS/CHoCH, and entry zone are candidate evidence only.",
-          "No trade is valid until the confirmation candle closes in the setup direction."
+          "Base sweep conditions passed.",
+          "No paper-approved confirmation profile has completed yet."
         ]
       };
     }
-    return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: mandatory entry rules are not fully matched yet. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
+    return blockedDecision("NO_PAPER_PROFILE_SELECTED", "NO TRADE: no paper-approved confirmation profile is complete. Sweep-only control remains for backtesting comparison only.", evaluations, flags, direction, score);
+  }
+
+  if (!riskOk) {
+    return blockedDecision("RISK_ENGINE_BLOCK", `BLOCK: ${selectedVariant?.name ?? "selected profile"} mandatory rules passed, but risk engine blocked entry.`, evaluations, flags, direction, score);
   }
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
@@ -1312,6 +1335,7 @@ function priorityScore(priority: LiquidityLevel["priority"]) {
 }
 
 function module2VariantCandidates(input: {
+  direction: Direction;
   sweep: SweepCandidate;
   displacement: unknown;
   bos: any;
@@ -1336,69 +1360,57 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "RESEARCH", "RESEARCH_ONLY", false, 10, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "ENTRY_GRADE", "PAPER_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
-    ], "Research-only sweep evidence. It records stop-run behavior but does not open paper trades without structure and entry evidence.", base),
+    ], "Variant A passed: sweep and close-back-inside confirmed.", base, input.direction),
     variant("SWEEP_NO_CONFIRMATION", "Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
-    ], "Research-only negative-control variant. It proves that sweep alone is not enough for paper trading.", base),
-    variant("SWEEP_ENGULFING", "Sweep + engulfing", "RESEARCH", "RESEARCH_ONLY", false, 18, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
+    ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction),
+    variant("SWEEP_ENGULFING", "Sweep + engulfing", "ENTRY_GRADE", "PAPER_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_ENGULFING", input.engulfingOk]
-    ], "Research-only candle-pattern variant. It needs structure, entry-zone retest, and risk validation before paper trading.", base),
-    variant("SWEEP_BOS", "Sweep + BOS", "RESEARCH", "RESEARCH_ONLY", false, 20, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED"], [
+    ], "Variant D passed: sweep and engulfing confirmation are complete.", base, input.direction),
+    variant("SWEEP_BOS", "Sweep + BOS", "ENTRY_GRADE", "PAPER_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)]
-    ], "Research-only structure-break variant. It helps backtests compare BOS without retest entry.", base),
-    variant("SWEEP_MSS", "Sweep + MSS", "RESEARCH", "RESEARCH_ONLY", false, 25, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS"], [
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
+      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)]
+    ], "Variant B passed: sweep, close-back-inside, and continuation BOS are confirmed.", base, input.direction),
+    variant("SWEEP_MSS", "Sweep + MSS", "ENTRY_GRADE", "PAPER_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)]
-    ], "Research-only market-structure-shift variant. It must still prove entry before paper trading.", base),
-    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "RESEARCH", "RESEARCH_ONLY", false, 28, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
+    ], "Variant C passed: sweep, close-back-inside, and reversal MSS are confirmed.", base, input.direction),
+    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "ENTRY_GRADE", "PAPER_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
-    ], "Record-only volume variant. Volume quality is tracked for backtesting, but it does not authorize paper entry by itself.", base),
-    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "ENTRY_GRADE", "PAPER_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+    ], "Variant H passed: sweep and provider volume expansion are confirmed.", base, input.direction),
+    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "ENTRY_GRADE", "PAPER_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["RISK_OK", base.qualityOk]
-    ], "Entry-grade displacement variant passed with retest, confirmation candle, and risk safety.", base),
-    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 72, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Displacement retest profile passed.", base, input.direction),
+    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_EMA_200", input.ema200Ok],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["RISK_OK", base.qualityOk]
-    ], "Entry-grade EMA alignment variant passed with retest, confirmation candle, and risk safety.", base),
-    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["CONFIRM_EMA_200", input.ema200Ok]
+    ], "Variant G passed: sweep and EMA alignment are confirmed.", base, input.direction),
+    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)],
-      ["ENTRY_ZONE_READY", Boolean(input.zone)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["RISK_OK", base.qualityOk]
-    ], "Entry-grade BOS retest variant passed with defined zone, confirmation candle, and risk safety.", base),
-    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Variant E passed: sweep, continuation BOS, and retest confirmation are complete.", base, input.direction),
+    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_READY", Boolean(input.zone)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["RISK_OK", base.qualityOk]
-    ], "Production reversal variant passed: sweep, MSS, retest, confirmation candle, and risk safety.", base),
-    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Variant F passed: sweep, reversal MSS, and retest are complete.", base, input.direction),
+    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_READY", Boolean(input.zone)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["RISK_OK", base.qualityOk]
-    ], "Highest-priority production variant passed: sweep, displacement, MSS, retest, confirmation candle, and risk safety.", base)
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Variant I passed: sweep, reversal MSS, displacement, and retest are complete.", base, input.direction)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
@@ -1413,7 +1425,8 @@ function variant(
   requiredRules: string[],
   checks: Array<[string, boolean]>,
   passReason: string,
-  base: { version: string; qualityOk: boolean }
+  base: { version: string; qualityOk: boolean },
+  direction: Direction
 ): Module2Variant {
   const missingRules = checks.filter(([, passed]) => !passed).map(([rule]) => rule);
   const passed = missingRules.length === 0;
@@ -1424,6 +1437,7 @@ function variant(
     category,
     approvalStatus,
     status: passed ? paperVariant ? "PASS" : "RESEARCH_ONLY" : "WAIT",
+    decision: passed ? paperVariant ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "RESEARCH_ONLY" : "WAIT",
     paperEligible: paperVariant && passed,
     score,
     requiredRules,
