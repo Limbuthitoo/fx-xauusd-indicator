@@ -487,6 +487,9 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
           finalReason: decision.finalReason,
           favorabilityScore: decision.favorabilityScore,
           favorabilityGrade: decision.favorabilityGrade,
+          variantCode: (flags as any).variantCode ?? (flags as any).module2Variant?.code ?? null,
+          variantName: (flags as any).module2Variant?.name ?? null,
+          variantVersion: (flags as any).variantVersion ?? (flags as any).module2Variant?.version ?? null,
           liquidityType: (flags as any).sweep?.level?.type ?? null,
           sweepDistanceAtr: (flags as any).sweep?.distanceAtr ?? null,
           bosLevel: (flags as any).bos?.level ?? null,
@@ -524,6 +527,8 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
   const directionBreakdown = breakdownByTrade(trades, (trade) => trade.direction ?? "UNKNOWN");
   const gradeBreakdown = breakdownByTrade(trades, (trade) => String((trade.details as any).favorabilityGrade ?? "UNKNOWN"));
   const liquidityBreakdown = breakdownByDetail(trades, "liquidityType");
+  const variantBreakdown = module2VariantBreakdown(trades);
+  const variantReview = module2VariantReview(failureAnalytics, variantBreakdown);
   const advanced = {
     max_drawdown_r: maxDrawdownR(trades),
     max_loss_streak: maxLossStreak(trades),
@@ -531,6 +536,8 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
     worst_trade: worstTrade(trades),
     confidence: module2BacktestConfidence(metrics, failureAnalytics, trades),
     failure_analytics: failureAnalytics,
+    variant_breakdown: variantBreakdown,
+    variant_review: variantReview,
     direction_breakdown: directionBreakdown,
     grade_breakdown: gradeBreakdown
   };
@@ -563,6 +570,8 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
       bestTrade: advanced.best_trade,
       worstTrade: advanced.worst_trade,
       failureAnalytics,
+      variantBreakdown,
+      variantReview,
       directionBreakdown,
       gradeBreakdown,
       liquidityBreakdown,
@@ -807,6 +816,63 @@ function breakdownByDetail(trades: BacktestTrade[], key: string) {
   return breakdownByTrade(trades, (trade) => String((trade.details as any)[key] ?? "UNKNOWN"));
 }
 
+function module2VariantBreakdown(trades: BacktestTrade[]) {
+  const rows = breakdownByTrade(trades, (trade) => String((trade.details as any).variantCode ?? "UNCLASSIFIED_VARIANT"));
+  return Object.fromEntries(Object.entries(rows).map(([variantCode, row]) => {
+    const variantTrade = trades.find((trade) => String((trade.details as any).variantCode ?? "UNCLASSIFIED_VARIANT") === variantCode);
+    const variantTrades = trades.filter((trade) => String((trade.details as any).variantCode ?? "UNCLASSIFIED_VARIANT") === variantCode);
+    return [variantCode, {
+      ...row,
+      variantCode,
+      variantName: (variantTrade?.details as any)?.variantName ?? variantCode,
+      variantVersion: (variantTrade?.details as any)?.variantVersion ?? null,
+      profitFactor: profitFactor(variantTrades),
+      maxDrawdownR: maxDrawdownR(variantTrades),
+      bestHour: bestBreakdownKey(breakdownByDetail(variantTrades, "hourNewYork")),
+      bestWeekday: bestBreakdownKey(breakdownByDetail(variantTrades, "weekday"))
+    }];
+  }));
+}
+
+function module2VariantReview(failureAnalytics: ReturnType<typeof analyzeModule2RuleFailures>, variantBreakdown: Record<string, any>) {
+  const missed = failureAnalytics.variantMisses ?? [];
+  const strongest = Object.values(variantBreakdown).sort((left: any, right: any) =>
+    Number(right.totalR ?? 0) - Number(left.totalR ?? 0)
+      || Number(right.winRate ?? 0) - Number(left.winRate ?? 0)
+      || Number(right.trades ?? 0) - Number(left.trades ?? 0)
+  )[0] as any;
+  return {
+    strongestVariant: strongest ? {
+      code: strongest.variantCode,
+      name: strongest.variantName,
+      trades: strongest.trades,
+      winRate: strongest.winRate,
+      totalR: strongest.totalR,
+      averageR: strongest.averageR,
+      profitFactor: strongest.profitFactor
+    } : null,
+    missedVariants: missed.slice(0, 12),
+    recommendation: strongest
+      ? `${strongest.variantName ?? strongest.variantCode} is currently strongest in cached backtest evidence. Keep other variants in research until sample size improves.`
+      : "No variant has enough backtest trades yet. Keep Module 2 in research/paper mode."
+  };
+}
+
+function profitFactor(trades: BacktestTrade[]) {
+  const grossWin = trades.filter((trade) => trade.resultR > 0).reduce((sum, trade) => sum + trade.resultR, 0);
+  const grossLoss = Math.abs(trades.filter((trade) => trade.resultR < 0).reduce((sum, trade) => sum + trade.resultR, 0));
+  if (grossLoss === 0) return grossWin > 0 ? Number(grossWin.toFixed(4)) : 0;
+  return Number((grossWin / grossLoss).toFixed(4));
+}
+
+function bestBreakdownKey(rows: Record<string, any>) {
+  const best = Object.entries(rows).sort((left, right) =>
+    Number(right[1].totalR ?? 0) - Number(left[1].totalR ?? 0)
+      || Number(right[1].winRate ?? 0) - Number(left[1].winRate ?? 0)
+  )[0];
+  return best ? best[0] : null;
+}
+
 function breakdownByTrade(trades: BacktestTrade[], keyFor: (trade: BacktestTrade) => string) {
   return trades.reduce<Record<string, { trades: number; wins: number; losses: number; breakeven: number; winRate: number; totalR: number; averageR: number }>>((accumulator, trade) => {
     const value = keyFor(trade);
@@ -983,7 +1049,10 @@ async function insertModule2BacktestLearningRun(tenantId: string, summary: any, 
 function module2BacktestRecommendations(summary: any, metrics: Record<string, any>) {
   const confidence = metrics.confidence ?? {};
   const failureAnalytics = metrics.failure_analytics ?? summary.failureAnalytics ?? {};
+  const variantReview = metrics.variant_review ?? summary.variantReview ?? {};
   const topFailure = failureAnalytics.topFailedRules?.[0];
+  const strongestVariant = variantReview.strongestVariant;
+  const missedVariants = Array.isArray(variantReview.missedVariants) ? variantReview.missedVariants : [];
   const out: Array<{
     recommendationType: string;
     confidence: string;
@@ -1009,6 +1078,26 @@ function module2BacktestRecommendations(summary: any, metrics: Record<string, an
       rationale: `${topFailure.ruleCode} was the most common Module 2 backtest blocker with ${topFailure.count} occurrences.`,
       metrics: failureAnalytics,
       suggestedAction: { action: "REVIEW_RULE", ruleCode: topFailure.ruleCode }
+    });
+  }
+  if (strongestVariant) {
+    out.push({
+      recommendationType: "BACKTEST_VARIANT_FOCUS",
+      confidence: Number(strongestVariant.trades ?? 0) >= 10 ? "MEDIUM" : "LOW",
+      title: `Focus Module 2 variant: ${strongestVariant.name ?? strongestVariant.code}`,
+      rationale: `${strongestVariant.name ?? strongestVariant.code} is the strongest variant in the current cached backtest evidence.`,
+      metrics: strongestVariant,
+      suggestedAction: { action: "KEEP_VARIANT_ACTIVE", variantCode: strongestVariant.code }
+    });
+  }
+  if (missedVariants.length > 0) {
+    out.push({
+      recommendationType: "BACKTEST_MISSED_VARIANT_REVIEW",
+      confidence: missedVariants.length >= 10 ? "MEDIUM" : "LOW",
+      title: "Review near-miss Module 2 variants",
+      rationale: `${missedVariants.length} near-miss variant setup(s) were found where one or two rules blocked a possible trade.`,
+      metrics: { missedVariants: missedVariants.slice(0, 20) },
+      suggestedAction: { action: "REVIEW_MISSED_VARIANTS", count: missedVariants.length }
     });
   }
   return out;
@@ -1563,6 +1652,7 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
   const ruleCounts: Record<string, number> = {};
   let evaluatedCandles = 0;
   let lowScoreTradesAvoided = 0;
+  const variantMisses: Array<Record<string, unknown>> = [];
   const sessionStart = String(configuration.newYorkStartTime ?? "09:30");
   const tradeWindowEnd = String(configuration.newYorkEndTime ?? "16:00");
 
@@ -1587,6 +1677,27 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
       const failed = (decision.evaluations ?? []).find((evaluation) => evaluation.blocking && evaluation.status !== "PASS");
       if (failed) ruleCounts[failed.ruleCode] = (ruleCounts[failed.ruleCode] ?? 0) + 1;
       const passed = new Set((decision.evaluations ?? []).filter((evaluation) => evaluation.status === "PASS").map((evaluation) => evaluation.ruleCode));
+      const flags = decision.scenarioFlags ?? {};
+      const variants = Array.isArray((flags as any).module2Variants) ? (flags as any).module2Variants : [];
+      const nearVariant = variants
+        .filter((variant: any) => Array.isArray(variant.missingRules) && variant.missingRules.length > 0 && variant.missingRules.length <= 2)
+        .sort((left: any, right: any) => Number(right.score ?? 0) - Number(left.score ?? 0))[0];
+      if (nearVariant && failed) {
+        variantMisses.push({
+          sessionDate,
+          at: current.timestampUtc,
+          variantCode: nearVariant.code,
+          variantName: nearVariant.name,
+          variantVersion: nearVariant.version,
+          score: nearVariant.score,
+          missingRules: nearVariant.missingRules,
+          blocker: failed.ruleCode,
+          direction: decision.direction,
+          state: decision.state,
+          scenario: decision.scenario,
+          finalReason: decision.finalReason
+        });
+      }
       const failedRule = failed?.ruleCode;
       if (passed.has("LIQUIDITY_SWEEP_CONFIRMED") && failedRule === "DISPLACEMENT_CONFIRMED") stageCounts.sweepPassedDisplacementFailed += 1;
       if (passed.has("DISPLACEMENT_CONFIRMED") && (failedRule === "PROTECTED_POINT_CONFIDENCE" || failedRule === "BOS_CHOCH_CONFIRMED")) stageCounts.displacementPassedBosFailed += 1;
@@ -1607,6 +1718,7 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
     evaluatedCandles,
     lowScoreTradesAvoided,
     stageCounts,
+    variantMisses: variantMisses.slice(-50).reverse(),
     topFailedRules: Object.entries(ruleCounts)
       .sort((left, right) => right[1] - left[1])
       .slice(0, 10)

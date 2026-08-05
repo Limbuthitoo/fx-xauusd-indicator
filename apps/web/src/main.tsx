@@ -5267,6 +5267,8 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
   const failureAnalytics = summary.failureAnalytics ?? metrics.failure_analytics ?? {};
   const directionBreakdown = summary.directionBreakdown ?? metrics.direction_breakdown ?? {};
   const liquidityBreakdown = summary.liquidityBreakdown ?? metrics.liquidity_type_breakdown ?? {};
+  const variantBreakdown = summary.variantBreakdown ?? metrics.variant_breakdown ?? {};
+  const variantReview = summary.variantReview ?? metrics.variant_review ?? {};
   return (
     <Panel icon={<LineChart />} title="Module 2 Backtest Table">
       <div className="journal-detail-card">
@@ -5285,6 +5287,8 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
           <Metric label="Sessions" value={summary.sessionsTested ?? metrics.sessions_tested ?? 0} />
         </div>
         <div className="module2-breakdown-grid">
+          <MiniVariantBreakdown title="Variant Performance" rows={variantBreakdown} />
+          <MiniMissedVariants title="Missed Variant Review" rows={variantReview.missedVariants ?? []} />
           <MiniBreakdown title="BUY / SELL" rows={directionBreakdown} />
           <MiniBreakdown title="Liquidity Type" rows={liquidityBreakdown} />
           <MiniFailures title="Failed Rule Focus" rows={failureAnalytics.topFailedRules ?? []} />
@@ -5297,6 +5301,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
             <span>{formatNepalTime(selected.entryTime ?? selected.session_date)} · {formatR(selected.resultR ?? selected.result_r)}R · {selected.outcome}</span>
           </div>
           <div className="journal-evidence-grid">
+            <Metric label="Variant" value={detail.variantName ?? detail.variantCode ?? "--"} />
             <Metric label="Liquidity" value={detail.liquidityType ?? detail.sweep?.level?.type ?? "--"} />
             <Metric label="Sweep ATR" value={detail.sweepDistanceAtr == null ? "--" : Number(detail.sweepDistanceAtr).toFixed(2)} />
             <Metric label="BOS time" value={formatNepalTime(detail.bosTime ?? detail.bos?.candle?.timestampUtc)} />
@@ -5320,6 +5325,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
             <tr>
               <th>Date</th>
               <th>Direction</th>
+              <th>Variant</th>
               <th>Liquidity</th>
               <th>Sweep ATR</th>
               <th>BOS time</th>
@@ -5338,6 +5344,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
                 <tr key={`${trade.date ?? trade.entryTime}-${index}`}>
                   <td>{formatNepalTime(details.entryTime ?? trade.entryTime ?? trade.date)}</td>
                   <td>{trade.direction ?? "--"}</td>
+                  <td>{details.variantName ?? details.variantCode ?? "--"}</td>
                   <td>{details.liquidityType ?? details.sweep?.level?.type ?? "--"}</td>
                   <td>{details.sweepDistanceAtr == null ? "--" : Number(details.sweepDistanceAtr).toFixed(2)}</td>
                   <td>{formatNepalTime(details.bosTime ?? details.bos?.candle?.timestampUtc)}</td>
@@ -5350,12 +5357,42 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
               );
             })}
             {trades.length === 0 ? (
-              <tr><td colSpan={10}>Run a Module 2 cache backtest after NY candles are stored to populate this table.</td></tr>
+              <tr><td colSpan={11}>Run a Module 2 cache backtest after NY candles are stored to populate this table.</td></tr>
             ) : null}
           </tbody>
         </table>
       </div>
     </Panel>
+  );
+}
+
+function MiniVariantBreakdown({ title, rows }: { title: string; rows?: Record<string, any> }) {
+  const entries = Object.entries(rows ?? {}).slice(0, 5);
+  return (
+    <div className="mini-breakdown">
+      <strong>{title}</strong>
+      {entries.map(([key, value]) => (
+        <span key={key}>
+          {value.variantName ?? formatScenario(key)}: {value.trades ?? 0} trades · {formatPercent(value.winRate)} · PF {formatPriceValue(value.profitFactor)} · DD {formatR(value.maxDrawdownR)}
+        </span>
+      ))}
+      {entries.length === 0 ? <span>No variant performance yet</span> : null}
+    </div>
+  );
+}
+
+function MiniMissedVariants({ title, rows }: { title: string; rows?: any[] }) {
+  const items = (rows ?? []).slice(0, 4);
+  return (
+    <div className="mini-breakdown">
+      <strong>{title}</strong>
+      {items.map((row, index) => (
+        <span key={`${row.variantCode ?? "variant"}-${row.at ?? index}`}>
+          {row.variantName ?? formatScenario(row.variantCode)}: blocked by {formatScenario(row.blocker)} · missing {(row.missingRules ?? []).slice(0, 2).map(formatScenario).join(", ")}
+        </span>
+      ))}
+      {items.length === 0 ? <span>No near-miss variants yet</span> : null}
+    </div>
   );
 }
 
