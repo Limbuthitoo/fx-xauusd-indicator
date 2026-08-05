@@ -75,7 +75,9 @@ Expected daily usage target:
 ### Module 2: NY Liquidity Sweep + BOS
 
 - Code: `high_probability_strategy_2`
-- Purpose: Liquidity Sweep + Structure Confirmation strategy family for XAUUSD.
+- Purpose: Ultimate Liquidity Sweep + Structure Confirmation strategy family for XAUUSD.
+- Authoritative strategy source: `ULTIMATE LIQUIDITY SWEEP + STRUCTURE CONFIRMATION STRATEGY MODULE`, Version 1.0.
+- The latest Module 2 specification replaces the previous Module 2 behavior. Do not keep old rule gates, old naming, or compatibility fallbacks when they conflict with the new spec.
 - Execution: 5-minute candles.
 - Context/bias: 15-minute structure/bias.
 - Optional precision timeframe: 1-minute later, but MVP should stay 15m + 5m to reduce noise.
@@ -125,7 +127,6 @@ Expected daily usage target:
   - Sweep invalidation reasons include `SWEEP_TOO_SMALL`, `SWEEP_TOO_DEEP`, `NO_REJECTION`, `ACCEPTED_BEYOND_LEVEL`, and `POSSIBLE_BREAKOUT`.
   - Conflicting buy-side and sell-side sweeps inside the recent decision window are exposed as `DOUBLE_SWEEP_FILTER` warning/evidence, not a hard gate.
   - Liquidity sequence selection ranks level priority and rejection quality before displacement, BOS/MSS, zone, retrace, and confirmation.
-  - Sell-side candidate: candle low penetrates below a sell-side liquidity zone.
   - Baseline sweep penetration: minimum `0.02 ATR`, maximum `0.50 ATR`.
   - Penetration below minimum is an insignificant touch.
   - Penetration above maximum is a possible breakout/acceptance warning, not immediate reversal.
@@ -218,7 +219,7 @@ Expected daily usage target:
   - Sweep + MSS + displacement.
   - Sweep + MSS + retest + displacement.
 - Backtest reports must include setup count, trade count, win rate, average win/loss R, expectancy, profit factor, drawdown, consecutive losses, holding time, liquidity-level performance, long/short performance, session performance, spread sensitivity, and parameter stability.
-- Required test cases include no MSS expiry, wick-only protected-point break, valid MSS close, no retest expiry, valid retest setup, acceptance invalidation, equal high/low clustering, stale data block, RR too low block, double-sweep warning/block, and low-confidence protected-point block.
+- Required test cases include no MSS expiry, wick-only protected-point break, valid MSS close, no retest expiry, valid retest setup, acceptance invalidation, equal high/low clustering, stale data block, RR too low block, double-sweep warning/evidence, and low-confidence protected-point block.
 - UI must show every setup with:
   - Liquidity type, price, zone, priority, age, cluster size.
   - Sweep penetration, normalized penetration, sweep candle, rejection type.

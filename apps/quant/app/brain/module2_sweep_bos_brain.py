@@ -46,7 +46,7 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if trade and trade.get("outcome") == "ACTIVE":
         setup_status = str(setup.get("status") or "") if setup else ""
         if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active legacy paper trade whose originating setup did not pass the authoritative Sweep + BOS checklist.", False)
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper trade whose originating setup did not pass the authoritative Ultimate Liquidity Sweep checklist.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 paper trade is active. Manage the TP/SL lifecycle.", False)
     if not setup:
         return payload("WAITING_FOR_SWEEP_BOS_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for a New York liquidity sweep, displacement, BOS/CHoCH, and entry-zone retrace.", False)

@@ -185,8 +185,8 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   minimumSwingProminenceATR: 0.2,
   structureToleranceATR: 0.05,
   protectedPointMinimumConfidence: "MEDIUM",
-  minimumSweepDistanceATR: 0.1,
-  maximumSweepDistanceATR: 1,
+  minimumSweepDistanceATR: 0.02,
+  maximumSweepDistanceATR: 0.5,
   minimumSweepRejectionWickRatio: 0.35,
   acceptanceCloseCount: 2,
   acceptanceCloseDistanceATR: 0.15,
@@ -198,14 +198,14 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   maximumBarsAfterSweep: 5,
   pivotLeftBars: 2,
   pivotRightBars: 2,
-  minimumBosCloseDistanceATR: 0.05,
+  minimumBosCloseDistanceATR: 0.03,
   maximumBarsAfterSweepForBos: 10,
   maximumBarsAfterBosForEntry: 15,
   minimumFvgSizeATR: 0.1,
   entryAtFvgPercentage: 50,
-  minimumRiskReward: 2,
+  minimumRiskReward: 1.5,
   maximumStopATR: 1.25,
-  stopBufferATR: 0.1,
+  stopBufferATR: 0.03,
   minimumSignalScore: 80,
   maximumSpread: 0.8,
   enableNewsFilter: true,
@@ -240,7 +240,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(context.newsStatus ?? "CLEAR").includes("BLOCKED");
   const tradeLimitOk = (context.tradesTakenThisSession ?? 0) < config.maximumTradesPerSession;
-  flags.terminologyVersion = "LIQUIDITY_SWEEP_STRUCTURE_CONFIRMATION_V1";
+  flags.terminologyVersion = "ULTIMATE_LIQUIDITY_SWEEP_STRUCTURE_CONFIRMATION_V1";
   flags.atr14 = Number(atr.toFixed(5));
   flags.internalStructure = internalStructure;
   flags.externalStructure = externalStructure;
