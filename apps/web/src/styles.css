@@ -2381,7 +2381,8 @@ button:hover,
 }
 
 .prediction-card {
-  min-height: 270px;
+  align-content: start;
+  min-height: 260px;
 }
 
 .prediction-card.buy {
@@ -2406,7 +2407,25 @@ button:hover,
 }
 
 .prediction-grid .trade-signal-card-head strong {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
+  line-height: 1.15;
+}
+
+.prediction-grid .trade-signal-card-head {
+  align-items: flex-start;
+}
+
+.prediction-grid .trade-signal-card-head > div {
+  min-width: 0;
+}
+
+.prediction-grid .signal-tier {
+  max-width: 122px;
+  flex: 0 0 auto;
+  white-space: normal;
+  text-align: right;
+  line-height: 1.2;
 }
 
 .prediction-reason-stack {
@@ -2586,19 +2605,36 @@ button:hover,
 }
 
 .trade-signal-chance {
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 3px;
   padding: 10px;
 }
 
 .trade-signal-chance span,
 .trade-signal-chance em {
+  min-width: 0;
   color: #91a097;
   font-size: 11px;
+  line-height: 1.25;
 }
 
 .trade-signal-chance strong {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  justify-self: end;
   color: #f4c430;
-  font-size: 22px;
+  font-size: 24px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.trade-signal-chance em {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .trade-signal-chance strong.target {

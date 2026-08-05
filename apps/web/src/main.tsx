@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
-import { API_BASE_URL, ApiError, api, clearAuthToken, setAuthToken } from "./shared/api";
+import { API_BASE_URL, ApiError, api, apiWebSocketUrl, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
 
 const DEFAULT_SYMBOL = "XAUUSD";
@@ -117,6 +117,7 @@ function App() {
   const [notificationFilters, setNotificationFilters] = useState({ moduleCode: "", priority: "", unreadOnly: false, eventType: "" });
   const activeModuleCodeRef = useRef(activeModuleCode);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const liveRefreshTimerRef = useRef<number | null>(null);
   const [user, setUser] = useState<AdminUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -249,6 +250,49 @@ function App() {
     const timer = window.setInterval(() => refresh(activeModuleCodeRef.current).catch(() => undefined), 60_000);
     return () => window.clearInterval(timer);
   }, [user]);
+
+  useEffect(() => {
+    if (!user || isPlatformAdminRoute) return;
+    let stopped = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+
+    function queueLiveRefresh(payload: any) {
+      if (payload?.type !== "candle" || payload?.symbol !== DEFAULT_SYMBOL) return;
+      const shouldRefresh = ["command", "predictions", "signals", "paper", "live", "health"].includes(activeSection);
+      if (!shouldRefresh && !payload.automation) return;
+      if (liveRefreshTimerRef.current) window.clearTimeout(liveRefreshTimerRef.current);
+      liveRefreshTimerRef.current = window.setTimeout(() => {
+        liveRefreshTimerRef.current = null;
+        refresh(activeModuleCodeRef.current).catch(() => undefined);
+      }, 900);
+    }
+
+    function connect() {
+      if (stopped) return;
+      socket = new WebSocket(apiWebSocketUrl("/api/live/ws"));
+      socket.onmessage = (event) => {
+        try {
+          queueLiveRefresh(JSON.parse(event.data));
+        } catch {
+          // Ignore malformed socket messages; the scheduled refresh remains the fallback.
+        }
+      };
+      socket.onclose = () => {
+        if (stopped) return;
+        reconnectTimer = window.setTimeout(connect, 2_000);
+      };
+      socket.onerror = () => socket?.close();
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (liveRefreshTimerRef.current) window.clearTimeout(liveRefreshTimerRef.current);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [user, activeSection, isPlatformAdminRoute]);
 
   useEffect(() => {
     if (!user) return;
@@ -7552,7 +7596,7 @@ function PredictionsWorkspace({
       <div className="paper-trading-head">
         <div>
           <h2><Target size={20} />Predictions</h2>
-          <p>Module candidate entries before or alongside confirmed paper-trade signals. These are predictions, not broker orders.</p>
+          <p>Only module predictions with 80%+ probability are shown here. These are predictions, not broker orders.</p>
         </div>
         <button onClick={onRefresh}><LineChart size={16} />Refresh</button>
       </div>
@@ -7582,7 +7626,7 @@ function PredictionsWorkspace({
 
       <div className="trade-horizon-note">
         <strong>Prediction workflow</strong>
-        <span>Module 2 predicts from liquidity level {"->"} sweep close-back {"->"} displacement {"->"} BOS/CHoCH {"->"} FVG/OB entry zone {"->"} confirmation.</span>
+        <span>Module 2 predicts from liquidity level {"->"} sweep close-back {"->"} displacement {"->"} BOS/CHoCH {"->"} FVG/OB entry zone {"->"} confirmation. Cards below the 80% floor stay hidden.</span>
       </div>
 
       <div className="trade-signal-grid prediction-grid">
@@ -7621,7 +7665,7 @@ function PredictionsWorkspace({
           </button>
         ))}
       </div>
-      {visible.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No predictions yet</strong><span>Prediction cards appear after modules create live setup candidates from saved XAUUSD candles.</span></div> : null}
+      {visible.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No 80%+ predictions yet</strong><span>Cards appear only when a module creates a high-probability BUY or SELL candidate from saved XAUUSD candles.</span></div> : null}
     </section>
   );
 }

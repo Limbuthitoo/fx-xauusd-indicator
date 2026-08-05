@@ -488,6 +488,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 QA/replay must expose the real variant families: sweep-only research, sweep+BOS research, sweep+MSS research, displacement retest, BOS retest, and EMA-aligned sweep. Backtest UI should show missed setup instructions and evidence markers for swept liquidity, displacement, BOS/CHoCH, FVG/OB zone, and entry/SL/TP.
 - Module 2 live evidence must stay aligned across live chart, Strategy Center, BUY & SELL, web notifications, and mobile notification detail. These views should show variant, mandatory/confirmation/quality counts, missing blocking rules, liquidity, displacement, BOS/CHoCH, entry zone, and entry/SL/TP when available.
 - Module 2 backtests should create missed-trade learning review items. Reviews must preserve variant, blocker, missing rules, projected entry/SL/TP, projected TP/SL outcome, classification, guardrails, and proposed QA-only/observe-only next action.
+- Module 2 production validation command is `npm run validate:module2-production -- .env.production`. It checks PostgreSQL 5M candles, Module 2 catalog/tenant assignment, latest cache backtest, 80%+ predictions, entry-ready setup chain, paper trade, notification payload, journal, and learning review evidence.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 
 ## Operating Principles

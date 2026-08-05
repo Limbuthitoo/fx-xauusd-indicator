@@ -2841,7 +2841,7 @@ function isActionableModule(module: ModuleRow) {
   if (label === "WAIT" || label === "NO TRADE") return false;
   const setup = module.currentSetup ?? {};
   const trade = module.currentTrade ?? {};
-  return Boolean(trade.outcome === "ACTIVE" || setup.entry_price || setup.status?.includes("SETUP") || setup.status === "PAPER_TRADE_OPENED");
+  return Boolean(trade.outcome === "ACTIVE" || (setupProbability(setup) >= 80 && (setup.entry_price || setup.status?.includes("SETUP") || setup.status === "PAPER_TRADE_OPENED")));
 }
 
 function isFullChecklistModule(module: ModuleRow) {
@@ -2868,10 +2868,16 @@ function entryRangeLabel(setup: any, fallbackEntry: unknown) {
 }
 
 function chanceLabel(setup: any) {
+  const numeric = setupProbability(setup);
+  if (!Number.isFinite(numeric)) return "--";
+  return `${numeric.toFixed(0)}%`;
+}
+
+function setupProbability(setup: any) {
   const value = setup.chance ?? setup.confidence_score ?? setup.favorability_score ?? setup.score;
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "--";
-  return numeric <= 1 ? `${(numeric * 100).toFixed(0)}%` : `${numeric.toFixed(0)}%`;
+  if (!Number.isFinite(numeric)) return Number.NaN;
+  return numeric <= 1 ? numeric * 100 : numeric;
 }
 
 function signalLabel(module: ModuleRow) {

@@ -2599,8 +2599,20 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
 
   const duplicate = await query("SELECT id FROM setup_candidates WHERE session_id = $1 AND module_code = $2 AND detected_at = $3 LIMIT 1", [session.id, moduleCode, current.timestamp_utc]);
   if (duplicate.rows[0]) {
+    const existingSetup = await loadSetupForProductionGate(duplicate.rows[0].id);
+    const paperTrade = await attemptProductionPaperTrade({
+      session,
+      moduleCode,
+      setup: existingSetup,
+      decision: existingSetup,
+      risk: null,
+      current,
+      timeframe,
+      liveCandles,
+      settings
+    });
     const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
-    return { sessionFound: true, evaluation: "ALREADY_EVALUATED", tradeLifecycle };
+    return { sessionFound: true, evaluation: "ALREADY_EVALUATED", paperTrade, tradeLifecycle };
   }
 
   const startLookback = new Date(new Date(session.session_start_at).getTime() - 48 * 60 * 60_000).toISOString();
@@ -2653,29 +2665,18 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
   await notifyModule2Stage(session, decision);
   await applyModule2SetupLifecycle(saved?.setup, decision, current);
-  let paperTrade = null;
-  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
-  const brainApproved = brainApprovesPaperEntry(brainDecision, saved?.setup);
-  await auditBrainPaperEntryGate(session.tenant_id, moduleCode, saved?.setup, productionReady, brainDecision, brainApproved);
-  if (productionReady && brainApproved) {
-    await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
-    const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    paperTrade = settings.paperTradingEnabled
-      ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
-      : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
-    if (paperTrade?.trade || !settings.paperTradingEnabled) {
-      await notifyTenantOnce(
-        session.tenant_id,
-        `module2-setup-ready-${saved.setup.id}`,
-        "MODULE2_SETUP_READY",
-        `${alert.title} signal ready`,
-        `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 2 checklist matched."}`,
-        "HIGH",
-        alert.data,
-        "validEntries"
-      );
-    }
-  }
+  const paperTrade = await attemptProductionPaperTrade({
+    session,
+    moduleCode,
+    setup: saved?.setup,
+    decision: saved?.decision,
+    risk: saved?.risk,
+    current,
+    timeframe,
+    liveCandles,
+    settings,
+    brainDecision
+  });
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
   return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.state, paperTrade, tradeLifecycle, brainDecision };
 }
@@ -3640,6 +3641,103 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   }
   const blockingRules = decision?.evaluations?.filter((evaluation: any) => evaluation.blocking) ?? [];
   return blockingRules.length > 0 && blockingRules.every((evaluation: any) => evaluation.status === "PASS");
+}
+
+async function loadSetupForProductionGate(setupId: string) {
+  const setup = (await query("SELECT * FROM setup_candidates WHERE id = $1 LIMIT 1", [setupId])).rows[0] as any;
+  if (!setup) return null;
+  const evaluations = await query(
+    `SELECT rule_code, name, status, blocking, source, actual_value, required_value, explanation
+     FROM setup_rule_evaluations
+     WHERE setup_candidate_id = $1
+     ORDER BY evaluated_at ASC`,
+    [setupId]
+  );
+  return {
+    ...setup,
+    evaluations: evaluations.rows.map((row: any) => ({
+      ruleCode: row.rule_code,
+      rule_code: row.rule_code,
+      name: row.name,
+      status: row.status,
+      blocking: row.blocking,
+      source: row.source,
+      actualValue: row.actual_value,
+      requiredValue: row.required_value,
+      explanation: row.explanation
+    }))
+  };
+}
+
+async function attemptProductionPaperTrade({
+  session,
+  moduleCode,
+  setup,
+  decision,
+  risk,
+  current,
+  timeframe,
+  liveCandles,
+  settings,
+  brainDecision
+}: {
+  session: any;
+  moduleCode: string;
+  setup: any;
+  decision: any;
+  risk: any;
+  current: any;
+  timeframe: number;
+  liveCandles: LiveCandle[];
+  settings: RuntimeSettings;
+  brainDecision?: any;
+}) {
+  if (!setup?.id) return null;
+  const existing = await query(
+    `SELECT t.id AS trade_id, tp.id AS plan_id, t.outcome
+     FROM trade_plans tp
+     LEFT JOIN trades t ON t.trade_plan_id = tp.id
+     WHERE tp.setup_candidate_id = $1
+     ORDER BY t.opened_at DESC NULLS LAST, tp.created_at DESC
+     LIMIT 1`,
+    [setup.id]
+  );
+  if (existing.rows[0]?.trade_id) return { skipped: true, reason: "PAPER_TRADE_ALREADY_EXISTS", trade: existing.rows[0] };
+
+  const effectiveDecision = {
+    ...(decision ?? {}),
+    evaluations: decision?.evaluations ?? setup.evaluations ?? [],
+    scenarioFlags: decision?.scenarioFlags ?? setup.scenario_flags ?? {},
+    entryPrice: decision?.entryPrice ?? setup.entry_price,
+    stopPrice: decision?.stopPrice ?? setup.stop_price,
+    targetPrice: decision?.targetPrice ?? setup.target_price
+  };
+  const effectiveRisk = risk ?? await calculateDecisionRisk(session, effectiveDecision, current);
+  const productionReady = isProductionReadySetup(setup, effectiveDecision, effectiveRisk);
+  const effectiveBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode);
+  const brainApproved = brainApprovesPaperEntry(effectiveBrainDecision, setup);
+  await auditBrainPaperEntryGate(session.tenant_id, moduleCode, setup, productionReady, effectiveBrainDecision, brainApproved);
+  if (!productionReady) return { skipped: true, reason: "SETUP_NOT_PRODUCTION_READY", riskStatus: effectiveRisk?.status ?? "MISSING" };
+  if (!brainApproved) return { skipped: true, reason: "PYTHON_BRAIN_NOT_APPROVED", brainDecision: effectiveBrainDecision };
+
+  await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
+  const alert = entryAlertDetails(moduleCode, setup, null, Number(effectiveRisk?.rewardToRisk ?? 0));
+  const paperTrade = settings.paperTradingEnabled
+    ? await createAutomaticPaperTrade(session, setup, effectiveRisk, current, moduleCode)
+    : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+  if (paperTrade?.trade || !settings.paperTradingEnabled) {
+    await notifyTenantOnce(
+      session.tenant_id,
+      `${moduleCode}-setup-ready-${setup.id}`,
+      moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
+      `${alert.title} signal ready`,
+      `${alert.body} | ${setup.final_reason ?? "Valid checklist matched."}`,
+      "HIGH",
+      alert.data,
+      "validEntries"
+    );
+  }
+  return paperTrade;
 }
 
 function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {

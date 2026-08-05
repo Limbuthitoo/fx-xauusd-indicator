@@ -42,6 +42,7 @@ const DAY_TRADING_HOLD_WINDOW = {
   maximumHours: 12,
   guidance: "Review or close the paper trade before the day-trading window expires."
 };
+const MINIMUM_VISIBLE_PREDICTION_PROBABILITY = 80;
 
 const MODULE2_QA_CASES: Array<{
   code: Module2ReplayCase;
@@ -144,7 +145,9 @@ export async function setupRoutes(app: FastifyInstance) {
       rows.push(evaluation);
       evaluationsBySetup.set(evaluation.setup_candidate_id, rows);
     }
-    const predictions = setups.rows.map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? []));
+    const predictions = setups.rows
+      .map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? []))
+      .filter((prediction) => prediction.probability >= MINIMUM_VISIBLE_PREDICTION_PROBABILITY);
     return { summary: summarizePredictions(predictions), predictions };
   });
 
