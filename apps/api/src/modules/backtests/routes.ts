@@ -126,11 +126,14 @@ export async function backtestRoutes(app: FastifyInstance) {
         );
       }
       const learning = await runPostBacktestLearning(auth.tenantId, moduleCode);
+      const missedReviews = moduleCode === "high_probability_strategy_2"
+        ? await seedModule2MissedBacktestReviews(auth.tenantId, learning?.runId ?? null, (result.summary as any).variantReview?.missedVariants ?? [])
+        : { created: 0 };
       const updated = await query(
         "UPDATE backtest_runs SET status = 'COMPLETED', completed_at = now(), summary = $2 WHERE id = $1 RETURNING *",
-        [run.id, { ...result.summary, moduleCode, learningRunId: learning?.runId ?? null }]
+        [run.id, { ...result.summary, moduleCode, learningRunId: learning?.runId ?? null, missedReviewsCreated: missedReviews.created }]
       );
-      return { run: updated.rows[0], trades: result.trades, metrics: result.metrics, learning };
+      return { run: updated.rows[0], trades: result.trades, metrics: result.metrics, learning, missedReviews };
     } catch (error) {
       const failed = await query(
         "UPDATE backtest_runs SET status = 'FAILED', completed_at = now(), summary = $2 WHERE id = $1 RETURNING *",
@@ -235,7 +238,11 @@ export async function backtestRoutes(app: FastifyInstance) {
   app.post("/api/module2/learning/reviews/:id/status", async (request) => {
     const auth = await requireTenantModule(request, "high_probability_strategy_2");
     const { id } = request.params as { id: string };
-    const body = request.body as { status?: "APPROVED_QA" | "REJECTED" | "APPLIED" | "ROLLED_BACK"; note?: string };
+    const body = request.body as {
+      status?: "APPROVED_QA" | "REJECTED" | "APPLIED" | "ROLLED_BACK";
+      note?: string;
+      classification?: "PENDING_CLASSIFICATION" | "TRUE_MISSED_TRADE" | "CORRECTLY_SKIPPED" | "TOO_RISKY" | "RULE_TOO_STRICT" | "INSUFFICIENT_EVIDENCE";
+    };
     const nextStatus = body.status ?? "APPROVED_QA";
     const allowed = new Set(["APPROVED_QA", "REJECTED", "APPLIED", "ROLLED_BACK"]);
     if (!allowed.has(nextStatus)) return { error: "Unsupported review status." };
@@ -251,12 +258,14 @@ export async function backtestRoutes(app: FastifyInstance) {
     if (nextStatus === "APPROVED_QA" && guardrails.some((check: any) => check.status === "FAIL")) {
       return { error: "Review cannot be approved because guardrails failed.", guardrails };
     }
+    const allowedClassifications = new Set(["PENDING_CLASSIFICATION", "TRUE_MISSED_TRADE", "CORRECTLY_SKIPPED", "TOO_RISKY", "RULE_TOO_STRICT", "INSUFFICIENT_EVIDENCE"]);
+    const classification = body.classification && allowedClassifications.has(body.classification) ? body.classification : row.classification;
     const updated = await query(
       `UPDATE module_learning_reviews
-       SET status = $3, review_note = $4, reviewed_by = $5, reviewed_at = now()
+       SET status = $3, review_note = $4, reviewed_by = $5, reviewed_at = now(), classification = $6
        WHERE id = $1 AND tenant_id = $2
        RETURNING *`,
-      [id, auth.tenantId, nextStatus, body.note ?? null, auth.sub]
+      [id, auth.tenantId, nextStatus, body.note ?? null, auth.sub, classification]
     );
     return updated.rows[0];
   });
@@ -419,6 +428,97 @@ async function runPostBacktestLearning(tenantId: string | null, moduleCode: stri
       error: (error as Error).message
     };
   }
+}
+
+async function seedModule2MissedBacktestReviews(tenantId: string | null, learningRunId: string | null, missedVariants: any[]) {
+  if (!tenantId || !Array.isArray(missedVariants) || missedVariants.length === 0) return { created: 0 };
+  let recommendationId: string | null = null;
+  if (learningRunId) {
+    const recommendation = await query(
+      `SELECT id
+       FROM module_learning_recommendations
+       WHERE learning_run_id = $1
+         AND module_code = 'high_probability_strategy_2'
+         AND recommendation_type = 'BACKTEST_MISSED_VARIANT_REVIEW'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [learningRunId]
+    );
+    recommendationId = recommendation.rows[0]?.id ?? null;
+  }
+  let created = 0;
+  for (const item of missedVariants.slice(0, 20)) {
+    const sourceKey = `module2-missed-${item.variantCode ?? "variant"}-${item.at ?? item.sessionDate ?? Date.now()}`;
+    const classification = classifyModule2MissedVariant(item);
+    const proposed = {
+      mode: classification === "RULE_TOO_STRICT" ? "QA_ONLY_TUNING_REVIEW" : "OBSERVE_ONLY",
+      settingKey: "liquiditySweep.strategy",
+      changes: classification === "RULE_TOO_STRICT" ? suggestedMissedVariantTuning(item) : {},
+      reason: missedVariantInstruction(item)
+    };
+    const guardrails = missedVariantGuardrails(item, classification);
+    const saved = await query(
+      `INSERT INTO module_learning_reviews (
+        tenant_id, module_code, recommendation_id, status, title, rationale,
+        proposed_change, guardrails, source_key, review_type, classification, evidence
+       ) VALUES ($1,'high_probability_strategy_2',$2,'PENDING',$3,$4,$5::jsonb,$6::jsonb,$7,'MISSED_TRADE_BACKTEST',$8,$9::jsonb)
+       ON CONFLICT (tenant_id, module_code, source_key) WHERE source_key IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [
+        tenantId,
+        recommendationId,
+        `Missed setup review: ${item.variantName ?? item.variantCode ?? "Module 2 variant"}`,
+        `${item.variantName ?? item.variantCode ?? "Module 2"} was blocked by ${item.blocker ?? "a rule"} near ${item.at ?? item.sessionDate}.`,
+        JSON.stringify(proposed),
+        JSON.stringify(guardrails),
+        sourceKey,
+        classification,
+        JSON.stringify(item)
+      ]
+    );
+    if (saved.rows[0]) created += 1;
+  }
+  return { created };
+}
+
+function classifyModule2MissedVariant(item: any) {
+  if (item.projectedOutcome === "WIN") return "TRUE_MISSED_TRADE";
+  if (item.projectedOutcome === "LOSS") return "CORRECTLY_SKIPPED";
+  const missing = new Set((item.missingRules ?? []).map((rule: string) => String(rule)));
+  if (missing.has("QUALITY_RR") || missing.has("QUALITY_STOP_SIZE") || missing.has("QUALITY_SPREAD") || missing.has("QUALITY_NEWS")) return "TOO_RISKY";
+  if (missing.size > 0 && missing.size <= 2 && Number(item.score ?? 0) >= 80) return "RULE_TOO_STRICT";
+  return "INSUFFICIENT_EVIDENCE";
+}
+
+function suggestedMissedVariantTuning(item: any) {
+  const missing = new Set((item.missingRules ?? []).map((rule: string) => String(rule)));
+  return {
+    reviewOnly: true,
+    variantCode: item.variantCode ?? null,
+    considerEntryZoneWaitBars: missing.has("ENTRY_ZONE_RETRACE"),
+    considerConfirmationThreshold: missing.has("CONFIRMATION_COUNT"),
+    considerQualityThreshold: missing.has("QUALITY_FILTER_COUNT")
+  };
+}
+
+function missedVariantInstruction(item: any) {
+  const missing = new Set((item.missingRules ?? []).map((rule: string) => String(rule)));
+  if (missing.has("DISPLACEMENT_CONFIRMED")) return "Review whether displacement threshold was too strict for this session.";
+  if (missing.has("BOS_CHOCH_CONFIRMED")) return "Review whether the protected structure point/BOS close logic missed a valid structure shift.";
+  if (missing.has("ENTRY_ZONE_RETRACE")) return "Review whether the retest window or entry-zone definition was too strict.";
+  if (missing.has("CONFIRM_ENTRY_CANDLE")) return "Review whether confirmation candle rules were too strict after a valid retest.";
+  if (missing.has("CONFIRMATION_COUNT")) return "Review confirmation count threshold against this near-miss.";
+  if (missing.has("QUALITY_FILTER_COUNT")) return "Review quality-filter threshold, but keep RR/news/spread safety intact.";
+  return "Review this missed setup manually before changing production rules.";
+}
+
+function missedVariantGuardrails(item: any, classification: string) {
+  return [
+    { code: "BACKTEST_ONLY", status: "PASS", detail: "Review came from PostgreSQL cached candle backtest evidence, not live broker execution." },
+    { code: "NO_AUTO_RULE_CHANGE", status: "PASS", detail: "Classification creates a review item only; no strategy setting is changed automatically." },
+    { code: "PROJECTED_OUTCOME", status: item.projectedOutcome ? "PASS" : "WARN", detail: item.projectedOutcome ?? "No projected TP/SL result could be calculated." },
+    { code: "CLASSIFICATION", status: classification === "TRUE_MISSED_TRADE" || classification === "RULE_TOO_STRICT" ? "WARN" : "PASS", detail: classification }
+  ];
 }
 
 function runLiquiditySweepMemoryCacheBacktest(input: {
@@ -1660,7 +1760,8 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
     const times = sessionTimesForDate(sessionDate, sessionStart, 0, tradeWindowEnd);
     const signalCandles = group.filter((candle) => candle.timestampUtc >= times.sessionStartAt && candle.timestampUtc <= times.signalWindowEndAt);
     let tradesTaken = 0;
-    for (const current of signalCandles) {
+    for (let signalIndex = 0; signalIndex < signalCandles.length; signalIndex += 1) {
+      const current = signalCandles[signalIndex];
       if (signalCandles.length < 20) continue;
       const setupCandles = group.filter((candle) => candle.timestampUtc <= current.timestampUtc);
       const decision = evaluateLiquiditySweepSetup({
@@ -1683,6 +1784,10 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
         .filter((variant: any) => Array.isArray(variant.missingRules) && variant.missingRules.length > 0 && variant.missingRules.length <= 2)
         .sort((left: any, right: any) => Number(right.score ?? 0) - Number(left.score ?? 0))[0];
       if (nearVariant && failed) {
+        const projection = projectedModule2MissTrade(decision, flags, current);
+        const projectedExit = projection
+          ? simulateExit(signalCandles.slice(signalIndex + 1), projection.direction, projection.entry, projection.stop, projection.target)
+          : null;
         variantMisses.push({
           sessionDate,
           at: current.timestampUtc,
@@ -1695,7 +1800,13 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
           direction: decision.direction,
           state: decision.state,
           scenario: decision.scenario,
-          finalReason: decision.finalReason
+          finalReason: decision.finalReason,
+          projectedEntry: projection?.entry ?? null,
+          projectedStop: projection?.stop ?? null,
+          projectedTarget: projection?.target ?? null,
+          projectedOutcome: projectedExit?.outcome ?? null,
+          projectedResultR: projectedExit?.resultR ?? null,
+          projectedExitTime: projectedExit?.exitTime ?? null
         });
       }
       const failedRule = failed?.ruleCode;
@@ -1724,6 +1835,33 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
       .slice(0, 10)
       .map(([ruleCode, count]) => ({ ruleCode, count }))
   };
+}
+
+function projectedModule2MissTrade(decision: any, flags: any, current: Candle) {
+  const direction = decision.direction === "SHORT" ? "SHORT" as Direction : decision.direction === "LONG" ? "LONG" as Direction : null;
+  if (!direction) return null;
+  const zone = flags.entryZone ?? {};
+  const entry = Number.isFinite(Number(decision.entryPrice))
+    ? Number(decision.entryPrice)
+    : Number.isFinite(Number(zone.midpoint))
+      ? Number(zone.midpoint)
+      : Number.isFinite(Number(zone.low)) && Number.isFinite(Number(zone.high))
+        ? (Number(zone.low) + Number(zone.high)) / 2
+        : Number(current.close);
+  const sweepCandle = flags.sweep?.candle ?? flags.sweep?.closeBackCandle ?? {};
+  const stop = Number.isFinite(Number(decision.stopPrice))
+    ? Number(decision.stopPrice)
+    : direction === "SHORT"
+      ? Number(sweepCandle.high ?? current.high)
+      : Number(sweepCandle.low ?? current.low);
+  const risk = Math.abs(entry - stop);
+  if (!Number.isFinite(entry) || !Number.isFinite(stop) || risk <= 0) return null;
+  const target = Number.isFinite(Number(decision.targetPrice))
+    ? Number(decision.targetPrice)
+    : direction === "SHORT"
+      ? entry - risk * 2
+      : entry + risk * 2;
+  return { direction, entry: Number(entry.toFixed(5)), stop: Number(stop.toFixed(5)), target: Number(target.toFixed(5)) };
 }
 
 function maxLossStreak(trades: BacktestTrade[]) {

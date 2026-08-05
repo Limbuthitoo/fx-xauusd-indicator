@@ -581,10 +581,10 @@ function App() {
     await refresh("high_probability_strategy_2");
   }
 
-  async function updateModule2LearningReview(reviewId: string, status: string, note?: string) {
+  async function updateModule2LearningReview(reviewId: string, status: string, note?: string, classification?: string) {
     const result = await api<any>(`/api/module2/learning/reviews/${reviewId}/status`, {
       method: "POST",
-      body: JSON.stringify({ status, note })
+      body: JSON.stringify({ status, note, classification })
     });
     if (result.error) {
       setMessage(result.error);
@@ -1225,6 +1225,7 @@ function App() {
                   onRun={runModule2Learning}
                   onCreateReview={createModule2LearningReview}
                   onUpdateReview={updateModule2LearningReview}
+                  latestBacktest={state.latestBacktest}
                 />
                 <Module2HealthPanel health={state.module2Health} onRun={runModule2HealthMonitor} />
               <Module2HandoffReportPanel operator={state.module2Operator} />
@@ -4601,17 +4602,21 @@ function Module2LearningPanel({
   reviews,
   onRun,
   onCreateReview,
-  onUpdateReview
+  onUpdateReview,
+  latestBacktest
 }: {
   learning?: any;
   reviews?: any[];
   onRun: () => Promise<void>;
   onCreateReview: (recommendationId: string) => Promise<void>;
-  onUpdateReview: (reviewId: string, status: string, note?: string) => Promise<void>;
+  onUpdateReview: (reviewId: string, status: string, note?: string, classification?: string) => Promise<void>;
+  latestBacktest?: any;
 }) {
   const summary = learning?.summary ?? {};
   const overall = summary.overall ?? {};
   const recommendations = learning?.recommendations ?? [];
+  const missedReviews = (reviews ?? []).filter((row: any) => row.review_type === "MISSED_TRADE_BACKTEST");
+  const missedVariants = latestBacktest?.summary?.variantReview?.missedVariants ?? latestBacktest?.metrics?.variant_review?.missedVariants ?? [];
   return (
     <Panel icon={<LineChart />} title="Module 2 Learning Engine">
       <Metric label="Last run" value={formatNepalTime(learning?.completed_at)} />
@@ -4646,13 +4651,97 @@ function Module2LearningPanel({
         ))}
         {recommendations.length === 0 ? <p className="reason">No Module 2 learning recommendations yet.</p> : null}
       </div>
+      <Module2MissedTradeLearningPanel
+        reviews={missedReviews}
+        missedVariants={missedVariants}
+        onUpdateReview={onUpdateReview}
+      />
       <Module2LearningReviewQueue reviews={reviews} onUpdateReview={onUpdateReview} />
     </Panel>
   );
 }
 
-function Module2LearningReviewQueue({ reviews, onUpdateReview }: { reviews?: any[]; onUpdateReview: (reviewId: string, status: string, note?: string) => Promise<void> }) {
-  const rows = reviews ?? [];
+function Module2MissedTradeLearningPanel({
+  reviews,
+  missedVariants,
+  onUpdateReview
+}: {
+  reviews?: any[];
+  missedVariants?: any[];
+  onUpdateReview: (reviewId: string, status: string, note?: string, classification?: string) => Promise<void>;
+}) {
+  const rows = reviews?.length ? reviews : [];
+  const preview = rows.length ? rows.map((row: any) => ({ ...row.evidence, review: row })) : missedVariants ?? [];
+  return (
+    <div className="learning-review-queue">
+      <div className="rule-layer-head">
+        <strong>Missed Trade Backtest Review</strong>
+        <span>{rows.filter((row: any) => row.status === "PENDING").length} pending</span>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table module2-backtest-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Variant</th>
+              <th>Direction</th>
+              <th>Blocker</th>
+              <th>Missing</th>
+              <th>Projected</th>
+              <th>Classification</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.slice(0, 12).map((item: any, index: number) => {
+              const review = item.review;
+              const classification = review?.classification ?? classifyMissedVariantLabel(item);
+              return (
+                <tr key={review?.id ?? `${item.variantCode ?? "miss"}-${item.at ?? index}`}>
+                  <td>{formatNepalTime(item.at)}</td>
+                  <td>{item.variantName ?? formatScenario(item.variantCode)}</td>
+                  <td>{item.direction ?? "--"}</td>
+                  <td>{formatScenario(item.blocker)}</td>
+                  <td>{(item.missingRules ?? []).map(formatScenario).join(", ") || "--"}</td>
+                  <td>{item.projectedOutcome ? `${item.projectedOutcome} · ${formatR(item.projectedResultR)}R` : "--"}</td>
+                  <td><span className={`pill ${classificationTone(classification)}`}>{formatScenario(classification)}</span></td>
+                  <td>
+                    {review ? (
+                      <div className="table-actions">
+                        <button onClick={() => onUpdateReview(review.id, "APPROVED_QA", "Classified as true missed trade.", "TRUE_MISSED_TRADE").catch(() => undefined)}>True Miss</button>
+                        <button onClick={() => onUpdateReview(review.id, "REJECTED", "Correctly skipped by rules.", "CORRECTLY_SKIPPED").catch(() => undefined)}>Skipped</button>
+                        <button onClick={() => onUpdateReview(review.id, "REJECTED", "Too risky for production entry.", "TOO_RISKY").catch(() => undefined)}>Risky</button>
+                      </div>
+                    ) : "Run backtest to save"}
+                  </td>
+                </tr>
+              );
+            })}
+            {preview.length === 0 ? <tr><td colSpan={8}>Run a Module 2 cache backtest to create missed-trade review evidence.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function classifyMissedVariantLabel(item: any) {
+  if (item.projectedOutcome === "WIN") return "TRUE_MISSED_TRADE";
+  if (item.projectedOutcome === "LOSS") return "CORRECTLY_SKIPPED";
+  if ((item.missingRules ?? []).some((rule: string) => ["QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_SPREAD", "QUALITY_NEWS"].includes(rule))) return "TOO_RISKY";
+  if ((item.missingRules ?? []).length > 0 && (item.missingRules ?? []).length <= 2 && Number(item.score ?? 0) >= 80) return "RULE_TOO_STRICT";
+  return "INSUFFICIENT_EVIDENCE";
+}
+
+function classificationTone(value: string) {
+  if (value === "TRUE_MISSED_TRADE" || value === "RULE_TOO_STRICT") return "warn";
+  if (value === "CORRECTLY_SKIPPED") return "good";
+  if (value === "TOO_RISKY") return "bad";
+  return "neutral";
+}
+
+function Module2LearningReviewQueue({ reviews, onUpdateReview }: { reviews?: any[]; onUpdateReview: (reviewId: string, status: string, note?: string, classification?: string) => Promise<void> }) {
+  const rows = (reviews ?? []).filter((row: any) => row.review_type !== "MISSED_TRADE_BACKTEST");
   return (
     <div className="learning-review-queue">
       <div className="rule-layer-head">
