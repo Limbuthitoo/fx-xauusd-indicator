@@ -64,6 +64,7 @@ type PanelState = {
   module2LearningReviews?: any[];
   module2SessionReports?: any[];
   module2Closeouts?: any[];
+  module2VariantMetrics?: any;
   strategyConfidence?: any;
   productionReadiness?: any;
   notifications?: any[];
@@ -203,6 +204,7 @@ function App() {
       module2LearningReviews: bundle.module2LearningReviews?.length ? bundle.module2LearningReviews : previous.module2LearningReviews ?? [],
       module2SessionReports: bundle.module2SessionReports?.length ? bundle.module2SessionReports : previous.module2SessionReports ?? [],
       module2Closeouts: bundle.module2Closeouts?.length ? bundle.module2Closeouts : previous.module2Closeouts ?? [],
+      module2VariantMetrics: bundle.module2VariantMetrics ?? previous.module2VariantMetrics,
       strategyConfidence: bundle.strategyConfidence ?? previous.strategyConfidence,
       productionReadiness: bundle.productionReadiness ?? previous.productionReadiness,
       notifications: bundle.notifications?.length ? bundle.notifications : previous.notifications ?? [],
@@ -1153,6 +1155,7 @@ function App() {
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 session={state.session}
               />
+              {selectedModuleCode === "high_probability_strategy_2" ? <Module2LiveEvidencePanel setup={currentModuleSetup} /> : null}
             </aside>
           </section>
         ) : null}
@@ -1275,6 +1278,7 @@ function App() {
               <Module2HandoffReportPanel operator={state.module2Operator} />
                 <Module2LaunchEvidenceLogPanel rehearsals={state.module2Rehearsals} />
                 <Module2ProductionAuditPanel audit={state.module2Audit} />
+                <Module2VariantMetricsPanel metrics={state.module2VariantMetrics} />
                 <Module2RuleAuditPanel setup={currentModuleSetup} />
                 <Module2FinalReadinessChecklist readiness={state.module2Readiness} audit={state.module2Audit} dryRun={module2DryRun} />
                 <Module2TuningLabPanel
@@ -3273,6 +3277,7 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   const qualityLayer = flags.qualityLayer ?? {};
   const variant = flags.module2Variant ?? {};
   const variants = Array.isArray(flags.module2Variants) ? flags.module2Variants : [];
+  const transitions = Array.isArray(flags.stateMachine?.transitions) ? flags.stateMachine.transitions.slice(-6) : [];
   const steps = [
     {
       label: "Liquidity",
@@ -3327,6 +3332,16 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
               </div>
               <em>{item.status === "WAIT" && item.missingRules?.length ? item.missingRules.slice(0, 2).map(formatScenario).join(", ") : formatScenario(item.status ?? "--")}</em>
             </div>
+          ))}
+        </div>
+      ) : null}
+      {transitions.length > 0 ? (
+        <div className="module2-transition-list">
+          <strong>State Flow</strong>
+          {transitions.map((item: any, index: number) => (
+            <span key={`${item.to ?? "state"}-${item.at ?? index}`}>
+              {formatScenario(item.to)} · {formatNepalTime(item.at)}
+            </span>
           ))}
         </div>
       ) : null}
@@ -5665,6 +5680,52 @@ function MiniMissedVariants({ title, rows }: { title: string; rows?: any[] }) {
   );
 }
 
+function Module2VariantMetricsPanel({ metrics }: { metrics?: any }) {
+  const rows = metrics?.variants ?? [];
+  return (
+    <Panel icon={<Database />} title="Module 2 Variant Metrics">
+      <div className="module2-metrics-summary">
+        <Metric label="Variants" value={metrics?.summary?.totalVariants ?? rows.length ?? 0} />
+        <Metric label="Production" value={metrics?.summary?.productionApproved ?? 0} />
+        <Metric label="Paper eligible" value={metrics?.summary?.paperEligible ?? 0} />
+        <Metric label="Live paper trades" value={metrics?.summary?.livePaperTrades ?? 0} />
+      </div>
+      <div className="module2-variant-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th>Status</th>
+              <th>Trades</th>
+              <th>Win</th>
+              <th>Avg R</th>
+              <th>Blocker</th>
+              <th>Recommendation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row: any) => (
+              <tr key={row.code}>
+                <td>
+                  <strong>{row.name ?? formatScenario(row.code)}</strong>
+                  <span>{formatScenario(row.category)} · {row.paper_eligible ? "Paper" : "Research"}</span>
+                </td>
+                <td><span className={`pill ${row.approval_status === "PRODUCTION_APPROVED" ? "good" : row.paper_eligible ? "warn" : ""}`}>{formatScenario(row.approval_status)}</span></td>
+                <td>{row.trades ?? 0}</td>
+                <td>{formatPercent(row.winRate)}</td>
+                <td>{formatR(row.averageR)}</td>
+                <td>{row.topBlocker ? formatScenario(row.topBlocker) : "--"}</td>
+                <td>{row.recommendation ?? "--"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {rows.length === 0 ? <p className="reason">Variant metrics will appear after Module 2 runs with the latest strategy registry.</p> : null}
+      </div>
+    </Panel>
+  );
+}
+
 function MiniBreakdown({ title, rows }: { title: string; rows?: Record<string, any> }) {
   const entries = Object.entries(rows ?? {}).slice(0, 4);
   return (
@@ -6748,6 +6809,9 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
         <div className="setting-fields strategy-fields">
           <label>NY start<input type="time" value={draft?.newYorkStartTime ?? "09:30"} onChange={(event) => patch("newYorkStartTime", event.target.value)} /></label>
           <label>NY end<input type="time" value={draft?.newYorkEndTime ?? "12:00"} onChange={(event) => patch("newYorkEndTime", event.target.value)} /></label>
+          <label>NY premarket<input type="time" value={draft?.nyPremarketStartTime ?? "08:00"} onChange={(event) => patch("nyPremarketStartTime", event.target.value)} /></label>
+          <label>ORB start<input type="time" value={draft?.orbStartTime ?? "09:30"} onChange={(event) => patch("orbStartTime", event.target.value)} /></label>
+          <label>ORB end<input type="time" value={draft?.orbEndTime ?? "09:45"} onChange={(event) => patch("orbEndTime", event.target.value)} /></label>
           <label>Min sweep ATR<input type="number" min="0.01" max="5" step="0.01" value={draft?.minimumSweepDistanceATR ?? 0.1} onChange={(event) => patch("minimumSweepDistanceATR", Number(event.target.value))} /></label>
           <label>Max sweep ATR<input type="number" min="0.1" max="10" step="0.01" value={draft?.maximumSweepDistanceATR ?? 1} onChange={(event) => patch("maximumSweepDistanceATR", Number(event.target.value))} /></label>
           <label>Displacement ATR<input type="number" min="0.1" max="5" step="0.05" value={draft?.minimumDisplacementRangeATR ?? 1.2} onChange={(event) => patch("minimumDisplacementRangeATR", Number(event.target.value))} /></label>
@@ -6757,6 +6821,18 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
           <label>Min FVG ATR<input type="number" min="0.01" max="5" step="0.01" value={draft?.minimumFvgSizeATR ?? 0.1} onChange={(event) => patch("minimumFvgSizeATR", Number(event.target.value))} /></label>
           <label>Minimum R:R<input type="number" min="0.5" max="10" step="0.1" value={draft?.minimumRiskReward ?? 2} onChange={(event) => patch("minimumRiskReward", Number(event.target.value))} /></label>
           <label>Max spread<input type="number" min="0.01" max="20" step="0.01" value={draft?.maximumSpread ?? 0.8} onChange={(event) => patch("maximumSpread", Number(event.target.value))} /></label>
+          <label>Round step<input type="number" min="1" max="1000" step="1" value={draft?.roundNumberStep ?? 10} onChange={(event) => patch("roundNumberStep", Number(event.target.value))} /></label>
+          <label>Round window<input type="number" min="1" max="12" value={draft?.roundNumberWindowSteps ?? 4} onChange={(event) => patch("roundNumberWindowSteps", Number(event.target.value))} /></label>
+          <label>EMA mode<select value={draft?.emaFilterMode ?? "RECORD_ONLY"} onChange={(event) => patch("emaFilterMode", event.target.value)}>
+            <option value="OFF">Off</option>
+            <option value="RECORD_ONLY">Record only</option>
+            <option value="REQUIRE_ALIGNMENT">Require alignment</option>
+          </select></label>
+          <label>Volume mode<select value={draft?.volumeFilterMode ?? "RECORD_ONLY"} onChange={(event) => patch("volumeFilterMode", event.target.value)}>
+            <option value="OFF">Off</option>
+            <option value="RECORD_ONLY">Record only</option>
+            <option value="REQUIRE_EXPANSION">Require expansion</option>
+          </select></label>
           <label>Max trades<input type="number" min="1" max="10" value={draft?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.enableNewsFilter !== false} onChange={(event) => patch("enableNewsFilter", event.target.checked)} /> News filter</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>

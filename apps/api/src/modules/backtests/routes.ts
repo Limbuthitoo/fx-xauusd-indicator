@@ -1650,7 +1650,7 @@ function module2LearningGuardrails(recommendation: any, proposed: any) {
 function module2RuleLayer(code?: string) {
   if (!code) return "none";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE") return "quality";
   if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
   if (code === "VARIANT_SELECTED") return "final";
   return "other";

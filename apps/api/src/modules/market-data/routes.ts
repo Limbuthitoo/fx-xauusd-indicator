@@ -3761,8 +3761,8 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module1Confirmation = new Set(["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]);
   const module1Quality = new Set(["NEWS_FILTER"]);
   const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
-  const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
-  const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
+  const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
+  const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
   if (moduleCode === "orb_max_options") {
@@ -4445,8 +4445,43 @@ async function saveModuleDecision(session: any, moduleCode: string, decision: an
       JSON.stringify(risk)
     ]);
   }
+  if (moduleCode === "high_probability_strategy_2") {
+    await persistModule2StateTransitions(saved.rows[0], decision);
+  }
   await query("UPDATE strategy_versions SET generated_signal_count = generated_signal_count + 1 WHERE id = $1", [session.strategy_version_id]);
   return { setup: saved.rows[0], decision, risk };
+}
+
+async function persistModule2StateTransitions(setup: any, decision: any) {
+  const transitions = Array.isArray(decision?.scenarioFlags?.stateMachine?.transitions)
+    ? decision.scenarioFlags.stateMachine.transitions
+    : [];
+  if (!setup?.id || transitions.length === 0) return;
+  const variantCode = decision?.scenarioFlags?.module2Variant?.code ?? decision?.scenarioFlags?.variantCode ?? null;
+  for (const transition of transitions) {
+    const toState = transition?.to;
+    const occurredAt = transition?.at;
+    if (!toState || !occurredAt) continue;
+    await query(
+      `INSERT INTO module2_state_transitions (
+        tenant_id, setup_candidate_id, session_id, module_code, variant_code,
+        from_state, to_state, reason, occurred_at
+      ) VALUES ($1,$2,$3,'high_probability_strategy_2',$4,$5,$6,$7,$8)
+      ON CONFLICT (setup_candidate_id, to_state, occurred_at) DO UPDATE SET
+        variant_code = EXCLUDED.variant_code,
+        reason = EXCLUDED.reason`,
+      [
+        setup.tenant_id,
+        setup.id,
+        setup.session_id,
+        variantCode,
+        transition.from ?? null,
+        toState,
+        transition.reason ?? null,
+        occurredAt
+      ]
+    );
+  }
 }
 
 async function calculateDecisionRisk(session: any, decision: any, currentRow: any) {

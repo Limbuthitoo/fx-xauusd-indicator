@@ -379,6 +379,11 @@ export async function analyticsRoutes(app: FastifyInstance) {
     return buildModuleProductionAudit(session.tenantId, "high_probability_strategy_2");
   });
 
+  app.get("/api/module2/variant-metrics", async (request) => {
+    const session = await requireTenantModule(request, "high_probability_strategy_2");
+    return buildModule2VariantMetrics(session.tenantId);
+  });
+
   app.get("/api/modules/:moduleCode/production-audit", async (request) => {
     const { moduleCode } = request.params as { moduleCode: string };
     const session = await requireTenantModule(request, moduleCode);
@@ -524,6 +529,132 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
     },
     checks
   };
+}
+
+async function buildModule2VariantMetrics(tenantId: string | null) {
+  const variants = await query(
+    `SELECT code, name, category, approval_status, paper_eligible, sort_order
+     FROM module2_strategy_variants
+     WHERE module_code = 'high_probability_strategy_2'
+     ORDER BY sort_order`
+  );
+  const performance = await query(
+    `SELECT
+       COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode', 'UNCLASSIFIED_VARIANT') AS variant_code,
+       COALESCE(sc.scenario_flags->'module2Variant'->>'name', sc.scenario_flags->>'variantName') AS variant_name,
+       count(t.id)::int AS trades,
+       count(t.id) FILTER (WHERE t.outcome = 'WIN')::int AS wins,
+       count(t.id) FILTER (WHERE t.outcome = 'LOSS')::int AS losses,
+       count(t.id) FILTER (WHERE t.outcome = 'ACTIVE')::int AS active,
+       COALESCE(avg(t.result_r) FILTER (WHERE t.result_r IS NOT NULL), 0)::float AS average_r,
+       COALESCE(sum(t.result_r), 0)::float AS total_r
+     FROM setup_candidates sc
+     LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+     LEFT JOIN trades t ON t.trade_plan_id = tp.id
+     WHERE sc.tenant_id = $1
+       AND sc.module_code = 'high_probability_strategy_2'
+       AND sc.scenario <> 'QA_TEST_SIGNAL'
+       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+     GROUP BY variant_code, variant_name`,
+    [tenantId]
+  );
+  const blockers = await query(
+    `SELECT
+       COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode', 'UNCLASSIFIED_VARIANT') AS variant_code,
+       sre.rule_code,
+       count(*)::int AS count
+     FROM setup_candidates sc
+     JOIN setup_rule_evaluations sre ON sre.setup_candidate_id = sc.id
+     WHERE sc.tenant_id = $1
+       AND sc.module_code = 'high_probability_strategy_2'
+       AND sre.status <> 'PASS'
+       AND (
+         sre.blocking = true
+         OR sre.rule_code IN (
+           'NY_SESSION_ACTIVE','DAILY_TRADE_LIMIT','LIQUIDITY_LEVEL_IDENTIFIED','LIQUIDITY_SWEEP_CONFIRMED',
+           'SWEEP_REJECTION_CONFIRMED','SWEEP_ACCEPTANCE_BLOCK','DISPLACEMENT_CONFIRMED','PROTECTED_POINT_CONFIDENCE',
+           'BOS_CHOCH_CONFIRMED','ENTRY_ZONE_READY','ENTRY_ZONE_RETRACE','CONFIRM_ENTRY_CANDLE','VARIANT_SELECTED',
+           'QUALITY_SPREAD','QUALITY_NEWS','QUALITY_RR','QUALITY_STOP_SIZE','QUALITY_FILTER_COUNT','EMA_FILTER_MODE','VOLUME_FILTER_MODE'
+         )
+       )
+     GROUP BY variant_code, sre.rule_code
+     ORDER BY count DESC`,
+    [tenantId]
+  );
+  const transitions = await query(
+    `SELECT variant_code, to_state, count(*)::int AS count, max(occurred_at) AS latest_at
+     FROM module2_state_transitions
+     WHERE tenant_id = $1
+     GROUP BY variant_code, to_state
+     ORDER BY max(occurred_at) DESC`,
+    [tenantId]
+  );
+  const byVariant = new Map(performance.rows.map((row: any) => [row.variant_code, row]));
+  const blockerMap = new Map<string, any>();
+  for (const row of blockers.rows as any[]) {
+    if (!blockerMap.has(row.variant_code)) blockerMap.set(row.variant_code, row);
+  }
+  const rows = variants.rows.map((variant: any) => {
+    const perf = byVariant.get(variant.code) as any;
+    const trades = Number(perf?.trades ?? 0);
+    const wins = Number(perf?.wins ?? 0);
+    const losses = Number(perf?.losses ?? 0);
+    const decided = wins + losses;
+    const winRate = decided > 0 ? wins / decided : 0;
+    const topBlocker = blockerMap.get(variant.code)?.rule_code ?? null;
+    return {
+      ...variant,
+      trades,
+      wins,
+      losses,
+      active: Number(perf?.active ?? 0),
+      winRate,
+      averageR: Number(perf?.average_r ?? 0),
+      totalR: Number(perf?.total_r ?? 0),
+      topBlocker,
+      recommendation: module2VariantMetricRecommendation(variant, trades, winRate, Number(perf?.average_r ?? 0), topBlocker)
+    };
+  });
+  for (const row of rows) {
+    await query(
+      `INSERT INTO module2_variant_metric_snapshots (
+        tenant_id, variant_code, variant_name, trades, wins, losses, active, win_rate,
+        average_r, total_r, top_blocker, recommendation, source
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'LIVE_PAPER')
+      ON CONFLICT (tenant_id, variant_code, source) DO UPDATE SET
+        variant_name = EXCLUDED.variant_name,
+        trades = EXCLUDED.trades,
+        wins = EXCLUDED.wins,
+        losses = EXCLUDED.losses,
+        active = EXCLUDED.active,
+        win_rate = EXCLUDED.win_rate,
+        average_r = EXCLUDED.average_r,
+        total_r = EXCLUDED.total_r,
+        top_blocker = EXCLUDED.top_blocker,
+        recommendation = EXCLUDED.recommendation,
+        calculated_at = now()`,
+      [tenantId, row.code, row.name, row.trades, row.wins, row.losses, row.active, row.winRate, row.averageR, row.totalR, row.topBlocker, row.recommendation]
+    );
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalVariants: rows.length,
+      productionApproved: rows.filter((row: any) => row.approval_status === "PRODUCTION_APPROVED").length,
+      paperEligible: rows.filter((row: any) => row.paper_eligible).length,
+      livePaperTrades: rows.reduce((sum: number, row: any) => sum + Number(row.trades ?? 0), 0)
+    },
+    variants: rows,
+    transitions: transitions.rows
+  };
+}
+
+function module2VariantMetricRecommendation(variant: any, trades: number, winRate: number, averageR: number, topBlocker: string | null) {
+  if (!variant.paper_eligible) return "Research-only. Track evidence, but do not allow automatic paper entry.";
+  if (trades < 10) return topBlocker ? `Collect more paper data. Most common blocker: ${topBlocker}.` : "Collect at least 10 paper trades before judging this variant.";
+  if (winRate >= 0.7 && averageR > 0) return "Strong paper evidence. Keep active and continue monitoring drawdown.";
+  if (averageR <= 0) return topBlocker ? `Needs tuning before trust. Focus blocker: ${topBlocker}.` : "Needs tuning before trust; average R is not positive.";
+  return "Usable paper evidence. Keep active, but wait for a larger sample before increasing trust.";
 }
 
 async function modulePerformanceSummary(tenantId: string | null, moduleCode: string) {

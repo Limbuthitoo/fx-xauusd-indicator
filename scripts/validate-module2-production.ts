@@ -140,6 +140,12 @@ async function validateCatalog(tenantId: string | null) {
     });
   }
 
+  checks.push({
+    name: "Module 2 transition history schema",
+    status: (await hasTable("module2_state_transitions")) && (await hasTable("module2_variant_metric_snapshots")) ? "PASS" : "FAIL",
+    detail: "Module 2 state transition and variant metric snapshot tables are required for Ultimate completion audit evidence."
+  });
+
   if (!tenantId) return;
   const assignment = await one(
     `SELECT tm.status, m.name

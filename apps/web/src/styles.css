@@ -692,6 +692,77 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.module2-transition-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.module2-transition-list strong {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.module2-transition-list span {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.module2-metrics-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.module2-variant-table {
+  overflow-x: auto;
+}
+
+.module2-variant-table table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px;
+}
+
+.module2-variant-table th,
+.module2-variant-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.module2-variant-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.module2-variant-table td {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.module2-variant-table td strong,
+.module2-variant-table td span {
+  display: block;
+  min-width: 0;
+}
+
+.module2-variant-table td span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 3px;
+}
+
 .status-strip div {
   padding: 9px 14px;
   background: #111612;

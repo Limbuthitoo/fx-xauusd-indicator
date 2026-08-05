@@ -64,6 +64,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       module2LearningReviews,
       module2SessionReports,
       module2Closeouts,
+      module2VariantMetrics,
       strategyConfidence,
       productionReadiness,
       notifications,
@@ -112,6 +113,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule2 && needsLearning ? injectJson(app, request, "GET", "/api/module2/learning/reviews", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/session-reports", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/closeouts", undefined, []) : [],
+      isModule2 && (needsReports || needsModule2LiveOps || needsCommand) ? injectJson(app, request, "GET", "/api/module2/variant-metrics", undefined, null) : null,
       needsCommand ? injectJson(app, request, "GET", "/api/analytics/modules/confidence", undefined) : null,
       needsCommand ? injectJson(app, request, "GET", "/api/analytics/production-readiness", undefined) : null,
       needsNotifications ? injectJson(app, request, "GET", `/api/notifications?limit=50${notificationQuery}`, undefined, []) : [],
@@ -133,7 +135,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule1 && (!Array.isArray(orbRanges) || orbRanges.length < 2)
         ? await injectJson(app, request, "GET", "/api/sessions/orb-ranges?limit=2", undefined, [])
         : orbRanges;
-    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges: effectiveOrbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
+    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges: effectiveOrbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module2VariantMetrics, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
   });
 
   app.get("/api/platform/bundle", async (request) => {

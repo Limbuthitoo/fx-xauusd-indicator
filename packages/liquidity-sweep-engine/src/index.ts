@@ -24,14 +24,22 @@ export type LiquiditySweepState =
   | "INVALIDATED";
 
 export type LiquidityLevelType =
+  | "PREVIOUS_WEEK_HIGH"
+  | "PREVIOUS_WEEK_LOW"
   | "PREVIOUS_DAY_HIGH"
   | "PREVIOUS_DAY_LOW"
+  | "NY_PREMARKET_HIGH"
+  | "NY_PREMARKET_LOW"
+  | "ORB_HIGH"
+  | "ORB_LOW"
   | "ASIAN_HIGH"
   | "ASIAN_LOW"
   | "LONDON_HIGH"
   | "LONDON_LOW"
   | "EQUAL_HIGH"
   | "EQUAL_LOW"
+  | "ROUND_NUMBER"
+  | "MANUAL_LEVEL"
   | "SWING_HIGH"
   | "SWING_LOW";
 
@@ -81,10 +89,18 @@ export type LiquiditySweepConfig = {
   timezone: string;
   newYorkStartTime: string;
   newYorkEndTime: string;
+  nyPremarketStartTime: string;
+  orbStartTime: string;
+  orbEndTime: string;
   asianStartTime: string;
   asianEndTime: string;
   londonStartTime: string;
   londonEndTime: string;
+  roundNumberStep: number;
+  roundNumberWindowSteps: number;
+  manualLevels?: Array<{ price: number; side?: "BUY_SIDE" | "SELL_SIDE"; label?: string; priority?: "HIGH" | "MEDIUM" | "LOW" }>;
+  emaFilterMode: "OFF" | "RECORD_ONLY" | "REQUIRE_ALIGNMENT";
+  volumeFilterMode: "OFF" | "RECORD_ONLY" | "REQUIRE_EXPANSION";
   maximumTradesPerSession: number;
   zoneToleranceATR: number;
   equalityToleranceATR: number;
@@ -204,10 +220,18 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
   newYorkStartTime: "09:30",
   newYorkEndTime: "16:00",
+  nyPremarketStartTime: "08:00",
+  orbStartTime: "09:30",
+  orbEndTime: "09:45",
   asianStartTime: "19:00",
   asianEndTime: "04:00",
   londonStartTime: "03:00",
   londonEndTime: "09:30",
+  roundNumberStep: 10,
+  roundNumberWindowSteps: 4,
+  manualLevels: [],
+  emaFilterMode: "RECORD_ONLY",
+  volumeFilterMode: "RECORD_ONLY",
   maximumTradesPerSession: 3,
   zoneToleranceATR: 0.02,
   equalityToleranceATR: 0.05,
@@ -343,9 +367,13 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
   const engulfingOk = confirmsEngulfingReversal(setupCandles, currentIndex, direction);
+  const pinBarOk = confirmsPinBarRejection(current, direction);
+  const insideBarBreakOk = confirmsInsideBarBreak(setupCandles, currentIndex, direction);
+  const dojiRejectionOk = confirmsDojiRejection(current, direction);
   const volumeExpansionOk = confirmsVolumeExpansion(setupCandles, currentIndex);
-  const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
+  const emaAlignmentOk = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
     && (!config.requireHtfBias || htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH"));
+  const ema200Ok = config.emaFilterMode === "OFF" ? false : emaAlignmentOk;
   const sessionCandles = setupCandles.filter((candle) =>
     newYorkDateKey(candle.timestampUtc) === newYorkDateKey(current.timestampUtc)
       && newYorkMinutes(candle.timestampUtc) >= parseTime(config.newYorkStartTime)
@@ -354,15 +382,20 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const vwapRows = sessionCandles.length > 0 ? sessionCandles : setupCandles;
   const vwapVolumeCoverage = vwapRows.length > 0 ? vwapRows.filter((candle) => Number(candle.volume) > 0).length / vwapRows.length : 0;
   const vwapOk = vwapVolumeCoverage >= 0.8 && (direction === "LONG" ? current.close >= vwap : current.close <= vwap);
+  const emaModeOk = config.emaFilterMode !== "REQUIRE_ALIGNMENT" || emaAlignmentOk;
+  const volumeModeOk = config.volumeFilterMode !== "REQUIRE_EXPANSION" || volumeExpansionOk;
   const fvgOk = Boolean(fvg);
   const orderBlockRetestOk = Boolean(orderBlock && current.low <= orderBlock.high && current.high >= orderBlock.low);
   const confirmations = [
-    { code: "CONFIRM_EMA_200", name: "15M structure and 200 EMA alignment", passed: ema200Ok, points: 15, actual: `${htfBias} / ${ema200Ok ? "aligned" : "not aligned"}`, required: `${direction === "LONG" ? "BULLISH" : "BEARISH"} 15M context`, explanation: ema200Ok ? "The completed 15M structure and EMA context align with the setup." : "The 15M structure/EMA context is neutral or opposes the setup." },
+    { code: "CONFIRM_EMA_200", name: "15M structure and 200 EMA alignment", passed: ema200Ok, points: 15, actual: `${config.emaFilterMode} / ${htfBias} / ${emaAlignmentOk ? "aligned" : "not aligned"}`, required: `${direction === "LONG" ? "BULLISH" : "BEARISH"} 15M context`, explanation: config.emaFilterMode === "OFF" ? "EMA mode is OFF; alignment is not counted as a confirmation." : ema200Ok ? "The completed 15M structure and EMA context align with the setup." : "The 15M structure/EMA context is neutral or opposes the setup." },
     { code: "CONFIRM_VWAP", name: "Session VWAP alignment", passed: vwapOk, points: 10, actual: `${current.close.toFixed(2)} / ${Math.round(vwapVolumeCoverage * 100)}% volume`, required: direction === "LONG" ? `>= ${vwap.toFixed(2)} with >=80% volume` : `<= ${vwap.toFixed(2)} with >=80% volume`, explanation: vwapOk ? "Price is aligned with a volume-backed session VWAP." : "Price is misaligned or provider volume is insufficient for true VWAP confirmation." },
     { code: "CONFIRM_FRESH_FVG", name: "Fresh Fair Value Gap", passed: fvgOk, points: 15, actual: fvg?.kind ?? null, required: "fresh FVG", explanation: fvgOk ? "A fresh FVG is available after displacement." : "No fresh FVG is available." },
     { code: "CONFIRM_ORDER_BLOCK_RETEST", name: "Order block retest", passed: orderBlockRetestOk, points: 10, actual: orderBlock ? `${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}` : null, required: "retest", explanation: orderBlockRetestOk ? "Price retested the detected order block." : "No order-block retest is confirmed." },
     { code: "CONFIRM_ENGULFING", name: "Engulfing rejection candle", passed: engulfingOk, points: 10, actual: candleShape(current), required: `${direction.toLowerCase()} engulfing after sweep`, explanation: engulfingOk ? "The latest completed candle engulfed the prior candle in the setup direction." : "No directional engulfing confirmation is present." },
-    { code: "CONFIRM_VOLUME_EXPANSION", name: "Volume expansion record", passed: volumeExpansionOk, points: 5, actual: current.volume ?? "unavailable", required: ">= 1.25x recent average volume", explanation: volumeExpansionOk ? "Provider volume expanded versus the recent average." : "Provider volume is unavailable or has not expanded enough; this remains record-only." },
+    { code: "CONFIRM_PIN_BAR", name: "Pin bar rejection", passed: pinBarOk, points: 8, actual: candleShape(current), required: `${direction.toLowerCase()} rejection pin bar`, explanation: pinBarOk ? "The latest candle shows a rejection wick in the trade direction." : "No directional pin-bar rejection is present." },
+    { code: "CONFIRM_INSIDE_BAR_BREAK", name: "Inside bar break", passed: insideBarBreakOk, points: 8, actual: candleShape(current), required: "inside-bar break in setup direction", explanation: insideBarBreakOk ? "The latest candle broke the prior inside-bar range in the setup direction." : "No inside-bar break confirmation is present." },
+    { code: "CONFIRM_DOJI_REJECTION", name: "Doji rejection", passed: dojiRejectionOk, points: 6, actual: candleShape(current), required: "doji rejection with directional close", explanation: dojiRejectionOk ? "A small-body rejection candle closed in the setup direction." : "No doji-style rejection confirmation is present." },
+    { code: "CONFIRM_VOLUME_EXPANSION", name: "Volume expansion record", passed: config.volumeFilterMode === "OFF" ? false : volumeExpansionOk, points: 5, actual: `${config.volumeFilterMode} / ${current.volume ?? "unavailable"}`, required: ">= 1.25x recent average volume", explanation: config.volumeFilterMode === "OFF" ? "Volume mode is OFF; provider volume is not counted." : volumeExpansionOk ? "Provider volume expanded versus the recent average." : "Provider volume is unavailable or has not expanded enough; this remains record-only unless required by mode." },
     { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm entry." }
   ];
   for (const item of confirmations) {
@@ -370,7 +403,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
   const confirmationCount = confirmations.filter((item) => item.passed).length;
   const confirmationScore = confirmations.reduce((sum, item) => sum + (item.passed ? item.points : 0), 0);
-  push(evaluations, "CONFIRMATION_COUNT", "Minimum confirmation rules matched", confirmationCount >= 3, true, "AUTOMATIC", confirmationCount, ">= 3 of 5", confirmationCount >= 3 ? "Minimum confirmation layer passed." : "Fewer than 3 confirmation rules matched.");
+  push(evaluations, "CONFIRMATION_COUNT", "Minimum confirmation rules matched", confirmationCount >= 3, true, "AUTOMATIC", confirmationCount, `>= 3 of ${confirmations.length}`, confirmationCount >= 3 ? "Minimum confirmation layer passed." : "Fewer than 3 confirmation rules matched.");
 
   const plan = buildLayeredTradePlan(setupCandles, levels, direction, sweep, zone, current, atr, config);
   const atrVolatilityOk = current.close > 0 && atr / current.close >= 0.00015;
@@ -388,6 +421,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
   const qualityCount = quality.filter((item) => item.passed).length;
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
+  push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, config.emaFilterMode === "REQUIRE_ALIGNMENT", "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / REQUIRE_ALIGNMENT", emaModeOk ? "EMA mode does not block this setup." : "EMA mode requires alignment, but 15M EMA/context is not aligned.");
+  push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
@@ -416,11 +451,19 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "VARIANT_SELECTED", "Entry-grade strategy variant selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "BOS/MSS + retest/confirmation variant", selectedVariant ? selectedVariant.reason : "No entry-grade Module 2 variant has completed its required evidence chain.");
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
   const mandatoryEntryPassed = module2MandatoryEntryPassed(evaluations);
-  const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
+  const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && emaModeOk && volumeModeOk;
   flags.levels = levels;
   flags.htfBias = htfBias;
   flags.vwap = vwap;
   flags.vwapVolumeCoverage = vwapVolumeCoverage;
+  flags.filterModes = {
+    ema: config.emaFilterMode,
+    volume: config.volumeFilterMode,
+    emaAlignmentOk,
+    volumeExpansionOk,
+    emaModeOk,
+    volumeModeOk
+  };
   flags.sweep = sweep;
   flags.displacement = displacement;
   flags.bos = bos ? { ...bos, structureType } : null;
@@ -555,11 +598,23 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   const priorDates = [...new Set(candles.map((candle) => newYorkDateKey(candle.timestampUtc)).filter((date) => date < currentDate))].sort();
   const previousCalendarDate = priorDates.at(-1);
   const previousTradingDate = [...priorDates].reverse().find((date) => !isWeekendDateKey(date));
+  const previousTradingWeekDates = [...priorDates].reverse().filter((date) => !isWeekendDateKey(date)).slice(0, 5);
   const previousDay = previousTradingDate ? candles.filter((candle) => newYorkDateKey(candle.timestampUtc) === previousTradingDate) : [];
+  const previousWeek = candles.filter((candle) => previousTradingWeekDates.includes(newYorkDateKey(candle.timestampUtc)));
   const preSession = candles.filter((candle) => {
     const date = newYorkDateKey(candle.timestampUtc);
     const minute = newYorkMinutes(candle.timestampUtc);
     return date < currentDate || (date === currentDate && minute < parseTime(config.newYorkStartTime));
+  });
+  const nyPremarket = candles.filter((candle) => {
+    const date = newYorkDateKey(candle.timestampUtc);
+    const minute = newYorkMinutes(candle.timestampUtc);
+    return date === currentDate && minute >= parseTime(config.nyPremarketStartTime) && minute < parseTime(config.newYorkStartTime);
+  });
+  const openingRange = candles.filter((candle) => {
+    const date = newYorkDateKey(candle.timestampUtc);
+    const minute = newYorkMinutes(candle.timestampUtc);
+    return date === currentDate && minute >= parseTime(config.orbStartTime) && minute < parseTime(config.orbEndTime);
   });
   const asian = preSession.filter((candle) => {
     const date = newYorkDateKey(candle.timestampUtc);
@@ -573,11 +628,16 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
     return date === currentDate && minute >= parseTime(config.londonStartTime) && minute < parseTime(config.londonEndTime);
   });
   const levels: LiquidityLevel[] = [];
+  addRangeLevels(levels, previousWeek, "PREVIOUS_WEEK_HIGH", "PREVIOUS_WEEK_LOW", "HIGH");
   addRangeLevels(levels, previousDay, "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "HIGH");
   addRangeLevels(levels, asian, "ASIAN_HIGH", "ASIAN_LOW", "MEDIUM");
   addRangeLevels(levels, london, "LONDON_HIGH", "LONDON_LOW", "HIGH");
+  addRangeLevels(levels, nyPremarket, "NY_PREMARKET_HIGH", "NY_PREMARKET_LOW", "MEDIUM");
+  addRangeLevels(levels, openingRange, "ORB_HIGH", "ORB_LOW", "HIGH");
   const pivots = detectPivots(preSession, 2, 2).slice(-18);
   addEqualHighLowLevels(levels, pivots, atr);
+  addRoundNumberLevels(levels, candles.at(-1)?.close ?? 0, config);
+  addManualLevels(levels, config.manualLevels ?? []);
   return dedupeLevels(levels.map((level) => liquidityZone(level, atr, config)));
 }
 
@@ -585,6 +645,47 @@ function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: L
   if (candles.length === 0) return;
   levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), priority, priorityScore: levelPriorityScore(highType, priority), source: highType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
   levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, priorityScore: levelPriorityScore(lowType, priority), source: lowType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
+}
+
+function addRoundNumberLevels(levels: LiquidityLevel[], close: number, config: LiquiditySweepConfig) {
+  const step = Math.max(1, Number(config.roundNumberStep ?? 10));
+  const windowSteps = Math.max(1, Math.min(12, Number(config.roundNumberWindowSteps ?? 4)));
+  if (!Number.isFinite(close) || close <= 0) return;
+  const anchor = Math.round(close / step) * step;
+  for (let offset = -windowSteps; offset <= windowSteps; offset += 1) {
+    const price = anchor + offset * step;
+    if (price <= 0) continue;
+    levels.push({
+      type: "ROUND_NUMBER",
+      side: price >= close ? "BUY_SIDE" : "SELL_SIDE",
+      price,
+      priority: "MEDIUM",
+      priorityScore: levelPriorityScore("ROUND_NUMBER", "MEDIUM"),
+      source: `ROUND_${step}`,
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+}
+
+function addManualLevels(levels: LiquidityLevel[], manualLevels: NonNullable<LiquiditySweepConfig["manualLevels"]>) {
+  for (const item of manualLevels) {
+    const price = Number(item.price);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const priority = item.priority ?? "HIGH";
+    levels.push({
+      type: "MANUAL_LEVEL",
+      side: item.side ?? "BUY_SIDE",
+      price,
+      priority,
+      priorityScore: levelPriorityScore("MANUAL_LEVEL", priority),
+      source: item.label ?? "MANUAL_LEVEL",
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
 }
 
 function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySweepConfig): LiquidityLevel {
@@ -601,14 +702,22 @@ function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySwee
 
 function levelPriorityScore(type: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
   const typeScores: Record<LiquidityLevelType, number> = {
+    PREVIOUS_WEEK_HIGH: 98,
+    PREVIOUS_WEEK_LOW: 98,
     PREVIOUS_DAY_HIGH: 95,
     PREVIOUS_DAY_LOW: 95,
+    ORB_HIGH: 90,
+    ORB_LOW: 90,
     LONDON_HIGH: 85,
     LONDON_LOW: 85,
+    NY_PREMARKET_HIGH: 82,
+    NY_PREMARKET_LOW: 82,
     ASIAN_HIGH: 80,
     ASIAN_LOW: 80,
     EQUAL_HIGH: 70,
     EQUAL_LOW: 70,
+    ROUND_NUMBER: 60,
+    MANUAL_LEVEL: 88,
     SWING_HIGH: 45,
     SWING_LOW: 45
   };
@@ -941,6 +1050,42 @@ function confirmsEngulfingReversal(candles: Candle[], index: number, direction: 
     && previous.close > previous.open
     && currentBodyLow <= previousBodyLow
     && currentBodyHigh >= previousBodyHigh;
+}
+
+function confirmsPinBarRejection(candle: Candle, direction: Direction) {
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const body = Math.abs(candle.close - candle.open);
+  const bodyRatio = body / range;
+  const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+  const upperWick = candle.high - Math.max(candle.open, candle.close);
+  if (bodyRatio > 0.38) return false;
+  if (direction === "LONG") return lowerWick / range >= 0.55 && candle.close > candle.open;
+  return upperWick / range >= 0.55 && candle.close < candle.open;
+}
+
+function confirmsInsideBarBreak(candles: Candle[], index: number, direction: Direction) {
+  const current = candles[index];
+  const inside = candles[index - 1];
+  const mother = candles[index - 2];
+  if (!current || !inside || !mother) return false;
+  const isInside = inside.high <= mother.high && inside.low >= mother.low;
+  if (!isInside) return false;
+  return direction === "LONG" ? current.close > inside.high : current.close < inside.low;
+}
+
+function confirmsDojiRejection(candle: Candle, direction: Direction) {
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const body = Math.abs(candle.close - candle.open);
+  const bodyRatio = body / range;
+  const closeLocation = (candle.close - candle.low) / range;
+  const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+  const upperWick = candle.high - Math.max(candle.open, candle.close);
+  if (bodyRatio > 0.18) return false;
+  return direction === "LONG"
+    ? lowerWick / range >= 0.4 && closeLocation >= 0.55
+    : upperWick / range >= 0.4 && closeLocation <= 0.45;
 }
 
 function confirmsVolumeExpansion(candles: Candle[], index: number) {
