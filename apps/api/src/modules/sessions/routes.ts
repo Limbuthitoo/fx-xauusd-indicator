@@ -390,21 +390,31 @@ export async function recentOrbRangesForTenant(tenantId: string | null, limit = 
        AND orr.status = 'LOCKED'
      ORDER BY ts.session_start_at DESC, orr.locked_at DESC NULLS LAST
      LIMIT $2`,
-    [tenantId, safeLimit]
+    [tenantId, safeLimit * 4]
   );
-  const persisted = rows.map((row: any) => ({
+  const persisted = uniqueOrbRanges(rows.map((row: any) => ({
     ...row,
     label: orbPresetLabel(row.session_preset),
     shortLabel: orbPresetShortLabel(row.session_preset)
-  }));
+  })));
   if (persisted.length >= safeLimit) return persisted;
   const calculated = await calculateRecentOrbRangesFromCandles(tenantId, safeLimit, persisted);
-  return [...persisted, ...calculated]
+  return uniqueOrbRanges([...persisted, ...calculated]).slice(0, safeLimit);
+}
+
+function uniqueOrbRanges(ranges: any[]) {
+  return ranges
     .sort((left: any, right: any) => new Date(right.session_start_at).getTime() - new Date(left.session_start_at).getTime())
     .filter((range: any, index: number, all: any[]) =>
-      all.findIndex((item) => item.session_date === range.session_date && item.session_preset === range.session_preset) === index
-    )
-    .slice(0, safeLimit);
+      all.findIndex((item) => orbRangeKey(item) === orbRangeKey(range)) === index
+    );
+}
+
+function orbRangeKey(range: any) {
+  const sessionDate = range.session_date instanceof Date
+    ? range.session_date.toISOString().slice(0, 10)
+    : String(range.session_date).slice(0, 10);
+  return `${sessionDate}:${range.session_preset}`;
 }
 
 async function lockRecentOrbRangesIfReady(tenantId: string | null, limit: number) {
