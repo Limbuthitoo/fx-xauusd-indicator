@@ -1,7 +1,10 @@
 export function sessionTimesForDate(sessionDate: string, sessionStart: string, openingRangeMinutes: number, tradeWindowEnd: string) {
   const start = zonedDateTimeToUtc(sessionDate, sessionStart, "America/New_York");
   const openingRangeEnd = new Date(start.getTime() + openingRangeMinutes * 60_000);
-  const signalWindowEnd = zonedDateTimeToUtc(sessionDate, tradeWindowEnd, "America/New_York");
+  let signalWindowEnd = zonedDateTimeToUtc(sessionDate, tradeWindowEnd, "America/New_York");
+  if (signalWindowEnd <= start) {
+    signalWindowEnd = new Date(signalWindowEnd.getTime() + 24 * 60 * 60_000);
+  }
   return {
     sessionStartAt: start.toISOString(),
     openingRangeEndAt: openingRangeEnd.toISOString(),

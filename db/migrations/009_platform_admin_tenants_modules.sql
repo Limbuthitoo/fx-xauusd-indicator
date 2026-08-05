@@ -75,7 +75,7 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO platform_strategy_modules (code, name, description, target_win_rate, sort_order)
 VALUES
-  ('orb_max_options', 'Module 1: ORB MAX Options Strategy', 'Automated XAUUSD New York ORB checklist, paper trading, journal, reports, and learning recommendations.', 'Research validated, rules-first', 10),
+  ('orb_max_options', 'Module 1: All-Session ORB MAX Strategy', 'Automated XAUUSD ORB checklist across Sydney, Tokyo, London, and New York sessions with paper trading, journal, reports, and learning recommendations.', 'Rules-first, session-by-session backtest required', 10),
   ('high_probability_strategy_2', 'Module 2: High Probability Strategy', 'Placeholder module for the next rules-based strategy targeting 70-80% historical win-rate validation before release.', 'Target 70-80% after backtest validation', 20)
 ON CONFLICT (code) DO UPDATE SET
   name = EXCLUDED.name,

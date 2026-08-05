@@ -1344,7 +1344,7 @@ function HomeScreen({
           <Text style={styles.statementArrow}>{">"}</Text>
         </Pressable>
       ) : (
-        <EmptyCard text={bestModule ? "No new alerts. Assigned modules are waiting for valid NY session setups." : "No alerts yet."} />
+        <EmptyCard text={bestModule ? "No new alerts. Assigned modules are waiting for valid session setups." : "No alerts yet."} />
       )}
     </>
   );
@@ -2855,7 +2855,7 @@ function signalLabel(module: ModuleRow) {
   if (setup?.status === "LONG SETUP READY" || setup?.status === "PAPER_TRADE_OPENED") return { label: "BUY", tone: "good", reason: setup.final_reason ?? "Valid long setup." };
   if (setup?.status === "SHORT SETUP READY") return { label: "SELL", tone: "bad", reason: setup.final_reason ?? "Valid short setup." };
   if (setup?.status === "NO TRADE" || setup?.status === "BLOCKED") return { label: "NO TRADE", tone: "bad", reason: setup.final_reason ?? "Conditions blocked." };
-  return { label: "WAIT", tone: "warn", reason: "Waiting for valid NY session setup." };
+  return { label: "WAIT", tone: "warn", reason: "Waiting for a valid session setup." };
 }
 
 function moduleIconLabel(moduleCode: string) {
@@ -2865,7 +2865,7 @@ function moduleIconLabel(moduleCode: string) {
 }
 
 function moduleTimingLabel(module: ModuleRow) {
-  if (module.code === "orb_max_options") return "15M OR / 5M trigger";
+  if (module.code === "orb_max_options") return "All-session 15M OR / 5M trigger";
   if (module.code === "high_probability_strategy_2") return "5M sweep / 15M bias";
   return `${module.timeframeMinutes}M execution`;
 }

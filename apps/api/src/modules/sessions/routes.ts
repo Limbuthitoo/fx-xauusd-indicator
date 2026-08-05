@@ -97,7 +97,14 @@ export async function sessionRoutes(app: FastifyInstance) {
       LEFT JOIN opening_ranges orr ON orr.session_id = ts.id
       WHERE ts.tenant_id = $1
         AND ts.module_code = $2
-      ORDER BY ts.created_at DESC
+      ORDER BY
+        CASE
+          WHEN now() >= ts.session_start_at AND now() <= ts.signal_window_end_at THEN 0
+          WHEN now() < ts.session_start_at THEN 1
+          ELSE 2
+        END,
+        ts.session_start_at DESC,
+        ts.created_at DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode]);
     return rows[0] ?? null;
@@ -108,7 +115,18 @@ export async function sessionRoutes(app: FastifyInstance) {
     const moduleCode = body.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
     const current = await query(
-      "SELECT id FROM trading_sessions WHERE tenant_id = $1 AND module_code = $2 ORDER BY created_at DESC LIMIT 1",
+      `SELECT id
+       FROM trading_sessions
+       WHERE tenant_id = $1 AND module_code = $2
+       ORDER BY
+         CASE
+           WHEN now() >= session_start_at AND now() <= signal_window_end_at THEN 0
+           WHEN now() < session_start_at THEN 1
+           ELSE 2
+         END,
+         session_start_at DESC,
+         created_at DESC
+       LIMIT 1`,
       [auth.tenantId, moduleCode]
     );
     if (!current.rows[0]) return null;
@@ -130,7 +148,14 @@ export async function sessionRoutes(app: FastifyInstance) {
        LEFT JOIN opening_ranges orr ON orr.session_id = ts.id
        WHERE ts.tenant_id = $1
          AND ts.module_code = 'orb_max_options'
-       ORDER BY ts.created_at DESC
+       ORDER BY
+         CASE
+           WHEN now() >= ts.session_start_at AND now() <= ts.signal_window_end_at THEN 0
+           WHEN now() < ts.session_start_at THEN 1
+           ELSE 2
+         END,
+         ts.session_start_at DESC,
+         ts.created_at DESC
        LIMIT 1`,
       [auth.tenantId]
     );
@@ -374,6 +399,7 @@ async function reconcileOrbSessionWindow(sessionId: string, tenantId: string) {
   const session = result.rows[0] as any;
   if (!session) return;
   if (["TRADE_CLOSED", "SESSION_COMPLETED"].includes(session.state)) return;
+  if (!["NY_0915", "NY_0930"].includes(session.session_preset)) return;
 
   const times = sessionTimesForDate(session.session_date, settings.orb.sessionStart, settings.orb.openingRangeMinutes, settings.orb.tradeWindowEnd);
   const sameWindow =
@@ -387,7 +413,7 @@ async function reconcileOrbSessionWindow(sessionId: string, tenantId: string) {
      SET session_start_at = $2,
          opening_range_end_at = $3,
          signal_window_end_at = $4,
-         session_preset = 'NY_0915',
+         session_preset = 'NEW_YORK_ORB',
          state = CASE
            WHEN state IN ('TRADE_PLANNED', 'TRADE_ACTIVE') THEN state
            ELSE 'OPENING_RANGE_LOCKED'

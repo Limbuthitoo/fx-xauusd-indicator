@@ -305,6 +305,16 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - `08a5d997`: Added intraday TP1/TP2/TP3 target ladder.
 - `27e44214`: Added BUY & SELL Short/Long horizon tabs and chance score.
 
+## Latest Module 1 Direction
+
+- Module 1 ORB is no longer New York-only.
+- Module 1 should evaluate ORB sessions for Sydney, Tokyo, London, and New York.
+- Each Module 1 ORB session uses a 15-minute opening range and 5-minute trigger candles.
+- New York keeps the 1-minute live Twelve Data polling cadence.
+- Sydney/Tokyo/London ORB evaluation should use the shared 30-minute catch-up candles to protect the 800/day Twelve Data credit budget.
+- Module 2 remains separate and uses its Liquidity Sweep + BOS rules.
+- Module 3 was intentionally removed completely; do not reintroduce it.
+
 ## Operating Principles
 
 - PostgreSQL is the source of truth for candles, setups, paper trades, journals, reports, users, plans, modules, settings, notifications, and app releases.

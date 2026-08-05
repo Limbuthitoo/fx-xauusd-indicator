@@ -101,6 +101,12 @@ const TWELVE_DATA_CALL_LOCK_ID = 2026080201;
 const SHARED_TWELVE_DATA_SOURCE_TIMEFRAME = 5;
 const ORB_RANGE_TIMEFRAME_MINUTES = 5;
 const ORB_RANGE_SOURCE_CANDLES = 3;
+const ORB_SESSION_PRESETS = [
+  { preset: "SYDNEY_ORB", label: "Sydney", sessionStart: "17:00", tradeWindowEnd: "02:00" },
+  { preset: "TOKYO_ORB", label: "Tokyo", sessionStart: "20:00", tradeWindowEnd: "05:00" },
+  { preset: "LONDON_ORB", label: "London", sessionStart: "03:00", tradeWindowEnd: "12:00" },
+  { preset: "NEW_YORK_ORB", label: "New York", sessionStart: "09:15", tradeWindowEnd: "16:00" }
+] as const;
 const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
 const XAUUSD_PAPER_SPEC = {
   contractSize: 100,
@@ -190,8 +196,8 @@ export async function marketDataRoutes(app: FastifyInstance) {
         statusEndpoint: "/api/market-data/twelve-data/live/status",
         recommended: true,
         note: settings.feed.rawCandleStorage
-          ? "Poll during the New York ORB window and persist raw candles."
-          : "Poll during the New York ORB window. Raw candles stay in memory; only ORB events are persisted."
+          ? "Poll live during New York and use shared catch-up for other ORB sessions; raw candles are persisted."
+          : "Poll live during New York and use shared catch-up for other ORB sessions. Only valid records are persisted."
       },
       {
       code: "CSV",
@@ -1313,6 +1319,23 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
   const moduleTimeframes = tenantCycles.map((item) => moduleTimeframeMinutes(item.tenant.module_code, item.settings));
   await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...moduleTimeframes, 15]);
   const syncedAt = new Date().toISOString();
+  for (const item of tenantCycles) {
+    const timeframe = moduleTimeframeMinutes(item.tenant.module_code, item.settings);
+    const state = item.state;
+    try {
+      const evaluation = await processModuleLiveSession(item.tenant.module_code, item.settings.symbol, timeframe, [], item.tenant.id);
+      state.latestSetupId = evaluation.setupId ?? state.latestSetupId ?? null;
+      state.latestCandleAt = getCachedCandles(item.settings.symbol, timeframe).at(-1)?.timestampUtc ?? state.latestCandleAt;
+      state.lastError = result.connected ? null : result.error ?? null;
+      state.lastActionAt = syncedAt;
+      state.reason = evaluation.evaluation ?? evaluation.setupStatus ?? state.reason;
+      await persistTenantAutomationState(state);
+    } catch (error) {
+      state.lastError = (error as Error).message;
+      state.reason = `${moduleDisplayName(item.tenant.module_code)} catch-up evaluation failed.`;
+      await persistTenantAutomationState(state);
+    }
+  }
   twelveDataState.lastSyncAt = syncedAt;
   twelveDataState.lastImported = result.imported ?? 0;
   twelveDataState.lastRequestedCount = requestedCount;
@@ -1378,18 +1401,28 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   const sessionStart = new Date(session.session_start_at).getTime();
   const sessionEnd = new Date(session.signal_window_end_at).getTime();
   const sharedFeedWindow = sharedNewYorkFeedWindow(newYorkDate());
-  const apiStart = Math.max(
-    sessionStart - settings.orb.apiStartLeadMinutes * 60_000,
-    new Date(sharedFeedWindow.startAt).getTime()
-  );
-  const apiStop = Math.min(sessionEnd, new Date(sharedFeedWindow.endAt).getTime());
+  const sharedNyStart = new Date(sharedFeedWindow.startAt).getTime();
+  const sharedNyEnd = new Date(sharedFeedWindow.endAt).getTime();
+  const insideSharedNyFeed = now >= sharedNyStart && now <= sharedNyEnd;
+  const apiStart = tenant.module_code === "orb_max_options"
+    ? Math.max(sessionStart - settings.orb.apiStartLeadMinutes * 60_000, sharedNyStart)
+    : Math.max(sessionStart - settings.orb.apiStartLeadMinutes * 60_000, sharedNyStart);
+  const apiStop = Math.min(sessionEnd, sharedNyEnd);
   state.apiStartAt = new Date(apiStart).toISOString();
   state.apiStopAt = new Date(apiStop).toISOString();
+
+  if (tenant.module_code === "orb_max_options" && now >= sessionStart && now <= sessionEnd && !insideSharedNyFeed) {
+    state.phase = "CATCH_UP";
+    state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
+    state.reason = `${state.moduleName} is tracking ${orbSessionLabel(session.session_preset)} with the shared 30-minute candle catch-up. New York keeps the 1-minute live feed.`;
+    state.running = false;
+    return state;
+  }
 
   if (now < apiStart) {
     state.phase = "PRE_SESSION";
     state.nextActionAt = new Date(apiStart).toISOString();
-    state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps earlier candles current.`;
+    state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps other ORB sessions current.`;
     state.running = false;
     const minutesUntilApiStart = Math.round((apiStart - now) / 60_000);
     if (minutesUntilApiStart <= settings.orb.apiStartLeadMinutes && minutesUntilApiStart >= 0) {
@@ -1410,7 +1443,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   if (now >= apiStop) {
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
-    state.reason = `${state.moduleName} New York monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence; strategy entries remain paused.`;
+    state.reason = `${state.moduleName} monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence.`;
     state.running = false;
     if (tenant.module_code === "high_probability_strategy_2") {
       const closeout = await runModule2CloseoutAfterSession(session);
@@ -1443,6 +1476,38 @@ export function sharedNewYorkFeedWindow(sessionDate: string) {
   return { startAt: times.sessionStartAt, endAt: times.signalWindowEndAt };
 }
 
+function currentOrNextOrbSessionWindow(settings: RuntimeSettings, now = new Date()) {
+  const dates = [shiftIsoDate(newYorkDate(now), -1), newYorkDate(now), shiftIsoDate(newYorkDate(now), 1)];
+  const candidates = dates.flatMap((sessionDate) =>
+    ORB_SESSION_PRESETS.map((preset) => {
+      const sessionStart = preset.preset === "NEW_YORK_ORB" ? settings.orb.sessionStart : preset.sessionStart;
+      const tradeWindowEnd = preset.preset === "NEW_YORK_ORB" ? settings.orb.tradeWindowEnd : preset.tradeWindowEnd;
+      const times = sessionTimesForDate(sessionDate, sessionStart, settings.orb.openingRangeMinutes, tradeWindowEnd);
+      return {
+        ...preset,
+        sessionDate,
+        sessionStart,
+        tradeWindowEnd,
+        sessionStartAt: times.sessionStartAt,
+        openingRangeEndAt: times.openingRangeEndAt,
+        signalWindowEndAt: times.signalWindowEndAt
+      };
+    })
+  );
+  const nowMs = now.getTime();
+  const active = candidates
+    .filter((candidate) => nowMs >= new Date(candidate.sessionStartAt).getTime() && nowMs <= new Date(candidate.signalWindowEndAt).getTime())
+    .sort((left, right) => new Date(right.sessionStartAt).getTime() - new Date(left.sessionStartAt).getTime())[0];
+  if (active) return active;
+  return candidates
+    .filter((candidate) => nowMs < new Date(candidate.sessionStartAt).getTime())
+    .sort((left, right) => new Date(left.sessionStartAt).getTime() - new Date(right.sessionStartAt).getTime())[0] ?? candidates.at(-1);
+}
+
+function orbSessionLabel(sessionPreset?: string | null) {
+  return ORB_SESSION_PRESETS.find((preset) => preset.preset === sessionPreset)?.label ?? "ORB";
+}
+
 function nextNewYorkTradingApiStart(settings: RuntimeSettings) {
   const next = new Date(`${newYorkDate()}T12:00:00.000Z`);
   do {
@@ -1471,7 +1536,7 @@ function marketClosedReason(sessionDate = newYorkDate()) {
       message: `${sessionDate} is configured as a market-closed date. Twelve Data calls are paused.`
     };
   }
-  return { closed: false, reason: "MARKET_OPEN_DAY", message: "Market date is eligible for NY session monitoring." };
+  return { closed: false, reason: "MARKET_OPEN_DAY", message: "Market date is eligible for shared XAUUSD session monitoring." };
 }
 
 export function isScheduledTwelveDataTrigger(triggerSource?: string) {
@@ -1528,14 +1593,15 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
   const strategyVersion = await activeStrategyVersionForModule(moduleCode);
   const moduleConfig = strategyVersion?.configuration_json ?? {};
   const moduleUsesStrategyWindow = moduleCode === "high_probability_strategy_2";
+  const orbWindow = moduleCode === "orb_max_options" ? currentOrNextOrbSessionWindow(settings) : null;
   const sessionStart = moduleUsesStrategyWindow
     ? String(moduleConfig.newYorkStartTime ?? "09:30")
-    : settings.orb.sessionStart;
+    : orbWindow?.sessionStart ?? settings.orb.sessionStart;
   const tradeWindowEnd = moduleUsesStrategyWindow
     ? String(moduleConfig.newYorkEndTime ?? "16:00")
-    : settings.orb.tradeWindowEnd;
+    : orbWindow?.tradeWindowEnd ?? settings.orb.tradeWindowEnd;
   const openingRangeMinutes = moduleUsesStrategyWindow ? 0 : settings.orb.openingRangeMinutes;
-  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : "NY_0915";
+  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : orbWindow?.preset ?? "NEW_YORK_ORB";
   const versionResult = await query(
     `SELECT *
      FROM strategy_versions
@@ -1548,7 +1614,7 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     error.statusCode = 500;
     throw error;
   }
-  const sessionDate = newYorkDate();
+  const sessionDate = orbWindow?.sessionDate ?? newYorkDate();
   const times = sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
   const existing = await query(
     `SELECT ts.*, sv.signal_timeframe_minutes
@@ -1765,7 +1831,7 @@ async function runTwelveDataCycle() {
         autoEvaluate: false,
         usageTenantIds: [...new Set(group.tenants.map((tenant) => tenant.id))],
         triggerSource: "MARKET_DATA_WORKER",
-        usageReason: `Shared NY session feed for ${group.tenants.length} subscriber module(s)`
+        usageReason: `Shared live XAUUSD feed for ${group.tenants.length} subscriber module(s)`
       });
       lastResult = result;
       totalImported += result.imported ?? 0;
@@ -2358,9 +2424,16 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
        AND ts.tenant_id = $2
        AND ts.module_code = 'orb_max_options'
        AND ts.state NOT IN ('SESSION_COMPLETED', 'TRADE_CLOSED')
-     ORDER BY ts.created_at DESC
+     ORDER BY
+       CASE
+         WHEN $3::timestamptz >= ts.session_start_at AND $3::timestamptz <= ts.signal_window_end_at THEN 0
+         WHEN $3::timestamptz < ts.session_start_at THEN 1
+         ELSE 2
+       END,
+       ts.session_start_at DESC,
+       ts.created_at DESC
      LIMIT 1`,
-    [symbol, activeTenantId]
+    [symbol, activeTenantId, new Date().toISOString()]
   );
   const session = sessionResult.rows[0] as any;
   if (!session) return { sessionFound: false };
@@ -2369,7 +2442,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   const signalEnd = new Date(session.signal_window_end_at);
   if (now > signalEnd && !["SESSION_EXPIRED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) {
     await query("UPDATE trading_sessions SET state = 'SESSION_EXPIRED' WHERE id = $1", [session.id]);
-    await notifyTenantOnce(session.tenant_id, `session-expired-${session.id}`, "SESSION_EXPIRED", "ORB trade window expired", "No new setups will be accepted for this session.");
+    await notifyTenantOnce(session.tenant_id, `session-expired-${session.id}`, "SESSION_EXPIRED", `${orbSessionLabel(session.session_preset)} ORB window expired`, "No new setups will be accepted for this session.");
     return { sessionFound: true, state: "SESSION_EXPIRED" };
   }
 
@@ -2384,7 +2457,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
         session.tenant_id,
         `range-locked-${session.id}`,
         "RANGE_LOCKED",
-        "XAUUSD ORB locked",
+        `XAUUSD ${orbSessionLabel(session.session_preset)} ORB locked`,
         `High: ${range.high} Midpoint: ${range.midpoint} Low: ${range.low} Width: ${range.width}`
       );
     } else {

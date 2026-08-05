@@ -3378,7 +3378,7 @@ function checklistCountLabel(setup: any) {
 }
 
 function strategyRuntimeMode(moduleCode: string) {
-  return moduleCode === "orb_max_options" ? "NY-only" : "All-day";
+  return moduleCode === "orb_max_options" ? "All-session" : "All-day";
 }
 
 function CrossModuleCommandCenter({
@@ -7623,7 +7623,7 @@ function moduleTimeframe(moduleCode: string, fallback: number) {
 }
 
 function moduleTimingLabel(moduleCode: string) {
-  if (moduleCode === "orb_max_options") return "15M OR range / 5M trigger";
+  if (moduleCode === "orb_max_options") return "All-session 15M OR / 5M trigger";
   if (moduleCode === "high_probability_strategy_2") return "5M sweep + BOS / 15M bias";
   return `${DEFAULT_TIMEFRAME_MINUTES}M execution`;
 }
