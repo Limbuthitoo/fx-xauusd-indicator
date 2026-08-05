@@ -147,20 +147,6 @@ export async function listTenantModuleSettings(tenantId: string, moduleCode: str
       }
     ];
   }
-  if (moduleCode === "strategy_lab_3") {
-    const fallback = await defaultModuleStrategyConfiguration("strategy_lab_3");
-    return [
-      {
-        key: "vwapOpeningDrive.strategy",
-        value: fallback,
-        category: "VWAP Opening Drive",
-        description: "User-account Module 3 thresholds for XAUUSD New York VWAP opening-drive pullback paper-trade automation.",
-        updated_at: null,
-        updated_by: null
-      }
-    ];
-  }
-
   const fallback = await defaultModuleStrategyConfiguration("orb_max_options");
   return [
     {
@@ -312,41 +298,6 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       maximumSpread: positiveNumber(input.maximumSpread, 0.8, 20),
       enableNewsFilter: booleanValue(input.enableNewsFilter, true),
       requireHtfBias: booleanValue(input.requireHtfBias, true),
-      paperTrading: {
-        ...paperTrading,
-        enabled: booleanValue(paperTrading.enabled, true),
-        maximumTradesPerSession: positiveInteger(paperTrading.maximumTradesPerSession, 1, 10),
-        conservativeSameCandleExit: booleanValue(paperTrading.conservativeSameCandleExit, true)
-      }
-    };
-  }
-  if (moduleCode === "strategy_lab_3" && key === "vwapOpeningDrive.strategy") {
-    const input = objectValue(value) as Record<string, any>;
-    const paperTrading = objectValue(input.paperTrading);
-    return {
-      ...input,
-      moduleCode: "strategy_lab_3",
-      symbol: stringValue(input.symbol, defaults.symbol),
-      timezone: "America/New_York",
-      newYorkStartTime: timeValue(input.newYorkStartTime, "09:30"),
-      newYorkEndTime: timeValue(input.newYorkEndTime, "16:00"),
-      setupTimeframe: supportedTimeframe(numberValue(input.setupTimeframe, 5)),
-      biasTimeframe: supportedTimeframe(numberValue(input.biasTimeframe, 15)),
-      maximumTradesPerSession: positiveInteger(input.maximumTradesPerSession, 1, 10),
-      openingDriveMinutes: positiveInteger(input.openingDriveMinutes, 30, 90),
-      minimumDriveRangeATR: positiveNumber(input.minimumDriveRangeATR, 1, 5),
-      minimumDriveBodyPercent: ratioValue(input.minimumDriveBodyPercent, 0.55),
-      minimumVwapDistanceATR: positiveNumber(input.minimumVwapDistanceATR, 0.05, 2),
-      pullbackMaxBars: positiveInteger(input.pullbackMaxBars, 12, 40),
-      pullbackZoneAtr: positiveNumber(input.pullbackZoneAtr, 0.35, 2),
-      confirmationBodyPercent: ratioValue(input.confirmationBodyPercent, 0.45),
-      emaPeriod: positiveInteger(input.emaPeriod, 20, 200),
-      minimumRiskReward: positiveNumber(input.minimumRiskReward, 2, 10),
-      maximumStopATR: positiveNumber(input.maximumStopATR, 1.35, 10),
-      stopBufferATR: positiveNumber(input.stopBufferATR, 0.12, 2),
-      maximumSpread: positiveNumber(input.maximumSpread, 0.8, 20),
-      enableNewsFilter: booleanValue(input.enableNewsFilter, true),
-      minimumSignalScore: positiveInteger(input.minimumSignalScore, 80, 100),
       paperTrading: {
         ...paperTrading,
         enabled: booleanValue(paperTrading.enabled, true),

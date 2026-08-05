@@ -47,7 +47,6 @@
     "brain:main": "python3 -m apps.quant.app.brain.main_brain",
     "brain:module1": "python3 -m apps.quant.app.brain.main_brain --module-code orb_max_options",
     "brain:module2": "python3 -m apps.quant.app.brain.main_brain --module-code high_probability_strategy_2",
-    "brain:module3": "python3 -m apps.quant.app.brain.main_brain --module-code strategy_lab_3",
     "launch:validate": "tsx scripts/launch-validate.ts",
     "verify:orb": "node --import tsx scripts/verify-orb-scenarios.ts",
     "verify:modules": "node --import tsx scripts/verify-module-strategies.ts && python3 scripts/verify-python-brains.py",

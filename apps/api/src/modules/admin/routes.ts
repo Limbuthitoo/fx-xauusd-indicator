@@ -91,7 +91,7 @@ export async function adminRoutes(app: FastifyInstance) {
           WHERE tenant_id = t.id
         ) tas ON true
         LEFT JOIN tenant_modules tm ON tm.tenant_id = t.id
-        LEFT JOIN platform_strategy_modules m ON m.id = tm.module_id
+        LEFT JOIN platform_strategy_modules m ON m.id = tm.module_id AND m.status = 'ACTIVE'
         GROUP BY
           t.id, s.id, s.status, s.starts_at, s.renews_at,
           p.code, p.name, p.price_usd, p.billing_period, p.max_admin_users,
@@ -106,6 +106,7 @@ export async function adminRoutes(app: FastifyInstance) {
           count(tm.tenant_id)::int AS assigned_tenants
         FROM platform_strategy_modules m
         LEFT JOIN tenant_modules tm ON tm.module_id = m.id AND tm.status = 'ENABLED'
+        WHERE m.status = 'ACTIVE'
         GROUP BY m.id
         ORDER BY m.sort_order, m.name
       `),
@@ -118,7 +119,7 @@ export async function adminRoutes(app: FastifyInstance) {
           ) FILTER (WHERE m.id IS NOT NULL), '[]'::jsonb) AS modules
         FROM subscription_plans p
         LEFT JOIN subscription_plan_modules pm ON pm.plan_id = p.id
-        LEFT JOIN platform_strategy_modules m ON m.id = pm.module_id
+        LEFT JOIN platform_strategy_modules m ON m.id = pm.module_id AND m.status = 'ACTIVE'
         GROUP BY p.id
         ORDER BY p.price_usd, p.name
       `),
@@ -1410,7 +1411,7 @@ async function assignPlanAndModules(tenantId: string, planCode: string, moduleCo
     `SELECT m.code
      FROM subscription_plan_modules pm
      JOIN platform_strategy_modules m ON m.id = pm.module_id
-     WHERE pm.plan_id = $1`,
+     WHERE pm.plan_id = $1 AND m.status = 'ACTIVE'`,
     [plan.rows[0].id]
   );
   const allowedCodes = new Set(allowed.rows.map((row: any) => row.code));
@@ -1419,7 +1420,7 @@ async function assignPlanAndModules(tenantId: string, planCode: string, moduleCo
   for (const moduleCode of requested) {
     await query(
       `INSERT INTO tenant_modules (tenant_id, module_id, assigned_by)
-       SELECT $1, id, $3 FROM platform_strategy_modules WHERE code = $2
+       SELECT $1, id, $3 FROM platform_strategy_modules WHERE code = $2 AND status = 'ACTIVE'
        ON CONFLICT (tenant_id, module_id) DO UPDATE SET status = 'ENABLED', assigned_by = EXCLUDED.assigned_by, assigned_at = now()`,
       [tenantId, moduleCode, adminUserId]
     );

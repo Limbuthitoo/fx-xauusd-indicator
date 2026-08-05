@@ -76,8 +76,7 @@ ON CONFLICT DO NOTHING;
 INSERT INTO platform_strategy_modules (code, name, description, target_win_rate, sort_order)
 VALUES
   ('orb_max_options', 'Module 1: ORB MAX Options Strategy', 'Automated XAUUSD New York ORB checklist, paper trading, journal, reports, and learning recommendations.', 'Research validated, rules-first', 10),
-  ('high_probability_strategy_2', 'Module 2: High Probability Strategy', 'Placeholder module for the next rules-based strategy targeting 70-80% historical win-rate validation before release.', 'Target 70-80% after backtest validation', 20),
-  ('strategy_lab_3', 'Module 3: Strategy Lab', 'Research slot for another automated strategy module with its own checklist, signals, reports, and tenant controls.', 'Research pending', 30)
+  ('high_probability_strategy_2', 'Module 2: High Probability Strategy', 'Placeholder module for the next rules-based strategy targeting 70-80% historical win-rate validation before release.', 'Target 70-80% after backtest validation', 20)
 ON CONFLICT (code) DO UPDATE SET
   name = EXCLUDED.name,
   description = EXCLUDED.description,
@@ -108,6 +107,6 @@ ON CONFLICT DO NOTHING;
 INSERT INTO subscription_plan_modules (plan_id, module_id)
 SELECT p.id, m.id
 FROM subscription_plans p
-JOIN platform_strategy_modules m ON m.code IN ('high_probability_strategy_2', 'strategy_lab_3')
+JOIN platform_strategy_modules m ON m.code = 'high_probability_strategy_2'
 WHERE p.code IN ('professional_multi_strategy', 'enterprise_platform')
 ON CONFLICT DO NOTHING;

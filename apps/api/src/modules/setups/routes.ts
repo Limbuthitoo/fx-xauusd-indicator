@@ -17,15 +17,6 @@ type Module2ReplayCase =
   | "BOS_NO_RETRACE"
   | "INVALIDATED_SETUP"
   | "LOW_SCORE_NO_TRADE";
-type Module3ReplayCase =
-  | "BUY"
-  | "SELL"
-  | "WEAK_OPENING_DRIVE"
-  | "NO_VWAP_ALIGNMENT"
-  | "NO_PULLBACK"
-  | "NO_CONFIRMATION"
-  | "INVALID_RR"
-  | "NO_TRADE";
 
 const XAUUSD_PAPER_SPEC = {
   contractSize: 100,
@@ -63,24 +54,6 @@ const MODULE2_QA_CASES: Array<{
   { code: "LOW_SCORE_NO_TRADE", label: "Low-score no trade", expected: "LOW_SCORE_NO_TRADE", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" }
 ];
 
-const MODULE3_QA_CASES: Array<{
-  code: Module3ReplayCase;
-  label: string;
-  expected: string;
-  expectedStatus: string;
-  opensPaperTrade: boolean;
-  failureRule?: string;
-}> = [
-  { code: "BUY", label: "Valid BUY", expected: "NY_VWAP_OPENING_DRIVE_PULLBACK_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "SELL", label: "Valid SELL", expected: "NY_VWAP_OPENING_DRIVE_PULLBACK_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
-  { code: "WEAK_OPENING_DRIVE", label: "Weak opening drive", expected: "NO_STRONG_OPENING_DRIVE", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "OPENING_DRIVE_STRONG" },
-  { code: "NO_VWAP_ALIGNMENT", label: "No VWAP alignment", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "VWAP_ALIGNMENT" },
-  { code: "NO_PULLBACK", label: "No pullback", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "PULLBACK_ZONE_TOUCHED" },
-  { code: "NO_CONFIRMATION", label: "No confirmation candle", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRMATION_CANDLE" },
-  { code: "INVALID_RR", label: "Invalid RR", expected: "VWAP_PULLBACK_NOT_READY", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "QUALITY_RR" },
-  { code: "NO_TRADE", label: "No trade", expected: "HARD_RULE_BLOCK", expectedStatus: "BLOCKED", opensPaperTrade: false, failureRule: "STRATEGY_CYCLE_ACTIVE" }
-];
-
 const ORB_QA_CASES: Array<{ code: ReplayCase; label: string; expected: string; tradable: boolean }> = [
   { code: "BUY", label: "Valid BUY breakout", expected: "OPENING_DRIVE_CLEAN_BREAKOUT", tradable: true },
   { code: "SELL", label: "Valid SELL reversal", expected: "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED", tradable: true },
@@ -92,6 +65,83 @@ const ORB_QA_CASES: Array<{ code: ReplayCase; label: string; expected: string; t
 ];
 
 export async function setupRoutes(app: FastifyInstance) {
+  app.get("/api/setups/predictions", async (request) => {
+    const auth = requirePermission(request, "signals.view");
+    if (!auth.tenantId) return { summary: emptyPredictionSummary(), predictions: [] };
+    const search = request.query as { limit?: string; moduleCode?: string };
+    const limit = Math.min(100, Math.max(1, Number(search.limit ?? 60)));
+    const moduleCode = String(search.moduleCode ?? "ALL");
+    const params: unknown[] = [auth.tenantId];
+    const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    params.push(limit);
+    const setups = await query(
+      `SELECT
+         sc.*,
+         sm.name AS module_name,
+         tp.reward_to_risk,
+         t.id AS trade_id,
+         t.outcome AS trade_outcome,
+         t.actual_entry,
+         t.actual_stop,
+         t.actual_target,
+         t.opened_at,
+         latest.close AS current_price,
+         latest.timestamp_utc AS current_price_at
+       FROM setup_candidates sc
+       JOIN platform_strategy_modules sm ON sm.code = sc.module_code
+       JOIN tenant_modules tm ON tm.module_id = sm.id
+         AND tm.tenant_id = sc.tenant_id
+         AND tm.status = 'ENABLED'
+       LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+       LEFT JOIN trades t ON t.trade_plan_id = tp.id
+       LEFT JOIN LATERAL (
+         SELECT c.close, c.timestamp_utc
+         FROM candles c
+         WHERE c.symbol = sc.symbol
+           AND c.timeframe_minutes = 5
+           AND c.source LIKE 'TWELVE_DATA%'
+         ORDER BY c.timestamp_utc DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE sc.tenant_id = $1
+         AND sc.module_code IN ('orb_max_options', 'high_probability_strategy_2')
+         AND sc.status <> 'TEST_CLEARED'
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE' OR sc.detected_at >= now() - interval '24 hours')
+         ${moduleFilter}
+       ORDER BY
+         CASE
+           WHEN t.outcome = 'ACTIVE' THEN 0
+           WHEN sc.status IN ('LONG SETUP READY', 'SHORT SETUP READY', 'PAPER_TRADE_OPENED', 'TRADE_PLANNED') THEN 1
+           WHEN sc.direction IN ('LONG', 'SHORT') THEN 2
+           ELSE 3
+         END,
+         sc.detected_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+    const setupIds = setups.rows.map((row: any) => row.id);
+    const evaluations = setupIds.length > 0
+      ? await query(
+          `SELECT *
+           FROM setup_rule_evaluations
+           WHERE setup_candidate_id = ANY($1::uuid[])
+           ORDER BY evaluated_at ASC`,
+          [setupIds]
+        )
+      : { rows: [] };
+    const evaluationsBySetup = new Map<string, any[]>();
+    for (const evaluation of evaluations.rows as any[]) {
+      const rows = evaluationsBySetup.get(evaluation.setup_candidate_id) ?? [];
+      rows.push(evaluation);
+      evaluationsBySetup.set(evaluation.setup_candidate_id, rows);
+    }
+    const predictions = setups.rows.map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? []));
+    return { summary: summarizePredictions(predictions), predictions };
+  });
+
   app.get("/api/setups/signals", async (request) => {
     const auth = requirePermission(request, "signals.view");
     if (!auth.tenantId) return { summary: emptySignalSummary(), signals: [] };
@@ -728,298 +778,6 @@ export async function setupRoutes(app: FastifyInstance) {
     return { setup: { ...rows[0], evaluations: evaluations.rows }, trade, replayCase, testMode: true };
   });
 
-  app.get("/api/dev/module3-replay/cases", async () => ({
-    cases: MODULE3_QA_CASES.map(({ code, label, expected, expectedStatus, opensPaperTrade }) => ({ code, label, expected, expectedStatus, opensPaperTrade }))
-  }));
-
-  app.post("/api/dev/module3-qa-suite", async (request) => {
-    const auth = await requireTenantModule(request, "strategy_lab_3");
-    const session = await ensureTodayModule3Session(auth.tenantId);
-    const cases = MODULE3_QA_CASES.map((testCase) => {
-      const replay = buildModule3Replay(testCase.code, session);
-      const blockingFailure = replay.evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
-      const paperEligible = ["LONG SETUP READY", "SHORT SETUP READY"].includes(replay.status) && replay.evaluations.filter((row) => row.blocking).every((row) => row.status === "PASS");
-      const passed =
-        replay.scenario === testCase.expected &&
-        replay.status === testCase.expectedStatus &&
-        paperEligible === testCase.opensPaperTrade &&
-        (!testCase.failureRule || blockingFailure === testCase.failureRule);
-      return {
-        code: testCase.code,
-        label: testCase.label,
-        expected: testCase.expected,
-        actual: replay.scenario,
-        expectedStatus: testCase.expectedStatus,
-        actualStatus: replay.status,
-        expectedPaperEligible: testCase.opensPaperTrade,
-        actualPaperEligible: paperEligible,
-        status: passed ? "PASS" : "FAIL",
-        failureRule: testCase.failureRule ?? null,
-        blockingFailure,
-        reason: replay.finalReason
-      };
-    });
-    const failed = cases.filter((row) => row.status !== "PASS");
-    return {
-      moduleCode: "strategy_lab_3",
-      generatedAt: new Date().toISOString(),
-      testMode: true,
-      twelveDataCreditsUsed: 0,
-      externalOrdersPlaced: 0,
-      finalStatus: failed.length === 0 ? "PASS" : "FAIL",
-      summary: {
-        total: cases.length,
-        passed: cases.length - failed.length,
-        failed: failed.length,
-        validSignals: cases.filter((row) => row.expectedPaperEligible).length,
-        noTradeProtections: cases.filter((row) => !row.expectedPaperEligible).length
-      },
-      cases
-    };
-  });
-
-  app.post("/api/dev/module3-replay", async (request) => {
-    const auth = await requireTenantModule(request, "strategy_lab_3");
-    const body = request.body as { case?: Module3ReplayCase; openPaperTrade?: boolean };
-    const replayCase = body.case ?? "BUY";
-    const session = await ensureTodayModule3Session(auth.tenantId);
-    const replay = buildModule3Replay(replayCase, session);
-    const timestamp = new Date().toISOString();
-    const { rows } = await query(
-      `INSERT INTO setup_candidates (
-        tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
-        expires_at, entry_price, stop_price, target_price, final_reason,
-        favorability_score, favorability_grade, favorability_reasons, scenario_flags
-      ) VALUES ($17,$1,$2,$3,'strategy_lab_3',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      RETURNING *`,
-      [
-        session.id,
-        session.strategy_version_id,
-        session.symbol,
-        replay.scenario,
-        replay.direction,
-        replay.status,
-        timestamp,
-        session.signal_window_end_at,
-        replay.entryPrice ?? null,
-        replay.stopPrice ?? null,
-        replay.targetPrice ?? null,
-        `Module 3 replay ${replayCase}: ${replay.finalReason}`,
-        replay.score,
-        replay.grade,
-        JSON.stringify(replay.reasons),
-        JSON.stringify({
-          ...replay.flags,
-          replay: true,
-          replayCase,
-          replayExpectedScenario: replay.expectedScenario,
-          replayMatchedExpectedScenario: replay.scenario === replay.expectedScenario,
-          chartSnapshotCandles: replay.snapshotCandles
-        }),
-        auth.tenantId
-      ]
-    );
-    for (const evaluation of replay.evaluations) {
-      await query(
-        `INSERT INTO setup_rule_evaluations (
-          setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          rows[0].id,
-          evaluation.ruleCode,
-          evaluation.name,
-          evaluation.status,
-          evaluation.blocking,
-          evaluation.source,
-          evaluation.actualValue == null ? null : String(evaluation.actualValue),
-          evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
-          evaluation.explanation
-        ]
-      );
-    }
-    if (await canCreateTenantNotification(auth.tenantId)) {
-      await query(
-        `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-         VALUES ($4,$1,'MODULE3_REPLAY',$2,$3,'NORMAL')`,
-        [
-          `module3-replay-${rows[0].id}`,
-          `Module 3 replay: ${replay.status}`,
-          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no real order.`,
-          auth.tenantId
-        ]
-      );
-    }
-    const trade = body.openPaperTrade && replay.status.includes("SETUP READY")
-      ? await openModuleReplayPaperTrade(rows[0], auth.tenantId, "MODULE3_QA")
-      : null;
-    const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [rows[0].id]);
-    return { setup: { ...rows[0], evaluations: evaluations.rows }, trade, replayCase, testMode: true };
-  });
-
-  app.post("/api/module3/launch-rehearsal", async (request) => {
-    const auth = await requireTenantModule(request, "strategy_lab_3");
-    const qaSuite = await buildModule3QaSuite(auth.tenantId);
-    const session = await ensureTodayModule3Session(auth.tenantId);
-    const replay = buildModule3Replay("BUY", session);
-    const timestamp = new Date().toISOString();
-    const setupResult = await query(
-      `INSERT INTO setup_candidates (
-        tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
-        expires_at, entry_price, stop_price, target_price, final_reason,
-        favorability_score, favorability_grade, favorability_reasons, scenario_flags
-      ) VALUES ($17,$1,$2,$3,'strategy_lab_3',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      RETURNING *`,
-      [
-        session.id,
-        session.strategy_version_id,
-        session.symbol,
-        replay.scenario,
-        replay.direction,
-        replay.status,
-        timestamp,
-        session.signal_window_end_at,
-        replay.entryPrice ?? null,
-        replay.stopPrice ?? null,
-        replay.targetPrice ?? null,
-        `Module 3 launch rehearsal: ${replay.finalReason}`,
-        replay.score,
-        replay.grade,
-        JSON.stringify(replay.reasons),
-        JSON.stringify({
-          ...replay.flags,
-          replay: true,
-          rehearsal: true,
-          replayCase: "BUY",
-          replayExpectedScenario: replay.expectedScenario,
-          replayMatchedExpectedScenario: replay.scenario === replay.expectedScenario,
-          chartSnapshotCandles: replay.snapshotCandles
-        }),
-        auth.tenantId
-      ]
-    );
-    const setup = setupResult.rows[0];
-    for (const evaluation of replay.evaluations) {
-      await query(
-        `INSERT INTO setup_rule_evaluations (
-          setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          setup.id,
-          evaluation.ruleCode,
-          evaluation.name,
-          evaluation.status,
-          evaluation.blocking,
-          evaluation.source,
-          evaluation.actualValue == null ? null : String(evaluation.actualValue),
-          evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
-          evaluation.explanation
-        ]
-      );
-    }
-    const trade = await openModuleReplayPaperTrade(setup, auth.tenantId, "MODULE3_REHEARSAL");
-    const closedTrade = trade ? await closeModuleReplayPaperTrade(setup, auth.tenantId, "TP_HIT", "MODULE3_REHEARSAL") : null;
-    if (await canCreateTenantNotification(auth.tenantId)) {
-      await query(
-        `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-         VALUES ($4,$1,'MODULE3_REPLAY',$2,$3,'NORMAL')
-         ON CONFLICT (event_key) DO NOTHING`,
-        [
-          `module3-replay-${setup.id}`,
-          "Module 3 rehearsal BUY replay",
-          "Module 3 rehearsal produced a valid BUY replay without Twelve Data credits or real orders.",
-          auth.tenantId
-        ]
-      );
-      await query(
-        `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-         VALUES ($4,$1,'MODULE3_REHEARSAL_TEST',$2,$3,'NORMAL')
-         ON CONFLICT (event_key) DO NOTHING`,
-        [
-          `module3-rehearsal-test-${setup.id}`,
-          "Module 3 rehearsal notification",
-          "Module 3 QA replay, paper trade, TP close, journal, audit, and isolation proof completed.",
-          auth.tenantId
-        ]
-      );
-    }
-    const [journal, history, report, audit, notificationProof, isolation] = await Promise.all([
-      query("SELECT count(*)::int AS count FROM journal_entries WHERE tenant_id = $1 AND setup_candidate_id = $2", [auth.tenantId, setup.id]),
-      query("SELECT count(*)::int AS count FROM setup_candidates WHERE tenant_id = $1 AND module_code = 'strategy_lab_3' AND scenario_flags->>'rehearsal' = 'true'", [auth.tenantId]),
-      moduleRehearsalReport(auth.tenantId, "strategy_lab_3"),
-      moduleRehearsalAudit(auth.tenantId, "strategy_lab_3"),
-      module3RehearsalNotificationProof(auth.tenantId, setup.id),
-      moduleIsolationProof(auth.tenantId, "strategy_lab_3")
-    ]);
-    const checklist = [
-      launchCheck("QA_SUITE_PASS", "QA suite pass", qaSuite.finalStatus === "PASS", `${qaSuite.summary.passed}/${qaSuite.summary.total} replay cases passed.`),
-      launchCheck("BUY_REPLAY_VALID", "BUY replay valid", replay.scenario === "NY_VWAP_OPENING_DRIVE_PULLBACK_BUY" && replay.status === "LONG SETUP READY", replay.finalReason),
-      launchCheck("PAPER_TRADE_OPENED", "Paper trade opened", Boolean(trade?.id), trade?.id ?? "No paper trade opened."),
-      launchCheck("TP_CLOSE_WORKS", "TP close works", closedTrade?.outcome === "WIN", closedTrade?.result_r == null ? "No close result." : `${Number(closedTrade.result_r).toFixed(2)}R`),
-      launchCheck("JOURNAL_WRITTEN", "Journal written", Number(journal.rows[0]?.count ?? 0) > 0, `${journal.rows[0]?.count ?? 0} journal rows for rehearsal setup.`),
-      launchCheck("HISTORY_VISIBLE", "Setup history visible", Number(history.rows[0]?.count ?? 0) > 0, `${history.rows[0]?.count ?? 0} Module 3 rehearsal setup rows.`),
-      launchCheck("REPORT_READY", "Report ready", Number(report.paperTrades ?? 0) > 0, `${report.paperTrades ?? 0} Module 3 paper trades available for reporting.`),
-      launchCheck("AUDIT_PASS", "Audit pass", audit.failedChecks === 0, `${audit.failedChecks} audit failures.`),
-      launchCheck("NOTIFICATION_PROOF", "Notification proof", notificationProof.total >= 2, `${notificationProof.total} Module 3 QA/rehearsal notifications found.`),
-      launchCheck("ISOLATION_PASS", "Isolation pass", isolation.mixedTrades === 0, `${isolation.mixedTrades} mixed Module 3 trade/session rows.`)
-    ];
-    const finalStatus = checklist.every((row) => row.status === "PASS") ? "GO" : "NO_GO";
-    const result = {
-      moduleCode: "strategy_lab_3",
-      generatedAt: new Date().toISOString(),
-      rehearsal: true,
-      testMode: true,
-      twelveDataCreditsUsed: 0,
-      externalOrdersPlaced: 0,
-      finalStatus,
-      setup,
-      trade: closedTrade ?? trade,
-      qaSuite,
-      checklist,
-      report,
-      audit,
-      notificationProof,
-      isolation,
-      handoff: {
-        expectedNextAction: finalStatus === "GO" ? "Module 3 automation path is ready for live paper monitoring." : "Resolve NO GO checklist rows before trusting Module 3.",
-        watchDuringSession: [
-          "Opening drive must complete and be strong.",
-          "Price must stay aligned with VWAP.",
-          "Pullback zone and confirmation candle must match.",
-          "Paper trade only opens after the Module 3 checklist passes."
-        ],
-        manualTraderNotes: "No external execution is placed. Use Module 3 paper signal as the manual execution guide only."
-      }
-    };
-    await query(
-      `INSERT INTO module_launch_rehearsals (
-        tenant_id, module_code, final_status, checklist_json, health_json, audit_json, dry_run_json, handoff_json
-       ) VALUES ($1,'strategy_lab_3',$2,$3,$4,$5,$6,$7)`,
-      [
-        auth.tenantId,
-        finalStatus,
-        JSON.stringify(checklist),
-        JSON.stringify({ report, notificationProof, isolation }),
-        JSON.stringify(audit),
-        JSON.stringify({ setupId: setup.id, tradeId: trade?.id ?? null, closedTrade }),
-        JSON.stringify(result.handoff)
-      ]
-    );
-    return result;
-  });
-
-  app.get("/api/module3/launch-rehearsals", async (request) => {
-    const auth = await requireTenantModule(request, "strategy_lab_3");
-    const rows = await query(
-      `SELECT id, module_code, final_status, checklist_json, health_json, audit_json, dry_run_json, handoff_json, created_at
-       FROM module_launch_rehearsals
-       WHERE tenant_id = $1 AND module_code = 'strategy_lab_3'
-       ORDER BY created_at DESC
-       LIMIT 20`,
-      [auth.tenantId]
-    );
-    return rows.rows;
-  });
-
   app.post("/api/dev/test-signal", async (request) => {
     const auth = await requireTenantModule(request, "orb_max_options");
     const body = request.body as { direction?: "LONG" | "SHORT" };
@@ -1328,6 +1086,190 @@ function signalSetupView(row: any, evaluations: any[]) {
   };
 }
 
+function predictionSetupView(row: any, evaluations: any[]) {
+  const direction = row.direction === "SHORT" ? "SHORT" : row.direction === "LONG" ? "LONG" : predictedDirection(row);
+  const action = direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "WAIT";
+  const flags = row.scenario_flags ?? {};
+  const entryZone = predictionEntryZone(row, flags);
+  const entry = numericOrNull(row.actual_entry ?? row.entry_price) ?? entryZone.midpoint;
+  const stopLoss = numericOrNull(row.actual_stop ?? row.stop_price) ?? predictedStop(row, flags, direction, entry);
+  const target = numericOrNull(row.actual_target ?? row.target_price) ?? predictedTarget(entry, stopLoss, direction);
+  const [tp1, tp2, tp3] = (direction === "SHORT" || direction === "LONG") && entry != null
+    ? DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(Number(entry ?? 0) + (direction === "SHORT" ? -1 : 1) * pips * XAUUSD_PIP_SIZE))
+    : [null, null, null];
+  const passed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
+  const blocking = evaluations.filter((evaluation) => evaluation.status !== "PASS" && evaluation.blocking).slice(0, 5);
+  const total = evaluations.length;
+  const fullChecklistMatched = total > 0 && passed === total;
+  const mandatoryMatched = Boolean(flags.mandatoryChecklistMatched ?? flags.matrix?.mandatoryChecklistMatched ?? false);
+  const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
+  const probability = predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched);
+  const status = predictionStatus(row, mandatoryMatched, fullChecklistMatched);
+  const rr = entry != null && stopLoss != null && target != null
+    ? Math.abs(Number(target) - Number(entry)) / Math.max(0.00001, Math.abs(Number(entry) - Number(stopLoss)))
+    : null;
+  return {
+    id: row.id,
+    moduleCode: row.module_code,
+    moduleName: row.module_name,
+    symbol: row.symbol,
+    action,
+    direction,
+    scenario: row.scenario,
+    status,
+    setupStatus: row.status,
+    setupTier: flags.setupTier ?? (fullChecklistMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH"),
+    detectedAt: row.detected_at,
+    expiresAt: row.expires_at,
+    entry,
+    entryRange: entryZone,
+    stopLoss,
+    target,
+    tp1,
+    tp2,
+    tp3,
+    rewardToRisk: row.reward_to_risk == null ? rr : Number(row.reward_to_risk),
+    probability,
+    confidence,
+    grade: row.favorability_grade ?? flags.tradeGrade ?? null,
+    currentPrice: row.current_price == null ? null : Number(row.current_price),
+    currentPriceAt: row.current_price_at,
+    trade: row.trade_id ? { id: row.trade_id, status: row.trade_outcome, openedAt: row.opened_at } : null,
+    checklist: {
+      passed,
+      total,
+      mandatoryMatched,
+      fullChecklistMatched,
+      blocking,
+      evaluations
+    },
+    reasoning: predictionReasoning(row, evaluations, flags, action),
+    missing: blocking.map((rule) => ({
+      ruleCode: rule.rule_code,
+      name: rule.name,
+      status: rule.status,
+      explanation: rule.explanation
+    })),
+    evidence: predictionEvidence(row.module_code, flags),
+    invalidation: predictionInvalidation(row, flags, direction, stopLoss),
+    nextAction: predictionNextAction(row, action, blocking, mandatoryMatched, fullChecklistMatched),
+    tradeHorizon: DAY_TRADING_HOLD_WINDOW
+  };
+}
+
+function predictionEntryZone(row: any, flags: any) {
+  const zone = flags.entryZone ?? flags.entry_zone ?? flags.pullbackZone ?? flags.entry_zone_snapshot ?? null;
+  const low = numericOrNull(zone?.low ?? zone?.zoneLow ?? row.entry_zone_low);
+  const high = numericOrNull(zone?.high ?? zone?.zoneHigh ?? row.entry_zone_high);
+  const entry = numericOrNull(row.entry_price ?? row.actual_entry);
+  if (low != null && high != null) {
+    return {
+      low: Math.min(low, high),
+      high: Math.max(low, high),
+      midpoint: roundSignalPrice((low + high) / 2),
+      kind: String(zone?.kind ?? "STRATEGY_ENTRY_ZONE")
+    };
+  }
+  return {
+    low: entry,
+    high: entry,
+    midpoint: entry,
+    kind: entry == null ? "WAITING_FOR_ENTRY_ZONE" : "EXACT_SIGNAL_CLOSE"
+  };
+}
+
+function predictedDirection(row: any) {
+  const haystack = `${row.scenario ?? ""} ${row.status ?? ""} ${row.final_reason ?? ""}`.toUpperCase();
+  if (haystack.includes("SELL") || haystack.includes("SHORT") || haystack.includes("BEARISH")) return "SHORT";
+  if (haystack.includes("BUY") || haystack.includes("LONG") || haystack.includes("BULLISH")) return "LONG";
+  return null;
+}
+
+function predictedStop(row: any, flags: any, direction: "LONG" | "SHORT" | null, entry: number | null) {
+  const sweep = flags.sweep ?? {};
+  const drive = flags.openingDrive ?? flags.drive ?? {};
+  if (direction === "SHORT") return numericOrNull(sweep.high ?? drive.high) ?? (entry == null ? null : roundSignalPrice(entry + 2));
+  if (direction === "LONG") return numericOrNull(sweep.low ?? drive.low) ?? (entry == null ? null : roundSignalPrice(entry - 2));
+  return null;
+}
+
+function predictedTarget(entry: number | null, stop: number | null, direction: "LONG" | "SHORT" | null) {
+  if (entry == null || stop == null || !direction) return null;
+  const risk = Math.abs(entry - stop);
+  return roundSignalPrice(entry + (direction === "SHORT" ? -1 : 1) * risk * 2);
+}
+
+function predictionProbability(row: any, evaluations: any[], confidence: unknown, mandatoryMatched: boolean, fullChecklistMatched: boolean) {
+  const numericConfidence = Number(confidence);
+  if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence)));
+  const total = evaluations.length;
+  const passed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
+  const base = total > 0 ? (passed / total) * 72 : 18;
+  const mandatoryBonus = mandatoryMatched ? 12 : 0;
+  const fullBonus = fullChecklistMatched ? 15 : 0;
+  const actionBonus = row.direction ? 4 : 0;
+  return Math.min(99, Math.max(1, Math.round(base + mandatoryBonus + fullBonus + actionBonus)));
+}
+
+function predictionStatus(row: any, mandatoryMatched: boolean, fullChecklistMatched: boolean) {
+  if (row.trade_outcome === "ACTIVE") return "ACTIVE PAPER TRADE";
+  if (["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(row.status)) return fullChecklistMatched ? "VALID ENTRY" : "CORE ENTRY";
+  if (mandatoryMatched) return "CORE PREDICTION";
+  if (row.direction) return "WATCHLIST";
+  return "WAITING";
+}
+
+function predictionReasoning(row: any, evaluations: any[], flags: any, action: string) {
+  const passNames = evaluations.filter((rule) => rule.status === "PASS").slice(0, 5).map((rule) => rule.name);
+  const base = row.final_reason ?? `${row.module_name} is monitoring for the next valid ${action === "WAIT" ? "BUY/SELL" : action} setup.`;
+  const moduleReason = row.module_code === "high_probability_strategy_2"
+    ? "Prediction follows liquidity first, then displacement, BOS/CHoCH, entry-zone retrace, and confirmation."
+    : "Prediction follows 15M opening range, 5M breakout/acceptance, retest or sweep-reversal evidence.";
+  return [moduleReason, base, passNames.length ? `Matched: ${passNames.join(", ")}.` : null].filter(Boolean);
+}
+
+function predictionEvidence(moduleCode: string, flags: any) {
+  if (moduleCode === "high_probability_strategy_2") {
+    return [
+      evidenceRow("Liquidity", flags.sweep?.level?.type, flags.sweep?.level?.price),
+      evidenceRow("Sweep", flags.sweep?.time ?? flags.sweep?.timestampUtc, flags.sweep?.high ?? flags.sweep?.low),
+      evidenceRow("BOS / CHoCH", flags.bos?.type ?? flags.structure?.type, flags.bos?.level),
+      evidenceRow("Entry zone", flags.entryZone?.kind, flags.entryZone?.midpoint ?? flags.entryZone?.low),
+      evidenceRow("HTF bias", flags.htfBias, null)
+    ].filter(Boolean);
+  }
+  return [
+    evidenceRow("ORB high", null, flags.tradePlan?.orbHigh ?? flags.openingRange?.high),
+    evidenceRow("ORB low", null, flags.tradePlan?.orbLow ?? flags.openingRange?.low),
+    evidenceRow("Scenario", flags.matrix?.selectedScenario, null)
+  ].filter(Boolean);
+}
+
+function evidenceRow(label: string, value: unknown, price: unknown) {
+  if (value == null && price == null) return null;
+  return { label, value, price };
+}
+
+function predictionInvalidation(row: any, flags: any, direction: "LONG" | "SHORT" | null, stopLoss: number | null) {
+  if (flags.invalidation?.reason) return flags.invalidation.reason;
+  if (stopLoss != null) return `${direction === "SHORT" ? "Short" : "Long"} prediction invalidates around ${stopLoss.toFixed(2)}.`;
+  if (row.module_code === "high_probability_strategy_2") return "Invalid if price accepts beyond the sweep extreme or the fresh FVG/order-block zone fails.";
+  return "Invalid if price returns inside the ORB and fails acceptance.";
+}
+
+function predictionNextAction(row: any, action: string, blocking: any[], mandatoryMatched: boolean, fullChecklistMatched: boolean) {
+  if (row.trade_outcome === "ACTIVE") return "Manage active paper trade until TP/SL lifecycle closes it.";
+  if (fullChecklistMatched) return `${action} setup is fully valid. Review BUY & SELL or Paper Trading for execution details.`;
+  if (mandatoryMatched) return `${action} core setup is forming. Wait for remaining confirmation/quality checks before full confidence.`;
+  if (blocking[0]) return `Waiting for ${blocking[0].name}.`;
+  return "Waiting for the strategy sequence to produce a directional prediction.";
+}
+
+function numericOrNull(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function roundSignalPrice(value: number) {
   return Number(value.toFixed(2));
 }
@@ -1355,6 +1297,22 @@ function summarizeSignals(signals: any[]) {
 
 function emptySignalSummary() {
   return { total: 0, buy: 0, sell: 0, activePaperTrades: 0, fullSetups: 0, averageChance: 0, latestAt: null };
+}
+
+function summarizePredictions(predictions: any[]) {
+  return {
+    total: predictions.length,
+    buy: predictions.filter((prediction) => prediction.action === "BUY").length,
+    sell: predictions.filter((prediction) => prediction.action === "SELL").length,
+    validEntries: predictions.filter((prediction) => prediction.status === "VALID ENTRY" || prediction.status === "CORE ENTRY").length,
+    watchlist: predictions.filter((prediction) => prediction.status === "WATCHLIST" || prediction.status === "CORE PREDICTION").length,
+    averageProbability: predictions.length > 0 ? Math.round(predictions.reduce((sum, prediction) => sum + Number(prediction.probability ?? 0), 0) / predictions.length) : 0,
+    latestAt: predictions[0]?.detectedAt ?? null
+  };
+}
+
+function emptyPredictionSummary() {
+  return { total: 0, buy: 0, sell: 0, validEntries: 0, watchlist: 0, averageProbability: 0, latestAt: null };
 }
 
 function setupRecommendation(setup: any) {
@@ -1397,7 +1355,7 @@ async function closeModuleReplayPaperTrade(setup: any, tenantId: string | null, 
     `INSERT INTO journal_entries (
       tenant_id, setup_candidate_id, trade_id, session_id, decision, lesson, process_grade, outcome
     ) VALUES ($1,$2,$3,$4,$5,$6,'QA',$7)`,
-    [tenantId, setup.id, trade.id, setup.session_id, `${eventPrefix}_${event}`, "Module 3 rehearsal verified the paper-trade close path.", outcome]
+    [tenantId, setup.id, trade.id, setup.session_id, `${eventPrefix}_${event}`, `${setup.module_code} rehearsal verified the paper-trade close path.`, outcome]
   );
   return closed.rows[0];
 }
@@ -1468,23 +1426,6 @@ async function moduleRehearsalAudit(tenantId: string | null, moduleCode: string)
     invalidTrades: Number(invalidTrades.rows[0]?.count ?? 0),
     mixedTrades: Number(mixedTrades.rows[0]?.count ?? 0),
     duplicateProduction: Number(duplicateProduction.rows[0]?.count ?? 0)
-  };
-}
-
-async function module3RehearsalNotificationProof(tenantId: string | null, setupId: string) {
-  const result = await query(
-    `SELECT count(*)::int AS total,
-            count(*) FILTER (WHERE event_type = 'MODULE3_REPLAY')::int AS replay,
-            count(*) FILTER (WHERE event_type = 'MODULE3_REHEARSAL_TEST')::int AS rehearsal
-     FROM notifications
-     WHERE tenant_id = $1
-       AND (event_key = $2 OR event_key LIKE 'module3-rehearsal-test-%' OR event_type LIKE 'MODULE3_%')`,
-    [tenantId, `module3-replay-${setupId}`]
-  );
-  return {
-    total: Number(result.rows[0]?.total ?? 0),
-    replay: Number(result.rows[0]?.replay ?? 0),
-    rehearsal: Number(result.rows[0]?.rehearsal ?? 0)
   };
 }
 
@@ -1582,58 +1523,6 @@ async function buildOrbQaSuite(tenantId: string | null) {
   };
 }
 
-async function buildModule3QaSuite(tenantId: string | null) {
-  const session = await ensureTodayModule3Session(tenantId);
-  const cases = MODULE3_QA_CASES.map((testCase) => {
-    const replay = buildModule3Replay(testCase.code, session);
-    const statusByRule = new Map<string, string>(replay.evaluations.map((row) => [String(row.ruleCode), String(row.status)]));
-    const hardRulesPassed = ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED"].every((code) => statusByRule.get(code) === "PASS");
-    const entryTriggerPassed = statusByRule.get("CONFIRMATION_CANDLE") === "PASS";
-    const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
-    const blockingFailure = replay.evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
-    const paperEligible = ["LONG SETUP READY", "SHORT SETUP READY"].includes(replay.status) && hardRulesPassed && entryTriggerPassed && safetyRulesPassed;
-    const passed =
-      replay.scenario === testCase.expected &&
-      replay.status === testCase.expectedStatus &&
-      paperEligible === testCase.opensPaperTrade &&
-      (!testCase.failureRule || blockingFailure === testCase.failureRule);
-    return {
-      code: testCase.code,
-      label: testCase.label,
-      expected: testCase.expected,
-      actual: replay.scenario,
-      expectedStatus: testCase.expectedStatus,
-      actualStatus: replay.status,
-      expectedPaperEligible: testCase.opensPaperTrade,
-      actualPaperEligible: paperEligible,
-      hardRulesPassed,
-      entryTriggerPassed,
-      safetyRulesPassed,
-      status: passed ? "PASS" : "FAIL",
-      failureRule: testCase.failureRule ?? null,
-      blockingFailure,
-      reason: replay.finalReason
-    };
-  });
-  const failed = cases.filter((row) => row.status !== "PASS");
-  return {
-    moduleCode: "strategy_lab_3",
-    generatedAt: new Date().toISOString(),
-    testMode: true,
-    twelveDataCreditsUsed: 0,
-    externalOrdersPlaced: 0,
-    finalStatus: failed.length === 0 ? "PASS" : "FAIL",
-    summary: {
-      total: cases.length,
-      passed: cases.length - failed.length,
-      failed: failed.length,
-      validSignals: cases.filter((row) => row.expectedPaperEligible).length,
-      noTradeProtections: cases.filter((row) => !row.expectedPaperEligible).length
-    },
-    cases
-  };
-}
-
 async function selectedStrategyVersion() {
   const versionResult = await query("SELECT * FROM strategy_versions WHERE id = (SELECT selected_strategy_version_id FROM user_preferences LIMIT 1)");
   return versionResult.rows[0] as any;
@@ -1711,135 +1600,6 @@ async function ensureTodayModule2Session(tenantId: string | null) {
     [version.id, sessionDate, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, tenantId]
   );
   return { ...rows[0], signal_timeframe_minutes: version.signal_timeframe_minutes };
-}
-
-async function selectedModule3StrategyVersion() {
-  const versionResult = await query(
-    `SELECT sv.*
-     FROM strategy_versions sv
-     JOIN strategies s ON s.id = sv.strategy_id
-     WHERE sv.id = '00000000-0000-0000-0000-000000000403'
-        OR s.id = '00000000-0000-0000-0000-000000000303'
-     ORDER BY CASE WHEN sv.id = '00000000-0000-0000-0000-000000000403' THEN 0 ELSE 1 END, sv.activated_at DESC
-     LIMIT 1`
-  );
-  return versionResult.rows[0] as any;
-}
-
-async function ensureTodayModule3Session(tenantId: string | null) {
-  const version = await selectedModule3StrategyVersion();
-  const sessionDate = newYorkDate();
-  const existing = await query(
-    `SELECT ts.*, sv.signal_timeframe_minutes
-     FROM trading_sessions ts
-     JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
-     WHERE ts.symbol = 'XAUUSD'
-       AND ts.strategy_version_id = $1
-       AND ts.session_date = $2
-       AND ts.session_preset = 'NY_VWAP_DRIVE'
-       AND ts.tenant_id = $3
-       AND ts.module_code = 'strategy_lab_3'
-     ORDER BY ts.created_at DESC
-     LIMIT 1`,
-    [version.id, sessionDate, tenantId]
-  );
-  if (existing.rows[0]) return existing.rows[0] as any;
-  const config = version.configuration_json ?? {};
-  const times = sessionTimesForDate(sessionDate, config.newYorkStartTime ?? version.session_start ?? "09:30", 0, config.newYorkEndTime ?? version.trade_window_end ?? "16:00");
-  const { rows } = await query(
-    `INSERT INTO trading_sessions (
-      tenant_id, user_id, symbol, strategy_version_id, module_code, session_date, session_preset, state,
-      session_start_at, opening_range_end_at, signal_window_end_at
-    ) VALUES (
-      $5, (SELECT id FROM users WHERE tenant_id = $5 LIMIT 1), 'XAUUSD', $1, 'strategy_lab_3', $2, 'NY_VWAP_DRIVE', 'WAITING_FOR_SETUP', $3, $3, $4
-    ) RETURNING *`,
-    [version.id, sessionDate, times.sessionStartAt, times.signalWindowEndAt, tenantId]
-  );
-  return { ...rows[0], signal_timeframe_minutes: version.signal_timeframe_minutes };
-}
-
-function buildModule3Replay(replayCase: Module3ReplayCase, session: any) {
-  const direction = replayCase === "SELL" ? "SHORT" : "LONG";
-  const isShort = direction === "SHORT";
-  const valid = replayCase === "BUY" || replayCase === "SELL";
-  const entry = isShort ? 2349 : 2351;
-  const stop = isShort ? 2352 : 2348;
-  const target = isShort ? 2343 : 2357;
-  const sessionStart = new Date(session.session_start_at).getTime();
-  const at = (minutes: number) => new Date(sessionStart + minutes * 60_000).toISOString();
-  const driveStart = candle(at(0), 2350, 2351, 2349.4, isShort ? 2349.7 : 2350.4);
-  const driveEnd = replayCase === "WEAK_OPENING_DRIVE"
-    ? candle(at(30), 2350.2, 2350.7, 2349.8, 2350.3)
-    : isShort
-      ? candle(at(30), 2350.1, 2350.5, 2346.6, 2347.2)
-      : candle(at(30), 2350.1, 2353.6, 2349.8, 2353.1);
-  const pullback = isShort ? candle(at(45), 2348.4, 2350.2, 2348, 2349.7) : candle(at(45), 2352.4, 2352.7, 2350.1, 2350.7);
-  const confirm = isShort ? candle(at(50), 2349.6, 2350, 2348.7, 2349) : candle(at(50), 2350.5, 2351.4, 2350.1, 2351);
-  const snapshotCandles = [driveStart, driveEnd, pullback, confirm];
-  const flags = {
-    state: valid ? "SIGNAL_ACTIVE" : replayCase,
-    drive: { start: driveStart, end: driveEnd, high: Math.max(driveStart.high, driveEnd.high), low: Math.min(driveStart.low, driveEnd.low), open: driveStart.open, close: driveEnd.close },
-    vwap: isShort ? 2350.05 : 2350.45,
-    ema: isShort ? 2350.2 : 2350.35,
-    entryZone: { low: isShort ? 2349.8 : 2350.1, high: isShort ? 2350.4 : 2350.8, midpoint: isShort ? 2350.1 : 2350.45, kind: "VWAP_PULLBACK_ZONE" },
-    riskReward: replayCase === "INVALID_RR" ? 1.2 : 2,
-    replay: true
-  };
-  const failure = replayCase === "WEAK_OPENING_DRIVE" ? "OPENING_DRIVE_STRONG"
-    : replayCase === "NO_VWAP_ALIGNMENT" ? "VWAP_ALIGNMENT"
-      : replayCase === "NO_PULLBACK" ? "PULLBACK_ZONE_TOUCHED"
-        : replayCase === "NO_CONFIRMATION" ? "CONFIRMATION_CANDLE"
-          : replayCase === "INVALID_RR" ? "QUALITY_RR"
-            : replayCase === "NO_TRADE" ? "STRATEGY_CYCLE_ACTIVE"
-              : null;
-  const evaluations = module3ReplayEvaluations(failure, replayCase);
-  const status = valid ? (isShort ? "SHORT SETUP READY" : "LONG SETUP READY") : replayCase === "WEAK_OPENING_DRIVE" ? "NO TRADE" : replayCase === "NO_TRADE" ? "BLOCKED" : "WAIT";
-  const scenario = valid
-    ? isShort ? "NY_VWAP_OPENING_DRIVE_PULLBACK_SELL" : "NY_VWAP_OPENING_DRIVE_PULLBACK_BUY"
-    : replayCase === "WEAK_OPENING_DRIVE" ? "NO_STRONG_OPENING_DRIVE"
-      : replayCase === "NO_TRADE" ? "HARD_RULE_BLOCK"
-        : "VWAP_PULLBACK_NOT_READY";
-  return {
-    scenario,
-    expectedScenario: MODULE3_QA_CASES.find((item) => item.code === replayCase)?.expected ?? scenario,
-    direction: valid ? direction : failure === "STRATEGY_CYCLE_ACTIVE" ? null : direction,
-    status,
-    entryPrice: valid || replayCase === "INVALID_RR" ? entry : null,
-    stopPrice: valid || replayCase === "INVALID_RR" ? stop : null,
-    targetPrice: valid || replayCase === "INVALID_RR" ? target : null,
-    finalReason: valid
-      ? `Module 3 ${isShort ? "SELL" : "BUY"} replay passed opening drive, VWAP alignment, pullback, confirmation candle, and 2.00R plan.`
-      : `Module 3 replay blocked by ${failure ?? "NO_TRADE"}.`,
-    score: valid ? 92 : replayCase === "INVALID_RR" ? 76 : 45,
-    grade: valid ? "A+" : "C",
-    reasons: valid ? ["NY opening drive confirmed", "VWAP continuation aligned", "Pullback zone respected", "Risk-reward 2.00R"] : [`Replay failure: ${failure}`],
-    flags,
-    evaluations,
-    snapshotCandles
-  };
-}
-
-function module3ReplayEvaluations(failure: string | null, replayCase: Module3ReplayCase) {
-  const defaults = [
-    ["STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", true, true, "ACTIVE", "Most recent NY open to next eligible NY open", "Module 3 evaluates completed weekday candles against the latest anchored New York opening drive and VWAP."],
-    ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", true, true, 0, "< 1", "Only one automatic Module 3 paper trade is allowed per session by default."],
-    ["OPENING_DRIVE_COMPLETE", "Opening drive complete", true, true, 30, "after 30 minutes", "The first NY impulse window must finish before pullback entries."],
-    ["OPENING_DRIVE_STRONG", "Opening drive strength", true, true, "1.4 ATR", ">= 1 ATR", "The opening drive must meet ATR range and candle body requirements."],
-    ["VWAP_ALIGNMENT", "VWAP alignment", true, true, "aligned", "aligned", "Price must remain on the correct side of VWAP after the opening drive."],
-    ["EMA_ALIGNMENT", "20 EMA alignment", true, false, "aligned", "aligned", "EMA alignment supports continuation context."],
-    ["PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", true, true, "2349.80-2350.40", "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry."],
-    ["PULLBACK_ZONE_TOUCHED", "Pullback zone touched", true, true, "touched", "VWAP/EMA zone", "Price must pull back into the VWAP/EMA value zone."],
-    ["CONFIRMATION_CANDLE", "Confirmation candle", true, true, "confirmed", "direction candle", "A completed candle must confirm continuation away from the pullback zone."],
-    ["QUALITY_SPREAD", "Spread filter", true, true, 0.25, "<= 0.8", "Spread must be acceptable for XAUUSD paper entry."],
-    ["QUALITY_NEWS", "No high-impact news", true, true, "CLEAR", "CLEAR", "News filter must be clear for automation."],
-    ["QUALITY_RR", "Minimum RR 2:1", true, true, replayCase === "INVALID_RR" ? 1.2 : 2, ">= 2", "Reward-to-risk must meet the configured minimum."],
-    ["QUALITY_STOP_SIZE", "Maximum stop size", true, true, "1.1 ATR", "<= 1.35 ATR", "Stop distance must remain inside the configured ATR limit."],
-    ["SIGNAL_SCORE", "Minimum signal score", true, true, replayCase === "INVALID_RR" ? 76 : 92, ">= 80", "Module 3 requires a high-quality opening-drive pullback score."]
-  ] as const;
-  return defaults.map(([ruleCode, name, defaultPass, blocking, actualValue, requiredValue, explanation]) => {
-    const passed = failure === ruleCode ? false : defaultPass;
-    return { ruleCode, name, status: passed ? "PASS" : "FAIL", blocking, source: "QA_REPLAY", actualValue, requiredValue, explanation };
-  });
 }
 
 function buildReplay(replayCase: ReplayCase, session: any) {

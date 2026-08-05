@@ -16,11 +16,6 @@ from app.brain.module2_sweep_bos_brain import (  # noqa: E402
     QUALITY_RULES as MODULE2_QUALITY,
     decide as decide_module2,
 )
-from app.brain.module3_vwap_drive_brain import (  # noqa: E402
-    MANDATORY_RULES as MODULE3_MANDATORY,
-    QUALITY_RULES as MODULE3_QUALITY,
-    decide as decide_module3,
-)
 
 
 HEALTH = {"status": "LIVE"}
@@ -80,35 +75,6 @@ module2 = decide_module2(
     HEALTH,
 )
 
-module3_rules = [
-    *MODULE3_MANDATORY,
-    "EMA_ALIGNMENT",
-    "HTF_15M_BIAS",
-    "VWAP_DATA_QUALITY",
-    "SIGNAL_SCORE",
-    *MODULE3_QUALITY[:3],
-]
-module3 = decide_module3(
-    setup(
-        "strategy_lab_3",
-        "LONG",
-        module3_rules,
-        {"mandatoryChecklistMatched": True, "fullChecklistMatched": True, "setupTier": "FULL"},
-    ),
-    None,
-    HEALTH,
-)
-module3_legacy_cycle_rule = decide_module3(
-    setup(
-        "strategy_lab_3",
-        "LONG",
-        ["NY_SESSION_ACTIVE", *MODULE3_MANDATORY[1:], "HTF_15M_BIAS", "VWAP_DATA_QUALITY", "SIGNAL_SCORE", *MODULE3_QUALITY[:3]],
-        {"mandatoryChecklistMatched": True, "fullChecklistMatched": True, "setupTier": "FULL"},
-    ),
-    None,
-    HEALTH,
-)
-
 module2_incomplete = decide_module2(
     setup("high_probability_strategy_2", "SHORT", MODULE2_MANDATORY[:-1], {"mandatoryChecklistMatched": True, "fullChecklistMatched": True}),
     None,
@@ -116,11 +82,6 @@ module2_incomplete = decide_module2(
 )
 module1_incomplete = decide_module1(
     setup("orb_max_options", "LONG", module1_rules[:-1], {"mandatoryChecklistMatched": True, "setupTier": "FULL"}),
-    None,
-    HEALTH,
-)
-module3_proxy_only = decide_module3(
-    setup("strategy_lab_3", "LONG", [*MODULE3_MANDATORY, "SIGNAL_SCORE", *MODULE3_QUALITY[:3]], {"mandatoryChecklistMatched": True}),
     None,
     HEALTH,
 )
@@ -133,14 +94,9 @@ legacy_active = decide_module1(
 assert module1["shouldOpenPaperTrade"] and module1["action"] == "BUY"
 assert module2["shouldOpenPaperTrade"] and module2["action"] == "SELL"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
-assert module3["shouldOpenPaperTrade"] and module3["action"] == "BUY"
-assert module3["checklist"]["mandatoryPassed"] and module3["checklist"]["fullPassed"]
-assert module3_legacy_cycle_rule["checklist"]["mandatoryPassed"], "Existing Module 3 NY_SESSION_ACTIVE records must remain brain-compatible"
 assert not module1_incomplete["shouldOpenPaperTrade"]
 assert not module2_incomplete["shouldOpenPaperTrade"]
 assert legacy_active["decisionType"] == "ACTIVE_TRADE_CHECKLIST_MISMATCH"
-assert module3_proxy_only["shouldOpenPaperTrade"]
-assert not module3_proxy_only["checklist"]["fullPassed"]
 
 print(
     json.dumps(
@@ -148,8 +104,7 @@ print(
             "status": "PASS",
             "module1": module1["decisionType"],
             "module2": module2["decisionType"],
-            "module3": module3["decisionType"],
-            "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], module3_proxy_only["decisionType"], legacy_active["decisionType"]],
+            "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], legacy_active["decisionType"]],
         },
         indent=2,
     )

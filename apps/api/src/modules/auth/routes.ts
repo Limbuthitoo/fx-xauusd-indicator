@@ -427,7 +427,7 @@ export async function authRoutes(app: FastifyInstance) {
       `SELECT m.*, tm.status AS tenant_module_status
        FROM tenant_modules tm
        JOIN platform_strategy_modules m ON m.id = tm.module_id
-       WHERE tm.tenant_id = $1
+       WHERE tm.tenant_id = $1 AND m.status = 'ACTIVE'
        ORDER BY m.sort_order, m.name`,
       [session.tenantId]
     );
@@ -439,6 +439,7 @@ export async function authRoutes(app: FastifyInstance) {
        FROM platform_strategy_modules m
        LEFT JOIN tenant_modules tm ON tm.module_id = m.id AND tm.tenant_id = $1
        LEFT JOIN subscription_plan_modules pm ON pm.module_id = m.id AND pm.plan_id = $2
+       WHERE m.status = 'ACTIVE'
        ORDER BY m.sort_order, m.name`,
       [session.tenantId, subscription.rows[0]?.plan_id ?? null]
     );

@@ -2796,14 +2796,6 @@ function chartLegend(chart: ChartPayload) {
       { label: "Entry / SL / TP", tone: "good" }
     ];
   }
-  if (chart.moduleCode === "strategy_lab_3") {
-    return [
-      { label: "VWAP", tone: "entry" },
-      { label: "Opening drive", tone: "warn" },
-      { label: "Pullback zone", tone: "neutral" },
-      { label: "Entry / SL / TP", tone: "good" }
-    ];
-  }
   return [
     { label: "Module levels", tone: "entry" },
     { label: "Paper levels", tone: "good" }
@@ -2869,14 +2861,12 @@ function signalLabel(module: ModuleRow) {
 function moduleIconLabel(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "O";
   if (moduleCode === "high_probability_strategy_2") return "S";
-  if (moduleCode === "strategy_lab_3") return "V";
   return "M";
 }
 
 function moduleTimingLabel(module: ModuleRow) {
   if (module.code === "orb_max_options") return "15M OR / 5M trigger";
   if (module.code === "high_probability_strategy_2") return "5M sweep / 15M bias";
-  if (module.code === "strategy_lab_3") return "5M VWAP / 15M bias";
   return `${module.timeframeMinutes}M execution`;
 }
 
@@ -3007,14 +2997,12 @@ function moduleCodeFromText(text: string) {
   const normalized = text.toLowerCase();
   if (normalized.includes("orb") || normalized.includes("max option")) return "orb_max_options";
   if (normalized.includes("liquidity") || normalized.includes("sweep") || normalized.includes("bos")) return "high_probability_strategy_2";
-  if (normalized.includes("vwap") || normalized.includes("opening drive")) return "strategy_lab_3";
   return null;
 }
 
 function moduleDisplayName(moduleCode?: string | null) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
   if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
-  if (moduleCode === "strategy_lab_3") return "Module 3 VWAP Drive";
   return "Strategy module";
 }
 

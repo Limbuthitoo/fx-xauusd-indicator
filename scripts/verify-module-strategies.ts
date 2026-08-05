@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { calculateCatchupRequestCount, evaluateVwapOpeningDrive, isNewYorkWeekend, isScheduledTwelveDataTrigger, module3ContinuousStrategyWindow, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { calculateCatchupRequestCount, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 
 const module2Candles: Candle[] = Array.from({ length: 24 }, (_, index) => {
   const base = 103.6 + Math.sin(index / 2) * 0.35;
@@ -49,74 +49,6 @@ const module2OutsideNy = evaluateLiquiditySweepSetup({
 });
 assert.notEqual(module2OutsideNy.status, "SHORT SETUP READY", "Module 2 must not promote a pre-NY sweep");
 
-const module3Candles: Candle[] = Array.from({ length: 18 }, (_, index) => {
-  const base = 100 + Math.sin(index / 3) * 0.08;
-  return candle(at("2026-08-10T12:00:00Z", index), base, base + 0.18, base - 0.18, base + 0.03);
-});
-module3Candles.push(
-  candle("2026-08-10T13:30:00Z", 100, 101.1, 99.9, 101),
-  candle("2026-08-10T13:35:00Z", 101, 102, 100.9, 101.9),
-  candle("2026-08-10T13:40:00Z", 101.9, 102.8, 101.8, 102.7),
-  candle("2026-08-10T13:45:00Z", 102.7, 103.5, 102.6, 103.4),
-  candle("2026-08-10T13:50:00Z", 103.4, 104.1, 103.3, 104),
-  candle("2026-08-10T13:55:00Z", 104, 104.5, 103.9, 104.4),
-  candle("2026-08-10T14:00:00Z", 104.2, 104.3, 101.8, 102.2),
-  candle("2026-08-10T14:05:00Z", 102.2, 103.8, 102.1, 103.7)
-);
-const module3 = evaluateVwapOpeningDrive({
-  now: module3Candles.at(-1)!.timestampUtc,
-  symbol: "XAUUSD",
-  candles: module3Candles,
-  biasCandles: Array.from({ length: 30 }, (_, index) => candle(at("2026-08-10T06:00:00Z", index, 15), 95 + index * 0.25, 95.4 + index * 0.25, 94.8 + index * 0.25, 95.3 + index * 0.25)),
-  sessionStartAt: "2026-08-10T13:30:00Z",
-  sessionEndAt: "2026-08-10T20:00:00Z",
-  spread: 0.2,
-  newsStatus: "CLEAR",
-  configuration: {
-    minimumDriveRangeATR: 0.8,
-    minimumDriveBodyPercent: 0.5,
-    pullbackZoneAtr: 0.5,
-    maximumStopATR: 10,
-    minimumSignalScore: 0
-  }
-});
-assert.equal(module3.status, "LONG SETUP READY", `Module 3 should produce a long setup, got ${module3.scenario}: ${module3.finalReason}`);
-assert.equal(module3.scenarioFlags.mandatoryChecklistMatched, true, "Module 3 mandatory sequence must be complete");
-assert.equal(module3.evaluations.some((row: any) => row.ruleCode === "STRATEGY_CYCLE_ACTIVE" && row.status === "PASS"), true, "Module 3 must pass its continuous weekday strategy-cycle gate");
-assert.equal(module3.scenarioFlags.htfBias, "BULLISH", "Module 3 must use completed 15M bullish context");
-assert.equal((module3.scenarioFlags.pullbackTouch as any)?.zone != null, true, "Module 3 must retain the historical pullback zone");
-assertTradePlan(module3, "LONG", "Module 3");
-const module3WithoutHtf = evaluateVwapOpeningDrive({
-  now: module3Candles.at(-1)!.timestampUtc,
-  symbol: "XAUUSD",
-  candles: module3Candles,
-  biasCandles: [],
-  sessionStartAt: "2026-08-10T13:30:00Z",
-  sessionEndAt: "2026-08-10T20:00:00Z",
-  spread: 0.2,
-  newsStatus: "CLEAR",
-  configuration: { minimumDriveRangeATR: 0.8, minimumDriveBodyPercent: 0.5, pullbackZoneAtr: 0.5, maximumStopATR: 10, minimumSignalScore: 0 }
-});
-assert.equal(module3WithoutHtf.status, "LONG SETUP READY", "Module 3 mandatory-tier observation should remain available without HTF agreement");
-assert.equal(module3WithoutHtf.scenarioFlags.setupTier, "MANDATORY", "Module 3 without 15M alignment must not be graded FULL");
-assert.equal(module3WithoutHtf.scenarioFlags.fullChecklistMatched, false, "Module 3 full checklist requires 15M alignment");
-const module3AfterFormerNyClose = evaluateVwapOpeningDrive({
-  now: "2026-08-10T21:00:00.000Z",
-  symbol: "XAUUSD",
-  candles: [...module3Candles, candle("2026-08-10T21:00:00.000Z", 103.7, 104, 103.4, 103.8)],
-  biasCandles: [],
-  sessionStartAt: "2026-08-10T13:30:00.000Z",
-  sessionEndAt: "2026-08-11T13:29:59.999Z",
-  spread: 0.2,
-  newsStatus: "CLEAR",
-  configuration: { minimumDriveRangeATR: 0.8, minimumDriveBodyPercent: 0.5 }
-});
-assert.equal(
-  module3AfterFormerNyClose.evaluations.some((row: any) => row.ruleCode === "STRATEGY_CYCLE_ACTIVE" && row.status === "PASS"),
-  true,
-  "Module 3 must remain eligible after the former 16:00 New York cutoff"
-);
-
 assert.equal(calculateCatchupRequestCount({ latestAt: null, now: Date.now(), timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: true }), 2016);
 assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 30 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 8);
 assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 10 * 60 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 122);
@@ -130,20 +62,9 @@ assert.equal(isScheduledTwelveDataTrigger("TENANT_BACKFILL"), false, "Tenant rea
 const summerFeedWindow = sharedNewYorkFeedWindow("2026-08-10");
 assert.equal(summerFeedWindow.startAt, "2026-08-10T13:30:00.000Z", "Shared live polling starts at 09:30 New York");
 assert.equal(summerFeedWindow.endAt, "2026-08-10T20:00:00.000Z", "Shared live polling ends at 16:00 New York");
-const module3BeforeNyOpen = module3ContinuousStrategyWindow(new Date("2026-08-10T12:00:00.000Z"));
-assert.equal(module3BeforeNyOpen.sessionDate, "2026-08-07", "Module 3 before Monday NY open keeps Friday's most recent eligible opening-drive anchor");
-assert.equal(module3BeforeNyOpen.startAt, "2026-08-07T13:30:00.000Z");
-assert.equal(module3BeforeNyOpen.nextSessionStartAt, "2026-08-10T13:30:00.000Z");
-const module3AfterNyOpen = module3ContinuousStrategyWindow(new Date("2026-08-10T18:00:00.000Z"));
-assert.equal(module3AfterNyOpen.sessionDate, "2026-08-10", "Module 3 starts a fresh cycle at the eligible NY open");
-assert.equal(module3AfterNyOpen.nextSessionStartAt, "2026-08-11T13:30:00.000Z");
-const winterModule3 = module3ContinuousStrategyWindow(new Date("2026-01-05T16:00:00.000Z"));
-assert.equal(winterModule3.startAt, "2026-01-05T14:30:00.000Z", "Module 3 cycle anchor must follow New York daylight-saving time");
-
 console.log(JSON.stringify({
   status: "PASS",
   module2: { scenario: module2.scenario, direction: module2.direction, score: module2.favorabilityScore },
-  module3: { scenario: module3.scenario, direction: module3.direction, score: module3.favorabilityScore },
   catchup: "startup=2016, 30-minute gap=8, 10-hour gap=122"
 }, null, 2));
 

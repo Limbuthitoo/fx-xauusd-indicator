@@ -4,7 +4,7 @@ import { redisClient } from "../../infrastructure/redis/client.js";
 import { query } from "../../infrastructure/db/client.js";
 import { requirePermission } from "../auth/routes.js";
 
-const MODULE_CODES = ["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"];
+const MODULE_CODES = ["orb_max_options", "high_probability_strategy_2"];
 
 export async function dashboardRoutes(app: FastifyInstance) {
   app.get("/api/dashboard/bundle", async (request) => {
@@ -21,13 +21,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const needsNotifications = section === "notifications";
     const needsPaper = section === "paper";
     const needsSignals = section === "signals" || section === "orb";
+    const needsPredictions = section === "predictions";
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
     const needsLive = section === "live";
     const needsModuleOps = needsCommand || needsStrategy || needsReports || needsLearning || needsData;
     const isModule1 = moduleCode === "orb_max_options";
     const isModule2 = moduleCode === "high_probability_strategy_2";
-    const isModule3 = moduleCode === "strategy_lab_3";
     const needsModule2LiveOps = isModule2 && needsLive;
 
     const [
@@ -63,12 +63,6 @@ export async function dashboardRoutes(app: FastifyInstance) {
       module2LearningReviews,
       module2SessionReports,
       module2Closeouts,
-      module3JournalTrades,
-      module3DataReadiness,
-      module3Learning,
-      module3SessionReports,
-      module3SetupHistory,
-      module3Rehearsals,
       strategyConfidence,
       productionReadiness,
       notifications,
@@ -81,7 +75,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       activeModuleSettings,
       tenantPushStatus,
       paperTrading,
-      tradeSignals
+      tradeSignals,
+      tradePredictions
     ] = await Promise.all([
       injectJson(app, request, "GET", "/api/clocks", undefined),
       injectJson(app, request, "POST", "/api/sessions/current/refresh-state", { moduleCode }),
@@ -115,12 +110,6 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule2 && needsLearning ? injectJson(app, request, "GET", "/api/module2/learning/reviews", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/session-reports", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/closeouts", undefined, []) : [],
-      isModule3 && needsModuleOps ? injectJson(app, request, "GET", "/api/modules/strategy_lab_3/journal/trades?limit=25", undefined, []) : [],
-      isModule3 && needsData ? injectJson(app, request, "GET", "/api/module3/data-readiness", undefined) : null,
-      isModule3 && needsLearning ? injectJson(app, request, "GET", "/api/module3/learning/latest", undefined) : null,
-      isModule3 && needsReports ? injectJson(app, request, "GET", "/api/module3/session-reports", undefined, []) : [],
-      isModule3 && needsStrategy ? injectJson(app, request, "GET", "/api/setups/history?moduleCode=strategy_lab_3&limit=50", undefined, []) : [],
-      isModule3 && needsModuleOps ? injectJson(app, request, "GET", "/api/module3/launch-rehearsals", undefined, []) : [],
       needsCommand ? injectJson(app, request, "GET", "/api/analytics/modules/confidence", undefined) : null,
       needsCommand ? injectJson(app, request, "GET", "/api/analytics/production-readiness", undefined) : null,
       needsNotifications ? injectJson(app, request, "GET", `/api/notifications?limit=50${notificationQuery}`, undefined, []) : [],
@@ -133,11 +122,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
       needsSettings ? injectJson(app, request, "GET", `/api/tenant/modules/${moduleCode}/settings`, undefined, []) : [],
       section === "account" || needsSettings ? injectJson(app, request, "GET", "/api/mobile/push-status", undefined, null) : null,
       needsPaper ? injectJson(app, request, "GET", "/api/trades/paper?limit=500", undefined, { summary: {}, trades: [] }) : null,
-      needsSignals ? injectJson(app, request, "GET", "/api/setups/signals?limit=100", undefined, { summary: {}, signals: [] }) : null
+      needsSignals ? injectJson(app, request, "GET", "/api/setups/signals?limit=100", undefined, { summary: {}, signals: [] }) : null,
+      needsPredictions ? injectJson(app, request, "GET", "/api/setups/predictions?limit=100", undefined, { summary: {}, predictions: [] }) : null
     ]);
 
     const sessionReview = session?.id ? await injectJson(app, request, "GET", `/api/sessions/${session.id}/review`, undefined) : undefined;
-    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module3JournalTrades, module3DataReadiness, module3Learning, module3SessionReports, module3SetupHistory, module3Rehearsals, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals };
+    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
   });
 
   app.get("/api/platform/bundle", async (request) => {

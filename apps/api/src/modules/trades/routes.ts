@@ -778,7 +778,7 @@ function paperTradeCondition(status: string, unrealizedR: number | null, rewardT
 }
 
 function moduleExecutionTimeframeMinutes(moduleCode: string) {
-  return ["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"].includes(moduleCode) ? 5 : 5;
+  return ["orb_max_options", "high_probability_strategy_2"].includes(moduleCode) ? 5 : 5;
 }
 
 function recoverPaperExit(trade: any, candles: any[]) {
@@ -912,7 +912,7 @@ async function closePaperTrade(setup: any, tenantId: string | null, event: strin
 }
 
 function moduleLifecycleLesson(moduleCode: string, event: string) {
-  const moduleName = moduleCode === "strategy_lab_3" ? "Module 3" : moduleCode === "high_probability_strategy_2" ? "Module 2" : "Module";
+  const moduleName = moduleCode === "high_probability_strategy_2" ? "Module 2" : "Module";
   const lessons: Record<string, string> = {
     ENTRY_HIT: `Entry was hit after ${moduleName} checklist validation.`,
     TP_HIT: "Target was reached; paper trade closed as a win.",

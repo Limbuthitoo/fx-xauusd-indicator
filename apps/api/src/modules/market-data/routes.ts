@@ -8,7 +8,7 @@ import { query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
 import { redisClient } from "../../infrastructure/redis/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
-import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runModule3LearningPython, runOrbLearningPython } from "../admin/learning.js";
+import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
@@ -518,41 +518,6 @@ export async function marketDataRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/api/module3/data-readiness", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    const settings = await getRuntimeSettings(session.tenantId);
-    return buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
-  });
-
-  app.post("/api/module3/data-readiness/backfill", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    const settings = await getRuntimeSettings(session.tenantId);
-    await hydrateChartCacheFromPostgres(settings.symbol, 5, settings.feed.startupBackfillCount);
-    const readiness = await buildModule3DataReadiness(session.tenantId, settings.symbol, settings.feed.cacheDays);
-    return {
-      provider: "TWELVE_DATA",
-      symbol: settings.symbol,
-      timeframeMinutes: 5,
-      requestedCount: 0,
-      estimatedApiCreditsUsed: 0,
-      result: { connected: true, skipped: true, reason: "SHARED_POSTGRES_FEED_ONLY" },
-      before: readiness,
-      after: readiness
-    };
-  });
-
-  app.get("/api/module3/learning/latest", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    return latestModuleLearningSnapshot(session.tenantId, "strategy_lab_3");
-  });
-
-  app.post("/api/module3/learning/run", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    if (!session.tenantId) return { error: "Tenant account is required for Module 3 learning." };
-    await runModule3LearningPython(session.tenantId);
-    return latestModuleLearningSnapshot(session.tenantId, "strategy_lab_3");
-  });
-
   app.get("/api/strategy-coach/latest", async (request) => {
     const session = await requireTenantModule(request, "orb_max_options");
     const search = request.query as { moduleCode?: string };
@@ -582,27 +547,6 @@ export async function marketDataRoutes(app: FastifyInstance) {
     if (body.moduleCode) await requireTenantModule(request, body.moduleCode);
     const result = await runMainBrainPython(session.tenantId, body.moduleCode);
     return { result, latest: await latestMainBrainDecisions(session.tenantId, body.moduleCode) };
-  });
-
-  app.get("/api/module3/session-reports", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    const rows = await query(
-      `SELECT *
-       FROM module_session_reports
-       WHERE tenant_id = $1 AND module_code = 'strategy_lab_3'
-       ORDER BY session_date DESC
-       LIMIT 30`,
-      [session.tenantId]
-    );
-    return rows.rows;
-  });
-
-  app.post("/api/module3/session-reports/generate", async (request) => {
-    const session = await requireTenantModule(request, "strategy_lab_3");
-    const body = request.body as { sessionDate?: string };
-    const tradingSession = await moduleSessionForReport(session.tenantId, "strategy_lab_3", body.sessionDate);
-    if (!tradingSession) return { error: "No Module 3 session found for that NY date." };
-    return generateGenericModuleSessionReport(tradingSession, "strategy_lab_3", "vwapOpeningDrive.strategy");
   });
 
   app.get("/api/module2/operator", async (request) => {
@@ -943,68 +887,6 @@ async function module2CloseoutRows(tenantId: string | null) {
     [tenantId]
   );
   return rows.rows;
-}
-
-async function runModule3CloseoutAfterSession(session: any) {
-  const moduleCode = "strategy_lab_3";
-  const existing = await query(
-    `SELECT *
-     FROM module_session_closeouts
-     WHERE tenant_id = $1 AND module_code = $2 AND session_date = $3
-     LIMIT 1`,
-    [session.tenant_id, moduleCode, session.session_date]
-  );
-  const current = existing.rows[0] as any;
-  if (current?.status === "COMPLETED") return current;
-  const closeout = current ?? (await query(
-    `INSERT INTO module_session_closeouts (tenant_id, module_code, session_id, session_date, status)
-     VALUES ($1,$2,$3,$4,'RUNNING')
-     ON CONFLICT (tenant_id, module_code, session_date) DO UPDATE SET status = 'RUNNING', error = NULL, started_at = now()
-     RETURNING *`,
-    [session.tenant_id, moduleCode, session.id, session.session_date]
-  )).rows[0];
-  try {
-    const report = await generateGenericModuleSessionReport(session, moduleCode, "vwapOpeningDrive.strategy");
-    const closedTrades = Number(report.summary?.paperTrades ?? 0) - Number(report.summary?.active ?? 0);
-    const learning = closedTrades > 0 && session.tenant_id ? await runModule3LearningPython(session.tenant_id) : null;
-    const coach = await runProductionLearningCoach(session.tenant_id, moduleCode, session.id);
-    const updated = await query(
-      `UPDATE module_session_closeouts
-       SET status = 'COMPLETED',
-           report_id = $2,
-           learning_run_id = $3,
-           summary = $4::jsonb,
-           completed_at = now(),
-           error = NULL
-       WHERE id = $1
-       RETURNING *`,
-      [
-        closeout.id,
-        report.id,
-        learning?.runId ?? null,
-        JSON.stringify({ reportStatus: report.final_status, trades: report.summary?.paperTrades ?? 0, totalR: report.summary?.totalR ?? 0, learning: learning?.status ?? "SKIPPED", coach })
-      ]
-    );
-    await notifyTenantOnce(
-      session.tenant_id,
-      `module3-closeout-${session.id}`,
-      "MODULE3_DAILY_REPORT_READY",
-      "Module 3 daily report ready",
-      `Status ${report.final_status}. Trades ${report.summary?.paperTrades ?? 0}, total R ${Number(report.summary?.totalR ?? 0).toFixed(2)}.`,
-      report.final_status === "GO" ? "NORMAL" : "HIGH"
-    );
-    return updated.rows[0];
-  } catch (error) {
-    const failed = await query(
-      `UPDATE module_session_closeouts
-       SET status = 'FAILED', error = $2, completed_at = now()
-       WHERE id = $1
-       RETURNING *`,
-      [closeout.id, (error as Error).message]
-    );
-    await notifyTenantOnce(session.tenant_id, `module3-closeout-failed-${session.id}`, "MODULE3_CLOSEOUT_FAILED", "Module 3 closeout failed", (error as Error).message, "HIGH");
-    return failed.rows[0];
-  }
 }
 
 async function runProductionLearningCoach(tenantId: string | null, moduleCode: string, sessionId: string) {
@@ -1352,7 +1234,7 @@ async function runAutoRunCycle() {
       autoRunState.lastActionAt = catchup.syncedAt ?? autoRunState.lastActionAt;
       autoRunState.nextActionAt = catchup.nextSyncAt ?? autoRunState.nextActionAt;
       autoRunState.reason = catchup.performed
-        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Module 3 evaluated its newly stored candles; Module 1 remains paused until New York.`
+        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Module 1 remains paused until New York.`
         : `Off-session XAUUSD catch-up is current. Next shared sync is scheduled for ${catchup.nextSyncAt}.`;
     }
     return autoRunState;
@@ -1430,9 +1312,6 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
   });
   const moduleTimeframes = tenantCycles.map((item) => moduleTimeframeMinutes(item.tenant.module_code, item.settings));
   await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...moduleTimeframes, 15]);
-  const catchupEvaluations = result.connected
-    ? await evaluateOffSessionStrategyCatchup(tenantCycles)
-    : [];
   const syncedAt = new Date().toISOString();
   twelveDataState.lastSyncAt = syncedAt;
   twelveDataState.lastImported = result.imported ?? 0;
@@ -1444,58 +1323,11 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
     performed: Boolean(result.connected),
     imported: result.imported ?? 0,
     requestedCount,
-    evaluations: catchupEvaluations,
+    evaluations: [],
     syncedAt,
     nextSyncAt: new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString(),
     error: result.error ?? null
   };
-}
-
-async function evaluateOffSessionStrategyCatchup(
-  tenantCycles: Array<{ tenant: any; settings: RuntimeSettings; state: TenantAutoRunState }>
-) {
-  const results = [];
-  for (const item of tenantCycles) {
-    if (item.tenant.module_code !== "strategy_lab_3" || item.state.phase !== "CATCH_UP") continue;
-    const timeframe = moduleTimeframeMinutes(item.tenant.module_code, item.settings);
-    const session = await ensureTodayAutoSession(item.settings.symbol, item.settings, item.tenant.id, item.tenant.module_code);
-    const latestEvaluation = await query(
-      `SELECT max(detected_at) AS latest
-       FROM setup_candidates
-       WHERE tenant_id = $1 AND module_code = $2 AND session_id = $3`,
-      [item.tenant.id, item.tenant.module_code, session.id]
-    );
-    const latestAt = latestEvaluation.rows[0]?.latest ?? session.session_start_at;
-    const completedAtOrBefore = new Date(Date.now() - timeframe * 60_000).toISOString();
-    const candles = await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = $2
-         AND timestamp_utc > $3
-         AND timestamp_utc <= $4
-         AND timestamp_utc <= $5
-       ORDER BY timestamp_utc ASC
-       LIMIT 500`,
-      [item.settings.symbol, timeframe, latestAt, session.signal_window_end_at, completedAtOrBefore]
-    );
-    let evaluated = 0;
-    let latestResult: any = null;
-    for (const candle of candles.rows) {
-      latestResult = await processVwapOpeningDriveSession(item.settings.symbol, timeframe, [], item.tenant.id, candle);
-      evaluated += 1;
-    }
-    const state = tenantAutomationStates.get(tenantStateKey(item.tenant.id, item.tenant.module_code)) ?? item.state;
-    if (candles.rows.length > 0) {
-      state.latestCandleAt = candles.rows.at(-1)?.timestamp_utc ?? state.latestCandleAt;
-      state.latestSetupId = latestResult?.setupId ?? state.latestSetupId;
-      state.lastActionAt = new Date().toISOString();
-      state.reason = `Module 3 evaluated ${evaluated} newly stored 5-minute candle(s) after the shared off-session catch-up.`;
-      await persistTenantAutomationState(state);
-    }
-    results.push({ tenantId: item.tenant.id, moduleCode: item.tenant.module_code, evaluated, latestSetupId: latestResult?.setupId ?? null });
-  }
-  return results;
 }
 
 export function calculateCatchupRequestCount(input: {
@@ -1555,13 +1387,6 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   state.apiStopAt = new Date(apiStop).toISOString();
 
   if (now < apiStart) {
-    if (tenant.module_code === "strategy_lab_3") {
-      state.phase = "CATCH_UP";
-      state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
-      state.reason = `${state.moduleName} remains enabled on completed weekday candles. The shared feed is on its 30-minute catch-up cadence until New York live polling begins.`;
-      state.running = true;
-      return state;
-    }
     state.phase = "PRE_SESSION";
     state.nextActionAt = new Date(apiStart).toISOString();
     state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps earlier candles current.`;
@@ -1570,9 +1395,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
     if (minutesUntilApiStart <= settings.orb.apiStartLeadMinutes && minutesUntilApiStart >= 0) {
       const modulePrefix = tenant.module_code === "orb_max_options"
         ? "MODULE1"
-        : tenant.module_code === "high_probability_strategy_2"
-          ? "MODULE2"
-          : "MODULE3";
+        : "MODULE2";
       await notifyTenantOnce(
         tenant.id,
         `mobile-ny-pre-session-${tenant.module_code}-${session.id}`,
@@ -1585,13 +1408,6 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   }
 
   if (now >= apiStop) {
-    if (tenant.module_code === "strategy_lab_3" && now < sessionEnd) {
-      state.phase = "CATCH_UP";
-      state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
-      state.reason = `${state.moduleName} remains enabled on completed weekday candles. New candles are evaluated after each shared 30-minute catch-up without increasing Twelve Data polling.`;
-      state.running = true;
-      return state;
-    }
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
     state.reason = `${state.moduleName} New York monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence; strategy entries remain paused.`;
@@ -1602,7 +1418,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
       state.reason = closeout?.status === "COMPLETED"
         ? `${state.moduleName} New York window is complete. Daily report, learning, and review queue closeout are done.`
         : state.reason;
-    } else if (tenant.module_code !== "strategy_lab_3") {
+    } else {
       await runLearningAfterSession(session);
     }
     return state;
@@ -1711,7 +1527,7 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const strategyVersion = await activeStrategyVersionForModule(moduleCode);
   const moduleConfig = strategyVersion?.configuration_json ?? {};
-  const moduleUsesStrategyWindow = moduleCode === "high_probability_strategy_2" || moduleCode === "strategy_lab_3";
+  const moduleUsesStrategyWindow = moduleCode === "high_probability_strategy_2";
   const sessionStart = moduleUsesStrategyWindow
     ? String(moduleConfig.newYorkStartTime ?? "09:30")
     : settings.orb.sessionStart;
@@ -1719,7 +1535,7 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     ? String(moduleConfig.newYorkEndTime ?? "16:00")
     : settings.orb.tradeWindowEnd;
   const openingRangeMinutes = moduleUsesStrategyWindow ? 0 : settings.orb.openingRangeMinutes;
-  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : moduleCode === "strategy_lab_3" ? "NY_VWAP_DRIVE" : "NY_0915";
+  const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : "NY_0915";
   const versionResult = await query(
     `SELECT *
      FROM strategy_versions
@@ -1732,17 +1548,8 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     error.statusCode = 500;
     throw error;
   }
-  const module3Window = moduleCode === "strategy_lab_3"
-    ? module3ContinuousStrategyWindow(new Date(), sessionStart)
-    : null;
-  const sessionDate = module3Window?.sessionDate ?? newYorkDate();
-  const times = module3Window
-    ? {
-        sessionStartAt: module3Window.startAt,
-        openingRangeEndAt: module3Window.startAt,
-        signalWindowEndAt: module3Window.endAt
-      }
-    : sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
+  const sessionDate = newYorkDate();
+  const times = sessionTimesForDate(sessionDate, sessionStart, openingRangeMinutes, tradeWindowEnd);
   const existing = await query(
     `SELECT ts.*, sv.signal_timeframe_minutes
      FROM trading_sessions ts
@@ -1754,25 +1561,6 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
   );
   if (existing.rows[0]) {
     const current = existing.rows[0] as any;
-    const extendsLegacyModule3Cycle = moduleCode === "strategy_lab_3"
-      && new Date(current.signal_window_end_at).getTime() < new Date(times.signalWindowEndAt).getTime()
-      && Date.now() <= new Date(times.signalWindowEndAt).getTime();
-    if (extendsLegacyModule3Cycle) {
-      const updated = await query(
-        `UPDATE trading_sessions
-         SET session_start_at = $2,
-             opening_range_end_at = $3,
-             signal_window_end_at = $4,
-             state = CASE
-               WHEN state IN ('SESSION_COMPLETED', 'SESSION_EXPIRED') THEN 'OPENING_RANGE_LOCKED'
-               ELSE state
-             END
-         WHERE id = $1
-         RETURNING *`,
-        [current.id, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt]
-      );
-      return refreshAutoSessionState({ ...updated.rows[0], signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
-    }
     if (!["TRADE_PLANNED", "TRADE_ACTIVE", "TRADE_CLOSED", "SESSION_COMPLETED", "NO_TRADE"].includes(current.state)) {
       const updated = await query(
         `UPDATE trading_sessions
@@ -1785,25 +1573,6 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     }
     return refreshAutoSessionState({ ...current, signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
   }
-  if (moduleCode === "strategy_lab_3") {
-    const previous = await query(
-      `SELECT ts.*, sv.configuration_json
-       FROM trading_sessions ts
-       JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
-       WHERE ts.symbol = $1
-         AND ts.tenant_id = $2
-         AND ts.module_code = $3
-         AND ts.session_date < $4
-         AND ts.state <> 'SESSION_COMPLETED'
-       ORDER BY ts.session_date DESC
-       LIMIT 1`,
-      [symbol, activeTenantId, moduleCode, sessionDate]
-    );
-    if (previous.rows[0]) {
-      await runModule3CloseoutAfterSession(previous.rows[0]);
-      await query("UPDATE trading_sessions SET state = 'SESSION_COMPLETED' WHERE id = $1", [previous.rows[0].id]);
-    }
-  }
   const created = await query(
     `INSERT INTO trading_sessions (
       tenant_id, module_code, user_id, symbol, strategy_version_id, session_date, session_preset, state,
@@ -1814,26 +1583,6 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
     [symbol, version.id, sessionDate, times.sessionStartAt, times.openingRangeEndAt, times.signalWindowEndAt, moduleCode, activeTenantId, sessionPreset]
   );
   return refreshAutoSessionState({ ...created.rows[0], signal_timeframe_minutes: moduleTimeframeMinutes(moduleCode, settings) });
-}
-
-export function module3ContinuousStrategyWindow(reference = new Date(), sessionStart = "09:30") {
-  let sessionDate = newYorkDate(reference);
-  let startAt = sessionTimesForDate(sessionDate, sessionStart, 0, sessionStart).sessionStartAt;
-  if (reference.getTime() < new Date(startAt).getTime() || !isEligibleStrategyDate(sessionDate)) {
-    do {
-      sessionDate = shiftIsoDate(sessionDate, -1);
-    } while (!isEligibleStrategyDate(sessionDate));
-    startAt = sessionTimesForDate(sessionDate, sessionStart, 0, sessionStart).sessionStartAt;
-  }
-  let nextDate = shiftIsoDate(sessionDate, 1);
-  while (!isEligibleStrategyDate(nextDate)) nextDate = shiftIsoDate(nextDate, 1);
-  const nextStart = sessionTimesForDate(nextDate, sessionStart, 0, sessionStart).sessionStartAt;
-  return {
-    sessionDate,
-    startAt,
-    endAt: new Date(new Date(nextStart).getTime() - 1).toISOString(),
-    nextSessionStartAt: nextStart
-  };
 }
 
 function isEligibleStrategyDate(sessionDate: string) {
@@ -2726,422 +2475,7 @@ async function processModuleLiveSession(moduleCode: string, symbol: string, time
   if (moduleCode === "high_probability_strategy_2") {
     return processLiquiditySweepSession(symbol, timeframe, persistedOnly, tenantId);
   }
-  if (moduleCode === "strategy_lab_3") {
-    return processVwapOpeningDriveSession(symbol, timeframe, persistedOnly, tenantId);
-  }
   return processLiveSession(symbol, timeframe, persistedOnly, tenantId);
-}
-
-async function processVwapOpeningDriveSession(
-  symbol: string,
-  timeframe: number,
-  liveCandles: LiveCandle[] = [],
-  tenantId?: string | null,
-  currentOverride?: any
-) {
-  const activeTenantId = tenantId ?? (await defaultTenantId());
-  const moduleCode = "strategy_lab_3";
-  const settings = await getRuntimeSettings(activeTenantId);
-  const sessionResult = await query(
-    `SELECT ts.*, sv.configuration_json
-     FROM trading_sessions ts
-     JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
-     WHERE ts.symbol = $1
-       AND ts.tenant_id = $2
-       AND ts.module_code = $3
-       AND ts.state NOT IN ('SESSION_COMPLETED', 'TRADE_CLOSED')
-     ORDER BY ts.created_at DESC
-     LIMIT 1`,
-    [symbol, activeTenantId, moduleCode]
-  );
-  const session = sessionResult.rows[0] as any;
-  if (!session) return { sessionFound: false };
-  const now = currentOverride?.timestamp_utc
-    ? new Date(new Date(currentOverride.timestamp_utc).getTime() + timeframe * 60_000)
-    : new Date();
-  const signalEnd = new Date(session.signal_window_end_at);
-  if (now > signalEnd && !["SESSION_EXPIRED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) {
-    await query("UPDATE trading_sessions SET state = 'SESSION_EXPIRED' WHERE id = $1", [session.id]);
-    await notifyTenantOnce(session.tenant_id, `module3-session-expired-${session.id}`, "MODULE3_SESSION_EXPIRED", "Module 3 strategy cycle complete", "The next eligible New York open will start a fresh VWAP opening-drive cycle.");
-    await runModule3CloseoutAfterSession({ ...session, state: "SESSION_EXPIRED" });
-    return { sessionFound: true, state: "SESSION_EXPIRED" };
-  }
-  if (now < new Date(session.session_start_at) || now > signalEnd) return { sessionFound: true, evaluation: "OUTSIDE_MODULE3_STRATEGY_CYCLE" };
-
-  const completedAtOrBefore = new Date(now.getTime() - timeframe * 60_000).toISOString();
-  const current = currentOverride ??
-    latestCachedCandle(liveCandles, session.session_start_at, session.signal_window_end_at, completedAtOrBefore) ??
-    ((await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread
-       FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2
-         AND timestamp_utc >= $3 AND timestamp_utc <= $4 AND timestamp_utc <= $5
-       ORDER BY timestamp_utc DESC
-       LIMIT 1`,
-      [symbol, timeframe, session.session_start_at, session.signal_window_end_at, completedAtOrBefore]
-    )).rows[0] as any);
-  if (!current) return { sessionFound: true, evaluation: "WAITING_FOR_MODULE3_CANDLE" };
-  const duplicate = await query("SELECT id FROM setup_candidates WHERE session_id = $1 AND module_code = $2 AND detected_at = $3 LIMIT 1", [session.id, moduleCode, current.timestamp_utc]);
-  if (duplicate.rows[0]) {
-    const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
-    return { sessionFound: true, evaluation: "ALREADY_EVALUATED", tradeLifecycle };
-  }
-  const startLookback = new Date(new Date(session.session_start_at).getTime() - 60 * 60_000).toISOString();
-  const setupRows = cachedCandlesBetween(liveCandles, startLookback, current.timestamp_utc);
-  const storedRows = await query(
-    `SELECT timestamp_utc, open, high, low, close, volume, spread
-     FROM candles
-     WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc <= $4
-     ORDER BY timestamp_utc ASC
-     LIMIT 300`,
-    [symbol, timeframe, startLookback, current.timestamp_utc]
-  );
-  const fallbackRows = uniqueCandleRows([...storedRows.rows, ...setupRows, current]);
-  const biasRows = (
-    await query(
-      `SELECT timestamp_utc, open, high, low, close, volume, spread
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = 15
-         AND timestamp_utc <= $2
-       ORDER BY timestamp_utc DESC
-       LIMIT 200`,
-      [symbol, new Date(new Date(current.timestamp_utc).getTime() - 15 * 60_000).toISOString()]
-    )
-  ).rows.reverse();
-  const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "vwapOpeningDrive.strategy", session.configuration_json);
-  const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
-  const decision = evaluateVwapOpeningDrive({
-    now: current.timestamp_utc,
-    symbol,
-    candles: fallbackRows.map(toCandle),
-    biasCandles: biasRows.map(toCandle),
-    sessionStartAt: session.session_start_at,
-    sessionEndAt: session.signal_window_end_at,
-    spread: current.spread == null ? null : Number(current.spread),
-    newsStatus: "CLEAR",
-    tradesTakenThisSession: tradesTaken,
-    configuration
-  });
-  const saved = await saveModuleDecision(session, moduleCode, decision, current);
-  const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
-  let paperTrade = null;
-  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
-  const brainApproved = brainApprovesPaperEntry(brainDecision, saved?.setup);
-  await auditBrainPaperEntryGate(session.tenant_id, moduleCode, saved?.setup, productionReady, brainDecision, brainApproved);
-  if (productionReady && brainApproved) {
-    await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
-    const alert = entryAlertDetails(moduleCode, saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    paperTrade = settings.paperTradingEnabled
-      ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current, moduleCode)
-      : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
-    if (paperTrade?.trade || !settings.paperTradingEnabled) {
-      await notifyTenantOnce(
-        session.tenant_id,
-        `module3-setup-ready-${saved.setup.id}`,
-        "MODULE3_SETUP_READY",
-        `${alert.title} signal ready`,
-        `${alert.body} | ${saved.setup.final_reason ?? "Valid Module 3 checklist matched."}`,
-        "HIGH",
-        alert.data,
-        "validEntries"
-      );
-    }
-  }
-  const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId, moduleCode);
-  return { sessionFound: true, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, evaluation: decision.scenario, paperTrade, tradeLifecycle, brainDecision };
-}
-
-export function evaluateVwapOpeningDrive(input: {
-  now: string;
-  symbol: string;
-  candles: Candle[];
-  biasCandles?: Candle[];
-  sessionStartAt: string;
-  sessionEndAt: string;
-  spread?: number | null;
-  newsStatus?: string;
-  tradesTakenThisSession?: number;
-  configuration?: any;
-}) {
-  const config = {
-    openingDriveMinutes: 30,
-    minimumDriveRangeATR: 1,
-    minimumDriveBodyPercent: 0.55,
-    minimumVwapDistanceATR: 0.05,
-    pullbackMaxBars: 12,
-    maximumBarsAfterPullbackTouch: 6,
-    pullbackZoneAtr: 0.35,
-    confirmationBodyPercent: 0.45,
-    emaPeriod: 20,
-    htfEmaPeriod: 50,
-    minimumRiskReward: 2,
-    maximumStopATR: 1.35,
-    stopBufferATR: 0.12,
-    maximumSpread: 0.8,
-    enableNewsFilter: true,
-    minimumSignalScore: 80,
-    maximumTradesPerSession: 3,
-    ...(input.configuration ?? {})
-  };
-  const candles = [...input.candles].filter((candle) => Number.isFinite(candle.close)).sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
-  const current = candles.at(-1);
-  const evaluations: any[] = [];
-  const flags: Record<string, unknown> = {};
-  const push = (ruleCode: string, name: string, passed: boolean, blocking: boolean, actual: unknown, required: unknown, explanation: string) => evaluations.push({
-    ruleCode,
-    name,
-    ...moduleRuleLayer("strategy_lab_3", ruleCode),
-    status: passed ? "PASS" : "FAIL",
-    blocking,
-    source: "AUTOMATIC",
-    actualValue: actual == null ? null : String(actual),
-    requiredValue: required == null ? null : String(required),
-    explanation
-  });
-  if (!current || candles.length < 25) {
-    return module3Decision("WAITING_FOR_DATA", null, "WAIT", "Waiting for enough 5M candles to evaluate VWAP opening-drive pullback.", evaluations, flags);
-  }
-  const nowTime = new Date(current.timestampUtc).getTime();
-  const sessionStartTime = new Date(input.sessionStartAt).getTime();
-  const sessionEndTime = new Date(input.sessionEndAt).getTime();
-  const timestampTime = (candle: Candle) => new Date(candle.timestampUtc).getTime();
-  const sessionActive = nowTime >= sessionStartTime && nowTime <= sessionEndTime;
-  const tradeLimitOk = Number(input.tradesTakenThisSession ?? 0) < Number(config.maximumTradesPerSession ?? 1);
-  const spreadOk = input.spread == null || input.spread <= config.maximumSpread;
-  const newsOk = !config.enableNewsFilter || !String(input.newsStatus ?? "CLEAR").includes("BLOCKED");
-  push("STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", sessionActive, true, newYorkClock(current.timestampUtc), "Most recent NY open until next eligible NY open", "Module 3 keeps the latest New York opening drive and anchored VWAP active through the weekday strategy cycle.");
-  push("DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, input.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, "Automatic Module 3 paper trades are limited per session so learning can capture multiple valid setups without unlimited stacking.");
-  if (!sessionActive || !tradeLimitOk) return module3Decision("HARD_RULE_BLOCK", null, "BLOCKED", "Module 3 hard rules failed before opening-drive evaluation.", evaluations, flags);
-
-  const atr = averageTrueRange(candles.slice(-21));
-  const driveEndTime = sessionStartTime + Number(config.openingDriveMinutes) * 60_000;
-  const driveEnd = new Date(driveEndTime).toISOString();
-  const driveCandles = candles.filter((candle) => {
-    const time = timestampTime(candle);
-    return time >= sessionStartTime && time < driveEndTime;
-  });
-  const drive = driveCandles.length > 0 ? {
-    start: driveCandles[0],
-    end: driveCandles.at(-1)!,
-    high: Math.max(...driveCandles.map((candle) => candle.high)),
-    low: Math.min(...driveCandles.map((candle) => candle.low)),
-    open: driveCandles[0].open,
-    close: driveCandles.at(-1)!.close
-  } : null;
-  const driveRange = drive ? drive.high - drive.low : 0;
-  const driveBody = drive ? Math.abs(drive.close - drive.open) : 0;
-  const driveDirection = drive && drive.close > drive.open ? "LONG" : drive && drive.close < drive.open ? "SHORT" : null;
-  const driveStrong = Boolean(drive && atr > 0 && driveRange / atr >= config.minimumDriveRangeATR && driveBody / Math.max(driveRange, 0.00001) >= config.minimumDriveBodyPercent);
-  push("OPENING_DRIVE_COMPLETE", "Opening drive complete", Boolean(drive && nowTime >= driveEndTime), true, driveCandles.length, `after ${config.openingDriveMinutes} minutes`, "The initial NY impulse window must complete before pullback entries.");
-  const driveRangeAtr = atr > 0 ? driveRange / atr : null;
-  const driveBodyRatio = drive ? driveBody / Math.max(driveRange, 0.00001) : null;
-  const driveStrengthActual = driveRangeAtr == null || driveBodyRatio == null
-    ? null
-    : `${driveRangeAtr.toFixed(2)} ATR / ${Math.round(driveBodyRatio * 100)}% body`;
-  push("OPENING_DRIVE_STRONG", "Opening drive strength", driveStrong, true, driveStrengthActual, `>= ${config.minimumDriveRangeATR} ATR and >= ${Math.round(config.minimumDriveBodyPercent * 100)}% body`, "The opening drive must show real range expansion and body commitment.");
-  if (!drive || nowTime < driveEndTime) return module3Decision("WAITING_FOR_OPENING_DRIVE", null, "WAIT", "Waiting for the NY opening drive to complete.", evaluations, { ...flags, drive });
-  if (!driveStrong || !driveDirection) return module3Decision("NO_STRONG_OPENING_DRIVE", null, "NO TRADE", "No strong opening drive is available for Module 3.", evaluations, { ...flags, drive });
-
-  const sessionRows = candles.filter((candle) => {
-    const time = timestampTime(candle);
-    return time >= sessionStartTime && time <= nowTime;
-  });
-  const vwap = volumeWeightedAverage(sessionRows);
-  const volumeCoverage = sessionRows.length > 0 ? sessionRows.filter((candle) => Number(candle.volume) > 0).length / sessionRows.length : 0;
-  const vwapDataQuality = volumeCoverage >= 0.8;
-  const vwapMode = vwapDataQuality ? "VOLUME_WEIGHTED" : "TYPICAL_PRICE_PROXY";
-  const ema = simpleEma(candles.map((candle) => candle.close), Number(config.emaPeriod));
-  const direction = driveDirection;
-  const htfBias = detectModule3HtfBias(input.biasCandles ?? [], Number(config.htfEmaPeriod));
-  const htfAligned = htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH");
-  const vwapAligned = direction === "LONG" ? current.close > vwap + atr * config.minimumVwapDistanceATR : current.close < vwap - atr * config.minimumVwapDistanceATR;
-  const trendAligned = direction === "LONG" ? current.close >= ema : current.close <= ema;
-  const pullbackRows = candles.filter((candle) => timestampTime(candle) >= driveEndTime);
-  const zoneLow = direction === "LONG" ? Math.min(vwap, ema) - atr * config.pullbackZoneAtr : Math.min(vwap, ema);
-  const zoneHigh = direction === "LONG" ? Math.max(vwap, ema) : Math.max(vwap, ema) + atr * config.pullbackZoneAtr;
-  const pullbackZoneReady = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
-  const pullbackObservations = pullbackRows.map((candle, index) => {
-    const history = candles.filter((row) => row.timestampUtc <= candle.timestampUtc);
-    const sessionHistory = history.filter((row) => timestampTime(row) >= sessionStartTime);
-    const vwapAtCandle = volumeWeightedAverage(sessionHistory);
-    const emaAtCandle = simpleEma(history.map((row) => row.close), Number(config.emaPeriod));
-    const low = direction === "LONG" ? Math.min(vwapAtCandle, emaAtCandle) - atr * config.pullbackZoneAtr : Math.min(vwapAtCandle, emaAtCandle);
-    const high = direction === "LONG" ? Math.max(vwapAtCandle, emaAtCandle) : Math.max(vwapAtCandle, emaAtCandle) + atr * config.pullbackZoneAtr;
-    return { index, candle, zone: { low, high, midpoint: (low + high) / 2 }, touched: candle.low <= high && candle.high >= low };
-  });
-  const latestPullbackTouch = [...pullbackObservations].reverse().find((row) => row.touched) ?? null;
-  const barsAfterPullbackTouch = latestPullbackTouch ? pullbackRows.length - 1 - latestPullbackTouch.index : null;
-  const pullbackTouched = latestPullbackTouch != null && barsAfterPullbackTouch != null && barsAfterPullbackTouch <= Number(config.maximumBarsAfterPullbackTouch);
-  const confirmation = confirmsModule3(current, direction, Number(config.confirmationBodyPercent), latestPullbackTouch?.zone);
-  push("VWAP_ALIGNMENT", "VWAP alignment", vwapAligned, true, Number(current.close.toFixed(2)), direction === "LONG" ? `> ${vwap.toFixed(2)}` : `< ${vwap.toFixed(2)}`, "Price must be on the correct side of VWAP after the drive.");
-  push("VWAP_DATA_QUALITY", "VWAP volume coverage", vwapDataQuality, false, `${Math.round(volumeCoverage * 100)}% / ${vwapMode}`, ">= 80% candles with volume", vwapDataQuality ? "Session VWAP uses reported candle volume." : "The provider did not supply enough volume; the line is a typical-price proxy and cannot receive a FULL grade.");
-  push("EMA_ALIGNMENT", "20 EMA alignment", trendAligned, false, Number(current.close.toFixed(2)), direction === "LONG" ? `>= ${ema.toFixed(2)}` : `<= ${ema.toFixed(2)}`, "EMA alignment confirms continuation context.");
-  push("HTF_15M_BIAS", "Completed 15M trend bias", htfAligned, false, htfBias, direction === "LONG" ? "BULLISH" : "BEARISH", "Completed 15M structure and EMA slope must align for a full-quality setup; mandatory-tier paper observation can still proceed without it.");
-  push("PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", pullbackZoneReady, true, `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, "valid VWAP/EMA zone", "A valid VWAP/EMA value zone must exist before pullback entry.");
-  push("PULLBACK_ZONE_TOUCHED", "Pullback zone touched", pullbackTouched, true, latestPullbackTouch ? `${newYorkClock(latestPullbackTouch.candle.timestampUtc)} · ${barsAfterPullbackTouch} bars ago` : `${zoneLow.toFixed(2)}-${zoneHigh.toFixed(2)}`, `touch within ${config.maximumBarsAfterPullbackTouch} bars`, "Price must pull back into the VWAP/EMA value zone and confirm before the touch becomes stale.");
-  push("CONFIRMATION_CANDLE", "Confirmation candle", confirmation, true, current.close > current.open ? "BULLISH" : current.close < current.open ? "BEARISH" : "DOJI", direction, "A completed candle must confirm continuation away from the pullback zone.");
-  const entry = current.close;
-  const touchCandle = latestPullbackTouch?.candle ?? current;
-  const touchZone = latestPullbackTouch?.zone ?? { low: zoneLow, high: zoneHigh };
-  const stop = direction === "LONG" ? Math.min(touchZone.low, touchCandle.low) - atr * config.stopBufferATR : Math.max(touchZone.high, touchCandle.high) + atr * config.stopBufferATR;
-  const target = direction === "LONG" ? entry + Math.abs(entry - stop) * config.minimumRiskReward : entry - Math.abs(entry - stop) * config.minimumRiskReward;
-  const rr = Math.abs(target - entry) / Math.max(0.00001, Math.abs(entry - stop));
-  const stopAtr = Math.abs(entry - stop) / Math.max(atr, 0.00001);
-  const rrOk = rr >= config.minimumRiskReward;
-  const stopOk = stopAtr <= config.maximumStopATR;
-  push("QUALITY_SPREAD", "Spread filter", spreadOk, true, input.spread ?? "unknown", `<= ${config.maximumSpread}`, "Spread must be acceptable for XAUUSD paper entry.");
-  push("QUALITY_NEWS", "No high-impact news", newsOk, true, input.newsStatus ?? "CLEAR", "CLEAR", "High-impact news blocks automatic Module 3 entries.");
-  push("QUALITY_RR", "Minimum RR 2:1", rrOk, true, Number(rr.toFixed(2)), `>= ${config.minimumRiskReward}`, "Reward-to-risk must meet the configured minimum.");
-  push("QUALITY_STOP_SIZE", "Maximum stop size", stopOk, true, Number(stopAtr.toFixed(2)), `<= ${config.maximumStopATR} ATR`, "Stop distance must not be too large after the pullback.");
-  const confirmationCount = [vwapAligned, vwapDataQuality, trendAligned, htfAligned, pullbackTouched, confirmation, spreadOk, newsOk, rrOk, stopOk].filter(Boolean).length;
-  const score = Math.min(100, Math.round(35 + (driveStrong ? 15 : 0) + confirmationCount * 7));
-  const mandatoryEntryPassed = module3MandatoryEntryPassed(evaluations);
-  const scoreOk = score >= config.minimumSignalScore;
-  push("SIGNAL_SCORE", "Minimum signal score", scoreOk, true, score, `>= ${config.minimumSignalScore}`, "Module 3 requires a high-quality opening-drive pullback score.");
-  const blockingEvaluations = evaluations.filter((row) => row.blocking);
-  const fullChecklistPassed = blockingEvaluations.length > 0 && blockingEvaluations.every((row) => row.status === "PASS") && htfAligned && vwapDataQuality;
-  flags.drive = drive;
-  flags.vwap = vwap;
-  flags.vwapMode = vwapMode;
-  flags.vwapVolumeCoverage = volumeCoverage;
-  flags.ema = ema;
-  flags.htfBias = htfBias;
-  flags.htfAligned = htfAligned;
-  flags.entryZone = { low: touchZone.low, high: touchZone.high, midpoint: (touchZone.low + touchZone.high) / 2, kind: "VWAP_PULLBACK_ZONE" };
-  flags.pullbackTouch = latestPullbackTouch ? { index: latestPullbackTouch.index, candle: latestPullbackTouch.candle, zone: latestPullbackTouch.zone, barsAgo: barsAfterPullbackTouch } : null;
-  flags.riskReward = rr;
-  flags.confidence = score;
-  flags.tradeGrade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
-  flags.mandatoryChecklistMatched = mandatoryEntryPassed;
-  flags.fullChecklistMatched = fullChecklistPassed && scoreOk;
-  flags.setupTier = fullChecklistPassed && scoreOk ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
-  flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "WAITING_FOR_PULLBACK_CONFIRMATION";
-  flags.checklistSummary = checklistSummary("strategy_lab_3", evaluations);
-  if (!mandatoryEntryPassed) {
-    return module3Decision("VWAP_PULLBACK_NOT_READY", direction, "WAIT", "Waiting for VWAP pullback checklist to fully match.", evaluations, flags, score);
-  }
-  if (!fullChecklistPassed || !scoreOk) {
-    return {
-      scenario: direction === "LONG" ? "MANDATORY_VWAP_OPENING_DRIVE_PULLBACK_BUY" : "MANDATORY_VWAP_OPENING_DRIVE_PULLBACK_SELL",
-      direction,
-      status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
-      state: "SIGNAL_ACTIVE",
-      entryPrice: entry,
-      stopPrice: stop,
-      targetPrice: target,
-      finalReason: `Mandatory Module 3 VWAP opening-drive checklist passed. Small paper setup created while full quality filters continue. Confidence ${score}%.`,
-      evaluations,
-      scenarioFlags: flags,
-      favorabilityScore: score,
-      favorabilityGrade: score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
-      favorabilityReasons: ["NY opening drive confirmed", "VWAP continuation aligned", "Pullback zone respected", `Risk-reward ${rr.toFixed(2)}R`]
-    };
-  }
-  return {
-    scenario: direction === "LONG" ? "NY_VWAP_OPENING_DRIVE_PULLBACK_BUY" : "NY_VWAP_OPENING_DRIVE_PULLBACK_SELL",
-    direction,
-    status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
-    state: "SIGNAL_ACTIVE",
-    entryPrice: entry,
-    stopPrice: stop,
-    targetPrice: target,
-    finalReason: `Module 3 ${direction === "LONG" ? "BUY" : "SELL"} passed opening drive, VWAP alignment, pullback, confirmation candle, and ${rr.toFixed(2)}R plan.`,
-    evaluations,
-    scenarioFlags: flags,
-    favorabilityScore: score,
-    favorabilityGrade: score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
-    favorabilityReasons: ["NY opening drive confirmed", "VWAP continuation aligned", "Pullback zone respected", `Risk-reward ${rr.toFixed(2)}R`]
-  };
-}
-
-function module3MandatoryEntryPassed(evaluations: any[]) {
-  const required = new Set([
-    "STRATEGY_CYCLE_ACTIVE",
-    "DAILY_TRADE_LIMIT",
-    "OPENING_DRIVE_COMPLETE",
-    "OPENING_DRIVE_STRONG",
-    "VWAP_ALIGNMENT",
-    "PULLBACK_ZONE_READY",
-    "PULLBACK_ZONE_TOUCHED",
-    "CONFIRMATION_CANDLE"
-  ]);
-  return [...required].every((ruleCode) =>
-    evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
-  );
-}
-
-function module3Decision(scenario: string, direction: string | null, status: string, reason: string, evaluations: any[], flags: Record<string, unknown>, score = 0) {
-  return {
-    scenario,
-    direction,
-    status,
-    state: status === "BLOCKED" || status === "NO TRADE" ? "INVALIDATED" : "WAITING_FOR_PULLBACK_CONFIRMATION",
-    finalReason: reason,
-    evaluations,
-    scenarioFlags: { ...flags, state: status },
-    favorabilityScore: score,
-    favorabilityGrade: score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C",
-    favorabilityReasons: [reason]
-  };
-}
-
-function averageTrueRange(candles: Candle[]) {
-  if (candles.length < 2) return Math.max(0.01, (candles.at(-1)?.high ?? 0) - (candles.at(-1)?.low ?? 0));
-  const ranges = candles.slice(1).map((candle, index) => {
-    const previous = candles[index];
-    return Math.max(candle.high - candle.low, Math.abs(candle.high - previous.close), Math.abs(candle.low - previous.close));
-  });
-  return ranges.reduce((sum, value) => sum + value, 0) / ranges.length;
-}
-
-function detectModule3HtfBias(candles: Candle[], emaPeriod: number) {
-  const completed = [...candles]
-    .filter((candle) => [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite))
-    .sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
-  if (completed.length < 8) return "NEUTRAL";
-  const closes = completed.map((candle) => candle.close);
-  const period = Math.min(Math.max(8, emaPeriod), closes.length);
-  const emaNow = simpleEma(closes, period);
-  const emaBefore = simpleEma(closes.slice(0, -2), Math.min(period, Math.max(2, closes.length - 2)));
-  const latest = completed.at(-1)!;
-  const recent = completed.slice(-6);
-  const higherHigh = Math.max(...recent.slice(-3).map((candle) => candle.high)) > Math.max(...recent.slice(0, 3).map((candle) => candle.high));
-  const higherLow = Math.min(...recent.slice(-3).map((candle) => candle.low)) > Math.min(...recent.slice(0, 3).map((candle) => candle.low));
-  const lowerHigh = Math.max(...recent.slice(-3).map((candle) => candle.high)) < Math.max(...recent.slice(0, 3).map((candle) => candle.high));
-  const lowerLow = Math.min(...recent.slice(-3).map((candle) => candle.low)) < Math.min(...recent.slice(0, 3).map((candle) => candle.low));
-  if (latest.close >= emaNow && emaNow >= emaBefore && (higherHigh || higherLow)) return "BULLISH";
-  if (latest.close <= emaNow && emaNow <= emaBefore && (lowerHigh || lowerLow)) return "BEARISH";
-  return "NEUTRAL";
-}
-
-function volumeWeightedAverage(candles: Candle[]) {
-  const totals = candles.reduce((acc, candle) => {
-    const volume = Number(candle.volume ?? 1) || 1;
-    const typical = (candle.high + candle.low + candle.close) / 3;
-    return { pv: acc.pv + typical * volume, volume: acc.volume + volume };
-  }, { pv: 0, volume: 0 });
-  return totals.volume > 0 ? totals.pv / totals.volume : candles.at(-1)?.close ?? 0;
-}
-
-function simpleEma(values: number[], period: number) {
-  const rows = values.slice(-Math.max(2, period));
-  const multiplier = 2 / (rows.length + 1);
-  return rows.reduce((ema, value, index) => index === 0 ? value : value * multiplier + ema * (1 - multiplier), rows[0] ?? 0);
-}
-
-function confirmsModule3(candle: Candle, direction: string, minimumBodyPercent: number, zone?: { low: number; high: number; midpoint: number }) {
-  const range = Math.max(0.00001, candle.high - candle.low);
-  const body = Math.abs(candle.close - candle.open);
-  const bodyOk = body / range >= minimumBodyPercent;
-  const closeLocation = (candle.close - candle.low) / range;
-  return direction === "LONG"
-    ? candle.close > candle.open && bodyOk && closeLocation >= 0.65 && (!zone || candle.close > zone.midpoint)
-    : candle.close < candle.open && bodyOk && closeLocation <= 0.35 && (!zone || candle.close < zone.midpoint);
-}
-
-function newYorkClock(timestampUtc: string) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(timestampUtc));
 }
 
 async function processLiquiditySweepSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
@@ -3611,78 +2945,6 @@ async function buildModule2DataReadiness(tenantId: string | null, symbol: string
   };
 }
 
-async function buildModule3DataReadiness(tenantId: string | null, symbol: string, cacheDays = LIVE_CANDLE_CACHE_DAYS) {
-  const moduleCode = "strategy_lab_3";
-  const timeframe = 5;
-  const cached = getCachedCandles(symbol, timeframe);
-  const db = await query(
-    `SELECT count(*)::int AS count, min(timestamp_utc) AS first, max(timestamp_utc) AS latest
-     FROM candles
-     WHERE symbol = $1 AND timeframe_minutes = $2`,
-    [symbol, timeframe]
-  );
-  const dbRow = db.rows[0] ?? {};
-  const sessionDays = recentNewYorkSessionDates(Math.max(cacheDays, 7));
-  const coverage = [];
-  for (const sessionDate of sessionDays) {
-    const times = sessionTimesForDate(sessionDate, "09:30", 0, "16:00");
-    const cacheCount = cached.filter((candle) => candle.timestampUtc >= times.sessionStartAt && candle.timestampUtc <= times.signalWindowEndAt).length;
-    const stored = await query(
-      `SELECT count(*)::int AS count
-       FROM candles
-       WHERE symbol = $1 AND timeframe_minutes = $2 AND timestamp_utc >= $3 AND timestamp_utc <= $4`,
-      [symbol, timeframe, times.sessionStartAt, times.signalWindowEndAt]
-    );
-    const postgresCount = Number(stored.rows[0]?.count ?? 0);
-    const totalAvailable = Math.max(cacheCount, postgresCount);
-    coverage.push({
-      sessionDate,
-      sessionStartAt: times.sessionStartAt,
-      sessionEndAt: times.signalWindowEndAt,
-      cacheCount,
-      postgresCount,
-      totalAvailable,
-      status: totalAvailable >= 25 ? "READY" : totalAvailable > 0 ? "PARTIAL" : "MISSING"
-    });
-  }
-  const availableCandles = Math.max(cached.length, Number(dbRow.count ?? 0));
-  const availableSessions = coverage.filter((row) => row.status === "READY").length;
-  const latestBacktest = await query(
-    `SELECT id, status, summary, completed_at
-     FROM backtest_runs
-     WHERE tenant_id = $1 AND module_code = $2
-     ORDER BY started_at DESC
-     LIMIT 1`,
-    [tenantId, moduleCode]
-  );
-  return {
-    moduleCode,
-    symbol,
-    timeframeMinutes: timeframe,
-    generatedAt: new Date().toISOString(),
-    readiness: module3DataReadinessGrade(availableCandles, availableSessions),
-    apiEstimate: {
-      startupBackfillCandles: TWELVE_DATA_STARTUP_BACKFILL_COUNT,
-      estimatedCreditsPerBackfill: 1,
-      note: "One Twelve Data time_series call requests up to 100 recent 5-minute candles shared by all active XAUUSD modules."
-    },
-    cache: {
-      candleCount: cached.length,
-      cacheDays,
-      firstCandleAt: cached[0]?.timestampUtc ?? null,
-      latestCandleAt: cached.at(-1)?.timestampUtc ?? null
-    },
-    postgres: {
-      candleCount: Number(dbRow.count ?? 0),
-      firstCandleAt: dbRow.first ?? null,
-      latestCandleAt: dbRow.latest ?? null
-    },
-    nyCoverage: coverage,
-    missingSessions: coverage.filter((row) => row.status !== "READY"),
-    latestBacktest: latestBacktest.rows[0] ?? null
-  };
-}
-
 async function buildOrbDataReadiness(tenantId: string | null, symbol: string, cacheDays: number, settings: RuntimeSettings) {
   const timeframe = settings.timeframeMinutes;
   const cached = getCachedCandles(symbol, timeframe);
@@ -3784,19 +3046,6 @@ function module2DataReadinessGrade(candles: number, sessions: number) {
     return { grade: "QA_READY", label: "Enough for QA", canBacktest: true, reason: "Enough candles to test the backtest path and inspect setup behavior." };
   }
   return { grade: "NOT_ENOUGH_DATA", label: "Not enough data", canBacktest: false, reason: "Collect at least one NY session of 5-minute candles before trusting Module 2 backtests." };
-}
-
-function module3DataReadinessGrade(candles: number, sessions: number) {
-  if (candles >= 1500 && sessions >= 10) {
-    return { grade: "CONFIDENCE_READY", label: "Enough for confidence report", canBacktest: true, reason: "Enough 5-minute candle coverage for a stronger Module 3 confidence read." };
-  }
-  if (candles >= 500 && sessions >= 4) {
-    return { grade: "RESEARCH_READY", label: "Enough for research", canBacktest: true, reason: "Enough candles for early VWAP opening-drive backtesting, but not enough for strong statistical confidence." };
-  }
-  if (candles >= 100 && sessions >= 1) {
-    return { grade: "QA_READY", label: "Enough for QA", canBacktest: true, reason: "Enough candles to test Module 3 backtest and setup behavior." };
-  }
-  return { grade: "NOT_ENOUGH_DATA", label: "Not enough data", canBacktest: false, reason: "Collect at least one NY session of 5-minute candles before trusting Module 3 backtests." };
 }
 
 async function moduleSessionForReport(tenantId: string | null, moduleCode: string, sessionDate?: string) {
@@ -4307,7 +3556,7 @@ function checkReadinessValue(readiness: any, code: string) {
 }
 
 function isProductionReadySetup(setup: any, decision: any, risk?: any) {
-  if (!setup || !["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"].includes(setup.module_code)) return false;
+  if (!setup || !["orb_max_options", "high_probability_strategy_2"].includes(setup.module_code)) return false;
   if (!["LONG SETUP READY", "SHORT SETUP READY"].includes(String(setup.status))) return false;
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
@@ -4334,9 +3583,6 @@ function requiredEntryRules(moduleCode: string) {
   if (moduleCode === "orb_max_options") {
     return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"];
   }
-  if (moduleCode === "strategy_lab_3") {
-    return ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"];
-  }
   return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
 }
 
@@ -4346,9 +3592,6 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
   const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
   const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
-  const module3Mandatory = new Set(requiredEntryRules("strategy_lab_3"));
-  const module3Confirmation = new Set(["EMA_ALIGNMENT", "HTF_15M_BIAS", "VWAP_DATA_QUALITY"]);
-  const module3Quality = new Set(["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
   if (moduleCode === "orb_max_options") {
@@ -4360,11 +3603,6 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
     if (mandatory.includes(ruleCode) || breakoutRule) return { ruleLayer: "MANDATORY", requiredForEntry: true };
     if (module1Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
     if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
-  }
-  if (moduleCode === "strategy_lab_3") {
-    if (module3Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
-    if (module3Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
-    if (module3Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
   }
   if (module2Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
@@ -5240,7 +4478,7 @@ async function activeAutomationModules() {
        AND COALESCE(s.status, 'ACTIVE') IN ('TRIAL', 'ACTIVE')
        AND COALESCE(s.automation_included, true) = true
        AND COALESCE(tas.enabled, true) = true
-       AND m.code IN ('orb_max_options', 'high_probability_strategy_2', 'strategy_lab_3')
+       AND m.code IN ('orb_max_options', 'high_probability_strategy_2')
      ORDER BY t.created_at, m.sort_order`
   );
   return rows;
@@ -5252,12 +4490,11 @@ function tenantStateKey(tenantId: string, moduleCode: string) {
 
 function moduleDisplayName(moduleCode: string) {
   if (moduleCode === "high_probability_strategy_2") return "Module 2 Liquidity Sweep + BOS";
-  if (moduleCode === "strategy_lab_3") return "Module 3 VWAP Opening Drive";
   return "Module 1 ORB MAX";
 }
 
 function moduleTimeframeMinutes(moduleCode: string, settings: RuntimeSettings) {
-  return moduleCode === "high_probability_strategy_2" || moduleCode === "strategy_lab_3" ? 5 : settings.timeframeMinutes;
+  return moduleCode === "high_probability_strategy_2" ? 5 : settings.timeframeMinutes;
 }
 
 async function activeStrategyVersionForModule(moduleCode: string) {

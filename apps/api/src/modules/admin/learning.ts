@@ -26,18 +26,6 @@ export async function runModule2LearningPython(tenantId: string) {
   return JSON.parse(stdout);
 }
 
-export async function runModule3LearningPython(tenantId: string) {
-  const { stdout } = await execFileAsync(
-    pythonBin,
-    ["-m", "apps.quant.app.learning.module3_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId],
-    {
-      cwd: pythonCwd,
-      timeout: 120_000
-    }
-  );
-  return JSON.parse(stdout);
-}
-
 export async function runGenericModuleLearningPython(tenantId: string, moduleCode: string) {
   const { stdout } = await execFileAsync(
     pythonBin,
@@ -62,9 +50,6 @@ export async function runGenericModuleLearningPython(tenantId: string, moduleCod
 export async function runStrategyModuleLearningPython(tenantId: string, moduleCode: string) {
   if (moduleCode === "high_probability_strategy_2") {
     return runModule2LearningPython(tenantId);
-  }
-  if (moduleCode === "strategy_lab_3") {
-    return runModule3LearningPython(tenantId);
   }
   return runGenericModuleLearningPython(tenantId, moduleCode);
 }

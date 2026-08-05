@@ -2321,6 +2321,95 @@ button:hover,
   border-color: #ff6b6b;
 }
 
+.prediction-card {
+  min-height: 270px;
+}
+
+.prediction-card.buy {
+  border-left-color: #35d895;
+}
+
+.prediction-card-reason {
+  margin: 0;
+  color: #a9b8ae;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.prediction-workspace .signal-detail-hero.buy {
+  border-color: #24583f;
+  border-left-color: #35d895;
+  background: #101a14;
+}
+
+.prediction-workspace .signal-detail-hero.buy h2 {
+  color: #35d895;
+}
+
+.prediction-grid .trade-signal-card-head strong {
+  overflow-wrap: anywhere;
+}
+
+.prediction-reason-stack {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #253027;
+}
+
+.prediction-reason-stack p {
+  margin: 0;
+  color: #c7d1ca;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.prediction-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.prediction-evidence-grid div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #253027;
+  border-radius: 5px;
+  background: #0d120f;
+}
+
+.prediction-evidence-grid span {
+  color: #91a097;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.prediction-evidence-grid strong {
+  overflow-wrap: anywhere;
+  color: #edf4ef;
+  font-size: 13px;
+}
+
+.prediction-missing-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #304138;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.prediction-missing-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 13px 14px 0;
+  font-size: 16px;
+}
+
 .trade-horizon-note {
   display: flex;
   align-items: center;

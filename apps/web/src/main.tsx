@@ -10,7 +10,7 @@ const DEFAULT_SYMBOL = "XAUUSD";
 const DEFAULT_TIMEFRAME_MINUTES = 5;
 const WEB_BRAND_LOGO = "/brand/brand-logo.png";
 const WEB_BRAND_MARK = "/brand/brand-mark.png";
-const STRATEGY_MODULE_CODES = ["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"];
+const STRATEGY_MODULE_CODES = ["orb_max_options", "high_probability_strategy_2"];
 const DEFAULT_PUSH_PREFERENCES = {
   nyPreSession: true,
   validEntries: true,
@@ -22,7 +22,7 @@ const DEFAULT_PUSH_PREFERENCES = {
   systemDiagnostics: false
 };
 
-type ActiveSection = "command" | "live" | "signals" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
+type ActiveSection = "command" | "live" | "predictions" | "signals" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
 type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
@@ -42,6 +42,7 @@ type PanelState = {
   currentTrade?: any;
   paperTrading?: { summary?: any; trades?: any[] };
   tradeSignals?: { summary?: any; signals?: any[] };
+  tradePredictions?: { summary?: any; predictions?: any[] };
   sessionReview?: any;
   weeklyReport?: any[];
   monthlyReport?: any[];
@@ -62,12 +63,6 @@ type PanelState = {
   module2LearningReviews?: any[];
   module2SessionReports?: any[];
   module2Closeouts?: any[];
-  module3JournalTrades?: any[];
-  module3DataReadiness?: any;
-  module3Learning?: any;
-  module3SessionReports?: any[];
-  module3SetupHistory?: any[];
-  module3Rehearsals?: any[];
   strategyConfidence?: any;
   productionReadiness?: any;
   notifications?: any[];
@@ -118,9 +113,6 @@ function App() {
   const [module2DryRun, setModule2DryRun] = useState<any | null>(null);
   const [module2TuningLab, setModule2TuningLab] = useState<any | null>(null);
   const [module2QaSuite, setModule2QaSuite] = useState<any | null>(null);
-  const [selectedModule3TradeId, setSelectedModule3TradeId] = useState<string | null>(null);
-  const [module3TradeDetail, setModule3TradeDetail] = useState<any | null>(null);
-  const [module3QaSuite, setModule3QaSuite] = useState<any | null>(null);
   const [notificationFilters, setNotificationFilters] = useState({ moduleCode: "", priority: "", unreadOnly: false, eventType: "" });
   const activeModuleCodeRef = useRef(activeModuleCode);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
@@ -177,7 +169,6 @@ function App() {
     const notificationQuery = notificationSearchParams(notificationFilters);
     const isModule1 = moduleCode === "orb_max_options";
     const isModule2 = moduleCode === "high_probability_strategy_2";
-    const isModule3 = moduleCode === "strategy_lab_3";
     const needsCommand = activeSection === "command";
     const needsStrategy = activeSection === "orb";
     const needsReports = activeSection === "reports";
@@ -210,18 +201,13 @@ function App() {
       module2LearningReviews: bundle.module2LearningReviews?.length ? bundle.module2LearningReviews : previous.module2LearningReviews ?? [],
       module2SessionReports: bundle.module2SessionReports?.length ? bundle.module2SessionReports : previous.module2SessionReports ?? [],
       module2Closeouts: bundle.module2Closeouts?.length ? bundle.module2Closeouts : previous.module2Closeouts ?? [],
-      module3JournalTrades: bundle.module3JournalTrades?.length ? bundle.module3JournalTrades : previous.module3JournalTrades ?? [],
-      module3DataReadiness: bundle.module3DataReadiness ?? previous.module3DataReadiness,
-      module3Learning: bundle.module3Learning ?? previous.module3Learning,
-      module3SessionReports: bundle.module3SessionReports?.length ? bundle.module3SessionReports : previous.module3SessionReports ?? [],
-      module3SetupHistory: bundle.module3SetupHistory?.length ? bundle.module3SetupHistory : previous.module3SetupHistory ?? [],
-      module3Rehearsals: bundle.module3Rehearsals?.length ? bundle.module3Rehearsals : previous.module3Rehearsals ?? [],
       strategyConfidence: bundle.strategyConfidence ?? previous.strategyConfidence,
       productionReadiness: bundle.productionReadiness ?? previous.productionReadiness,
       notifications: bundle.notifications?.length ? bundle.notifications : previous.notifications ?? [],
       notificationSummary: bundle.notificationSummary?.length ? bundle.notificationSummary : previous.notificationSummary ?? [],
       paperTrading: bundle.paperTrading ?? previous.paperTrading,
       tradeSignals: bundle.tradeSignals ?? previous.tradeSignals,
+      tradePredictions: bundle.tradePredictions ?? previous.tradePredictions,
       settings: bundle.settings?.length ? bundle.settings : previous.settings ?? [],
       orbModuleSettings: bundle.orbModuleSettings?.length ? bundle.orbModuleSettings : previous.orbModuleSettings ?? [],
       activeModuleSettings: bundle.activeModuleSettings?.length ? bundle.activeModuleSettings : previous.activeModuleSettings ?? [],
@@ -321,7 +307,7 @@ function App() {
   const can = (permission: string) => user?.permissions.includes(permission);
   const subscriptionActive = ["TRIAL", "ACTIVE"].includes(String(state.tenantContext?.subscription?.status ?? "ACTIVE"));
   const hasModule = (moduleCode: string) => subscriptionActive && Boolean(state.tenantContext?.modules?.some((module: any) => module.code === moduleCode && module.tenant_module_status === "ENABLED"));
-  const enabledModules = (state.tenantContext?.modules ?? []).filter((module: any) => module.tenant_module_status === "ENABLED");
+  const enabledModules = (state.tenantContext?.modules ?? []).filter((module: any) => module.tenant_module_status === "ENABLED" && STRATEGY_MODULE_CODES.includes(module.code));
   const enabledModuleCodes = enabledModules.map((module: any) => module.code).join("|");
   const activeModule = enabledModules.find((module: any) => module.code === activeModuleCode) ?? (enabledModules.length === 0 ? null : { code: activeModuleCode, name: moduleShortName(activeModuleCode) });
   const selectedModuleCode = activeModuleCode;
@@ -484,39 +470,6 @@ function App() {
     await refresh("high_probability_strategy_2");
   }
 
-  async function triggerModule3Replay(replayCase: string, openPaperTrade = false) {
-    const result = await api<any>("/api/dev/module3-replay", {
-      method: "POST",
-      body: JSON.stringify({ case: replayCase, openPaperTrade })
-    });
-    setMessage(`Module 3 replay ${replayCase} produced ${result.setup.scenario}${result.trade ? " and opened QA paper trade" : ""}.`);
-    await browserNotify("Module 3 replay complete", `${replayCase} produced ${result.setup.status}.`);
-    await refresh("strategy_lab_3");
-  }
-
-  async function runModule3QaSuite() {
-    const result = await api<any>("/api/dev/module3-qa-suite", { method: "POST", body: JSON.stringify({}) });
-    setModule3QaSuite(result);
-    setMessage(`Module 3 QA suite ${result.finalStatus}: ${result.summary.passed}/${result.summary.total} passed.`);
-  }
-
-  async function runModule3LaunchRehearsal() {
-    const result = await api<any>("/api/module3/launch-rehearsal", { method: "POST", body: JSON.stringify({}) });
-    setModule3QaSuite(result.qaSuite);
-    setState((previous) => ({
-      ...previous,
-      module3Rehearsals: [result, ...(previous.module3Rehearsals ?? [])].slice(0, 20)
-    }));
-    setMessage(`Module 3 launch rehearsal: ${result.finalStatus === "GO" ? "GO" : "NO GO"} · ${result.handoff?.expectedNextAction ?? "Review checklist"}`);
-    await refresh("strategy_lab_3");
-  }
-
-  async function loadModule3TradeDetail(tradeId: string) {
-    setSelectedModule3TradeId(tradeId);
-    const detail = await api<any>(`/api/modules/strategy_lab_3/journal/trades/${tradeId}`);
-    setModule3TradeDetail(detail);
-  }
-
   async function runModuleLifecycle(moduleCode: string, event: string, tradeId?: string | null, setupId?: string | null) {
     const result = await api<any>(`/api/dev/modules/${moduleCode}/trade-lifecycle`, {
       method: "POST",
@@ -524,29 +477,6 @@ function App() {
     });
     setMessage(`${moduleShortName(moduleCode)} lifecycle ${event}: ${result.trade?.outcome ?? result.setup?.status ?? "recorded"}.`);
     await refresh(moduleCode);
-    if (moduleCode === "strategy_lab_3" && result.trade?.id) await loadModule3TradeDetail(result.trade.id);
-  }
-
-  async function runModule3Learning() {
-    const result = await api<any>("/api/module3/learning/run", { method: "POST", body: JSON.stringify({}) });
-    setState((previous) => ({ ...previous, module3Learning: result }));
-    setMessage(`Module 3 learning complete: ${result.sample_size ?? 0} trades, ${(result.recommendations ?? []).length} recommendation(s).`);
-  }
-
-  async function generateModule3SessionReport() {
-    const result = await api<any>("/api/module3/session-reports/generate", { method: "POST", body: JSON.stringify({}) });
-    setState((previous) => ({ ...previous, module3SessionReports: [result, ...(previous.module3SessionReports ?? []).filter((row: any) => row.id !== result.id)] }));
-    setMessage(`Module 3 session report generated: ${result.final_status}.`);
-  }
-
-  async function runModule3Backfill() {
-    const feedSettings = settingValue<any>(state.settings, "feed.provider", { startupBackfillCount: 2016 });
-    const result = await api<any>("/api/module3/data-readiness/backfill", {
-      method: "POST",
-      body: JSON.stringify({ count: feedSettings.startupBackfillCount ?? 2016 })
-    });
-    setState((previous) => ({ ...previous, module3DataReadiness: result.after }));
-    setMessage(`Module 3 backfill complete: 1 Twelve Data call requested ${result.requestedCount} candles.`);
   }
 
   async function runModule2Lifecycle(event: string, tradeId?: string | null, setupId?: string | null) {
@@ -992,6 +922,7 @@ function App() {
         <nav>
           {can("dashboard.view") ? <NavButton icon={<ShieldCheck />} label="Command Center" active={activeSection === "command"} onClick={() => setActiveSection("command")} /> : null}
           {can("chart.view") ? <NavButton icon={<LineChart />} label="Live Chart" active={activeSection === "live"} onClick={() => setActiveSection("live")} /> : null}
+          {can("signals.view") ? <NavButton icon={<Target />} label="Predictions" active={activeSection === "predictions"} onClick={() => setActiveSection("predictions")} /> : null}
           {can("signals.view") ? <NavButton icon={<ArrowUpDown />} label="BUY & SELL" active={activeSection === "signals"} onClick={() => setActiveSection("signals")} /> : null}
           {can("signals.view") ? <NavButton icon={<Table2 />} label="Paper Trading" active={activeSection === "paper"} onClick={() => setActiveSection("paper")} /> : null}
           {can("dashboard.view") ? <NavButton icon={<Database />} label="System Status" active={activeSection === "health"} onClick={() => setActiveSection("health")} /> : null}
@@ -1022,7 +953,7 @@ function App() {
           </div>
         </header>
 
-        {!['paper', 'signals'].includes(activeSection) ? <section className="status-strip auto-status-strip">
+        {!['paper', 'signals', 'predictions'].includes(activeSection) ? <section className="status-strip auto-status-strip">
           <Status label="Symbol" value={activeSymbol} />
           <Status label="Timeframe" value={`${activeTimeframeMinutes}m`} />
           <Status label="Session" value={state.session?.state ?? "AUTO WAITING"} tone={toneFor(state.session?.state)} />
@@ -1033,7 +964,7 @@ function App() {
           <Status label="Real Orders" value="OFF" tone="bad" />
         </section> : null}
 
-        {!accountLocked && !['paper', 'signals'].includes(activeSection) ? (
+        {!accountLocked && !['paper', 'signals', 'predictions'].includes(activeSection) ? (
           <section className="module-switcher">
             {enabledModules.map((module: any) => (
               <button
@@ -1067,7 +998,7 @@ function App() {
               onRunRehearsal={(moduleCode) => {
                 if (moduleCode === "orb_max_options") return runOrbLaunchRehearsal();
                 if (moduleCode === "high_probability_strategy_2") return runModule2LaunchRehearsal();
-                return runModule3LaunchRehearsal();
+                return Promise.resolve();
               }}
             />
           </section>
@@ -1108,6 +1039,19 @@ function App() {
               setActiveModuleCode(moduleCode);
               setActiveSection("live");
             }}
+          />
+        ) : null}
+
+        {activeSection === "predictions" && !accountLocked ? (
+          <PredictionsWorkspace
+            data={state.tradePredictions}
+            modules={enabledModules}
+            onRefresh={() => refresh().catch(() => setMessage("Predictions refresh failed."))}
+            onOpenChart={(moduleCode) => {
+              setActiveModuleCode(moduleCode);
+              setActiveSection("live");
+            }}
+            onOpenSignals={() => setActiveSection("signals")}
           />
         ) : null}
 
@@ -1296,38 +1240,6 @@ function App() {
                 <Module2BacktestTable latest={state.latestBacktest} />
               </>
             ) : null}
-            {selectedModuleCode === "strategy_lab_3" ? (
-              <>
-                <ModuleCompletionCenter
-                  moduleName="Module 3 VWAP Drive"
-                  dataReadiness={state.module3DataReadiness}
-                  qaSuite={module3QaSuite}
-                  learning={state.module3Learning}
-                  journalTrades={state.module3JournalTrades}
-                  reports={state.module3SessionReports}
-                  rehearsals={state.module3Rehearsals}
-                  confidence={state.strategyConfidence}
-                  setupHistory={state.module3SetupHistory}
-                />
-                <ModuleDataReadinessPanel title="Module 3 Data Readiness" readiness={state.module3DataReadiness} onBackfill={runModule3Backfill} onBacktest={runCacheBacktest} />
-                <ModuleLaunchRehearsalPanel moduleName="Module 3" rehearsals={state.module3Rehearsals} onRun={runModule3LaunchRehearsal} />
-                <Module3ResultsReportPanel state={state} />
-                <Module3SetupHistoryPanel history={state.module3SetupHistory} />
-                <ModuleSessionReportsPanel moduleName="Module 3" reports={state.module3SessionReports} onGenerate={generateModule3SessionReport} />
-                <ModuleJournalPanel
-                  moduleName="Module 3"
-                  trades={state.module3JournalTrades}
-                  setup={currentModuleSetup}
-                  selectedTradeId={selectedModule3TradeId}
-                  detail={module3TradeDetail}
-                  onSelectTrade={loadModule3TradeDetail}
-                  onLifecycle={(event, tradeId, setupId) => runModuleLifecycle("strategy_lab_3", event, tradeId, setupId)}
-                />
-                <ModuleLearningPanel moduleName="Module 3" learning={state.module3Learning} onRun={runModule3Learning} />
-                <Module3RuleAuditPanel setup={currentModuleSetup} />
-                <Module3BacktestTable latest={state.latestBacktest} />
-              </>
-            ) : null}
           </section>
         ) : null}
 
@@ -1339,7 +1251,7 @@ function App() {
               onRun={(moduleCode) => {
                 if (moduleCode === "orb_max_options") return runOrbLearning();
                 if (moduleCode === "high_probability_strategy_2") return runModule2Learning();
-                return runModule3Learning();
+                return Promise.resolve();
               }}
               onOpenReports={(moduleCode) => {
                 setActiveModuleCode(moduleCode);
@@ -1377,9 +1289,7 @@ function App() {
             <SettingsEditor settings={state.settings ?? []} onUpdate={updateSetting} />
             {selectedModuleCode === "orb_max_options"
               ? <OrbStrategySettings settings={state.orbModuleSettings ?? []} onUpdate={(key, value) => updateModuleSetting("orb_max_options", key, value)} />
-              : selectedModuleCode === "strategy_lab_3"
-                ? <VwapOpeningDriveSettings settings={state.activeModuleSettings ?? []} onUpdate={(key, value) => updateModuleSetting(selectedModuleCode, key, value)} />
-                : <LiquiditySweepSettings settings={state.activeModuleSettings ?? []} onUpdate={(key, value) => updateModuleSetting(selectedModuleCode, key, value)} />}
+              : <LiquiditySweepSettings settings={state.activeModuleSettings ?? []} onUpdate={(key, value) => updateModuleSetting(selectedModuleCode, key, value)} />}
             <PlanUsagePanel state={state} />
             <Panel icon={<Settings />} title="Trading Settings">
               <Metric label="Symbol" value={activeSymbol} />
@@ -1436,14 +1346,6 @@ function App() {
                 <Module2LifecycleTester setup={currentModuleSetup} trade={currentModuleTrade} onLifecycle={runModule2Lifecycle} />
                 <Module2RuleAuditPanel setup={currentModuleSetup} />
                 <Module2LaunchEvidenceLogPanel rehearsals={state.module2Rehearsals} />
-              </>
-            ) : null}
-            {selectedModuleCode === "strategy_lab_3" ? (
-              <>
-                <ModuleDataReadinessPanel title="Module 3 Data Readiness" readiness={state.module3DataReadiness} onBackfill={runModule3Backfill} onBacktest={runCacheBacktest} />
-                <ModuleLaunchRehearsalPanel moduleName="Module 3" rehearsals={state.module3Rehearsals} onRun={runModule3LaunchRehearsal} />
-                <Module3QAControlPanel onReplay={triggerModule3Replay} onRunSuite={runModule3QaSuite} suite={module3QaSuite} onClear={clearTestSignals} />
-                <Module3RuleAuditPanel setup={currentModuleSetup} />
               </>
             ) : null}
             <BacktestSummaryPanel state={state} moduleCode={selectedModuleCode} onRun={runCacheBacktest} />
@@ -3186,8 +3088,6 @@ function LiveStrategyCenterPanel({
     ? maxOrbChecklistRows(evaluations, setup, session)
     : moduleCode === "high_probability_strategy_2"
       ? liquiditySweepChecklistRows(evaluations, setup)
-      : moduleCode === "strategy_lab_3"
-        ? vwapOpeningDriveChecklistRows(evaluations, setup)
       : genericModuleChecklistRows(evaluations, setup, moduleCode);
   const rows = liveScopedChecklistRows(rawRows, setup);
   const sections = groupedChecklistSections(moduleCode, rows);
@@ -3245,18 +3145,6 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
         <div><span>Displacement</span><strong>{displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`}</strong></div>
         <div><span>BOS / CHoCH</span><strong>{bos?.level == null ? "--" : Number(bos.level).toFixed(2)}</strong></div>
         <div><span>Entry zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
-      </div>
-    );
-  }
-  if (moduleCode === "strategy_lab_3") {
-    const drive = flags.drive ?? {};
-    const zone = flags.entryZone ?? {};
-    return (
-      <div className="live-evidence-list">
-        <div><span>Opening drive</span><strong>{drive?.rangeAtr == null ? "--" : `${Number(drive.rangeAtr).toFixed(2)} ATR`}</strong></div>
-        <div><span>VWAP</span><strong>{flags.vwapAlignment ?? flags.vwapBias ?? "--"}</strong></div>
-        <div><span>Pullback zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
-        <div><span>Confirmation</span><strong>{flags.confirmationCandle?.timestampUtc ? formatNepalTime(flags.confirmationCandle.timestampUtc) : "--"}</strong></div>
       </div>
     );
   }
@@ -3465,20 +3353,6 @@ function StrategyScenarioEvidencePanel({
         <Metric label="BOS / CHoCH" value={bos?.level == null ? "--" : Number(bos.level).toFixed(2)} />
         <Metric label="Entry zone" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
         <Metric label="Quality" value={scenarioFlags.qualityLayer?.passed == null ? "--" : `${scenarioFlags.qualityLayer.passed}/${scenarioFlags.qualityLayer.total}`} />
-      </Panel>
-    );
-  }
-  if (moduleCode === "strategy_lab_3") {
-    const drive = scenarioFlags.drive ?? {};
-    const zone = scenarioFlags.entryZone ?? {};
-    return (
-      <Panel icon={<Database />} title="Module 3 Evidence">
-        <Metric label="Opening drive" value={drive?.rangeAtr == null ? "--" : `${Number(drive.rangeAtr).toFixed(2)} ATR`} />
-        <Metric label="Direction" value={scenarioFlags.driveDirection ?? scenarioFlags.direction ?? "--"} />
-        <Metric label="VWAP" value={scenarioFlags.vwapAlignment ?? scenarioFlags.vwapBias ?? "--"} />
-        <Metric label="Pullback zone" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
-        <Metric label="Confirmation" value={scenarioFlags.confirmationCandle?.timestampUtc ? formatNepalTime(scenarioFlags.confirmationCandle.timestampUtc) : "--"} />
-        <Metric label="HTF bias" value={scenarioFlags.htfBias ?? "--"} />
       </Panel>
     );
   }
@@ -3768,7 +3642,7 @@ function commandModuleRow(state: PanelState, module: any) {
   const setup = snapshot.setup ?? readinessModule.latestSetup;
   const trade = snapshot.trade ?? readinessModule.latestTrade;
   const confidence = (state.strategyConfidence?.modules ?? []).find((row: any) => row.moduleCode === moduleCode);
-  const rehearsals = moduleCode === "orb_max_options" ? state.orbRehearsals : moduleCode === "high_probability_strategy_2" ? state.module2Rehearsals : state.module3Rehearsals;
+  const rehearsals = moduleCode === "orb_max_options" ? state.orbRehearsals : state.module2Rehearsals;
   const latestRehearsal = rehearsals?.[0];
   const rehearsalStatus = readinessModule.rehearsal?.final_status ?? latestRehearsal?.finalStatus ?? latestRehearsal?.final_status ?? "WAIT";
   const auditStatus = readinessModule.audit?.status ?? confidence?.audit?.summary?.status ?? latestRehearsal?.audit?.status ?? latestRehearsal?.audit_json?.status ?? "WAIT";
@@ -3929,11 +3803,6 @@ function moduleReadinessLabel(state: PanelState, moduleCode: string) {
     if (checks.length === 0) return { label: "WAIT", tone: "warn" };
     return { label: failed > 0 ? `${failed} FAIL` : "READY", tone: failed > 0 ? "bad" : "good" };
   }
-  if (moduleCode === "strategy_lab_3") {
-    const readiness = state.module3DataReadiness?.readiness;
-    if (!readiness) return { label: "WAIT", tone: "warn" };
-    return { label: readiness.canBacktest === false ? "MISSING DATA" : "READY", tone: readiness.canBacktest === false ? "warn" : "good" };
-  }
   return { label: "WAIT", tone: "warn" };
 }
 
@@ -4040,7 +3909,7 @@ function UnifiedLearningDashboard({
 
 function learningModuleRow(state: PanelState, module: any) {
   const moduleCode = module.code;
-  const learning = moduleCode === "orb_max_options" ? state.orbLearning : moduleCode === "high_probability_strategy_2" ? state.module2Learning : state.module3Learning;
+  const learning = moduleCode === "orb_max_options" ? state.orbLearning : state.module2Learning;
   const summary = learning?.summary ?? {};
   const overall = summary.overall ?? {};
   const winRate = Number(overall.winRate ?? overall.win_rate ?? 0);
@@ -4545,44 +4414,6 @@ function Module2QAControlPanel({
   );
 }
 
-function Module3QAControlPanel({
-  onReplay,
-  onRunSuite,
-  suite,
-  onClear
-}: {
-  onReplay: (replayCase: string, openPaperTrade?: boolean) => Promise<void>;
-  onRunSuite: () => Promise<void>;
-  suite?: any;
-  onClear: () => Promise<void>;
-}) {
-  const cases = [
-    { code: "BUY", label: "Valid BUY", paper: true },
-    { code: "SELL", label: "Valid SELL", paper: true },
-    { code: "WEAK_OPENING_DRIVE", label: "Hard fail: weak drive" },
-    { code: "NO_VWAP_ALIGNMENT", label: "Hard fail: no VWAP" },
-    { code: "NO_PULLBACK", label: "Hard fail: no pullback" },
-    { code: "NO_CONFIRMATION", label: "Hard fail: no confirmation" },
-    { code: "INVALID_RR", label: "Risk fail: RR" },
-    { code: "NO_TRADE", label: "No trade" }
-  ];
-  return (
-    <Panel icon={<Database />} title="Module 3 QA Control">
-      <div className="replay-grid module2-replay-grid">
-        {cases.map((item) => (
-          <button key={item.code} onClick={() => onReplay(item.code, item.paper).catch(() => undefined)}>{item.label}</button>
-        ))}
-      </div>
-      <div className="admin-actions">
-        <button onClick={() => onRunSuite().catch(() => undefined)}><ShieldCheck size={16} />Run Full QA Suite</button>
-        <button onClick={() => onClear().catch(() => undefined)}><Trash2 size={16} />Clear QA Signals</button>
-      </div>
-      {suite ? <QaSuiteTable suite={suite} /> : null}
-      <p className="reason">QA replays are isolated to Module 3, use generated replay evidence, spend no Twelve Data credits, and never open real orders.</p>
-    </Panel>
-  );
-}
-
 function QaSuiteTable({ suite }: { suite: any }) {
   return (
     <div className="module2-qa-suite">
@@ -5007,79 +4838,6 @@ function Module2EvidenceInspector({ setup }: { setup?: any }) {
   );
 }
 
-function Module3StrategyValidationPanel({ setup, evaluations, session }: { setup?: any; evaluations: any[]; session?: any }) {
-  const flags = setup?.scenario_flags ?? {};
-  const zone = flags.entryZone ?? {};
-  const drive = flags.drive ?? {};
-  const rows = liveScopedChecklistRows(vwapOpeningDriveChecklistRows(evaluations, setup), setup);
-  const groups = [
-    {
-      title: "Hard Rules",
-      description: "All must pass before Module 3 can create a paper-trade candidate.",
-      codes: ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
-    },
-    {
-      title: "Confirmations",
-      description: "These improve continuation quality after the opening drive.",
-      codes: ["EMA_ALIGNMENT"]
-    },
-    {
-      title: "Quality Filters",
-      description: "These protect the paper entry from poor execution conditions.",
-      codes: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"]
-    }
-  ];
-  const rowByCode = new Map(rows.map((row: any) => [row.rule_code ?? row.ruleCode, row]));
-  const hardPass = groups[0].codes.every((code) => rowByCode.get(code)?.status === "PASS");
-  const passCount = rows.filter((row: any) => row.status === "PASS").length;
-  const state = flags.state ?? setup?.status ?? session?.state ?? "WAITING";
-  return (
-    <Panel icon={<ShieldCheck />} title="Module 3 Strategy Validation">
-      <div className="strategy-validation-hero">
-        <div>
-          <span>NY VWAP Opening Drive Pullback</span>
-          <strong className={hardPass ? "good-text" : "warn-text"}>{hardPass ? "TRADE READY" : String(state).replaceAll("_", " ")}</strong>
-        </div>
-        <em>{passCount}/{rows.length} checks</em>
-      </div>
-      <div className="journal-evidence-grid">
-        <Metric label="Drive" value={drive.high == null ? "--" : `${Number(drive.low).toFixed(2)}-${Number(drive.high).toFixed(2)}`} />
-        <Metric label="VWAP" value={flags.vwap == null ? "--" : Number(flags.vwap).toFixed(2)} />
-        <Metric label="EMA 20" value={flags.ema == null ? "--" : Number(flags.ema).toFixed(2)} />
-        <Metric label="Pullback zone" value={zone.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
-        <Metric label="RR" value={flags.riskReward == null ? "--" : `${Number(flags.riskReward).toFixed(2)}R`} />
-        <Metric label="Plan" value={setup?.entry_price == null ? "--" : `${Number(setup.entry_price).toFixed(2)} / ${Number(setup.stop_price).toFixed(2)} / ${Number(setup.target_price).toFixed(2)}`} />
-      </div>
-      <div className="validation-groups">
-        {groups.map((group) => {
-          const groupRows = group.codes.map((code) => rowByCode.get(code)).filter(Boolean);
-          const groupPassed = groupRows.filter((row: any) => row.status === "PASS").length;
-          return (
-            <div className="validation-group" key={group.title}>
-              <div className="validation-group-head">
-                <div>
-                  <strong>{group.title}</strong>
-                  <span>{group.description}</span>
-                </div>
-                <em>{groupPassed}/{groupRows.length}</em>
-              </div>
-              <div className="rule-list compact-rule-list">
-                {groupRows.map((row: any) => (
-                  <div className={`rule-row ${ruleTone(row.status)}`} key={row.rule_code ?? row.ruleCode}>
-                    {row.status === "PASS" ? <CheckCircle2 size={15} /> : row.status === "FAIL" ? <XCircle size={15} /> : <Clock size={15} />}
-                    <strong>{row.name}</strong>
-                    <span>{row.status}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </Panel>
-  );
-}
-
 function Module2FinalReadinessChecklist({ readiness, audit, dryRun }: { readiness?: any; audit?: any; dryRun?: any }) {
   const checks = readiness?.checks ?? [];
   const auditChecks = audit?.checks ?? [];
@@ -5211,159 +4969,6 @@ function Module2JournalPanel({
             {trades.length === 0 ? (
               <tr><td colSpan={7}>No Module 2 paper trades yet. Run BUY + paper or SELL + paper from Data Admin.</td></tr>
             ) : null}
-          </tbody>
-        </table>
-      </div>
-    </Panel>
-  );
-}
-
-function ModuleCompletionCenter({
-  moduleName,
-  dataReadiness,
-  qaSuite,
-  learning,
-  journalTrades,
-  reports,
-  rehearsals,
-  confidence,
-  setupHistory
-}: {
-  moduleName: string;
-  dataReadiness?: any;
-  qaSuite?: any;
-  learning?: any;
-  journalTrades?: any[];
-  reports?: any[];
-  rehearsals?: any[];
-  confidence?: any;
-  setupHistory?: any[];
-}) {
-  const qaPass = qaSuite?.finalStatus === "PASS";
-  const dataReady = dataReadiness?.readiness ?? {};
-  const latestRehearsal = rehearsals?.[0];
-  const rehearsalStatus = latestRehearsal?.finalStatus ?? latestRehearsal?.final_status;
-  const confidenceRow = (confidence?.modules ?? []).find((row: any) => row.moduleCode === "strategy_lab_3");
-  const auditStatusValue = confidenceRow?.audit?.summary?.status ?? latestRehearsal?.audit?.status ?? latestRehearsal?.audit_json?.status;
-  const sampleSize = confidenceRow?.confidence?.sampleSize ?? 0;
-  const featureComplete = qaPass && rehearsalStatus === "GO" && (journalTrades?.length ?? 0) > 0 && (reports?.length ?? 0) > 0 && auditStatusValue === "PASS" && (setupHistory?.length ?? 0) > 0;
-  const trustComplete = Boolean(confidenceRow?.confidence?.trust);
-  const phases = [
-    { phase: "Shared XAUUSD feed", status: "COMPLETE", detail: `${moduleName} uses the shared Twelve Data chart/feed while keeping trades and logic isolated.` },
-    { phase: "Data readiness", status: dataReady.canBacktest ? "COMPLETE" : "READY", detail: dataReady.reason ?? "Collect NY 5M candles for validation." },
-    { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run the QA suite from Data Admin." },
-    { phase: "GO / NO-GO rehearsal", status: rehearsalStatus === "GO" ? "COMPLETE" : "READY", detail: rehearsalStatus === "GO" ? "End-to-end replay, paper trade, close, journal, notification, and isolation proof passed." : "Run Module 3 launch rehearsal." },
-    { phase: "Production audit", status: auditStatusValue === "PASS" ? "COMPLETE" : "READY", detail: auditStatusValue === "PASS" ? "Module 3 audit is clean." : "Run rehearsal and confidence audit." },
-    { phase: "Setup history", status: (setupHistory?.length ?? 0) > 0 ? "COMPLETE" : "READY", detail: `${setupHistory?.length ?? 0} Module 3 setup history rows available.` },
-    { phase: "Journal evidence", status: (journalTrades?.length ?? 0) > 0 ? "COMPLETE" : "READY", detail: `${journalTrades?.length ?? 0} journal trade rows available.` },
-    { phase: "Session reports", status: (reports?.length ?? 0) > 0 ? "COMPLETE" : "READY", detail: "Generate reports after NY session or QA evidence." },
-    { phase: "Learning system", status: learning?.status === "COMPLETED" || learning?.id ? "COMPLETE" : "READY", detail: "Learning runs after completed non-QA paper trades." },
-    { phase: "Performance confidence", status: trustComplete ? "COMPLETE" : "NEEDS_SAMPLE", detail: confidenceRow?.confidence?.reason ?? `Needs non-QA sample. Current sample size: ${sampleSize}.` }
-  ];
-  return (
-    <Panel icon={<ShieldCheck />} title={`${moduleName} Completion Center`}>
-      <div className="strategy-validation-hero">
-        <div>
-          <span>Final Module Status</span>
-          <strong className={featureComplete ? "good-text" : "warn-text"}>{featureComplete ? "FEATURE COMPLETE" : "READY TO FINISH"}</strong>
-        </div>
-        <em>{trustComplete ? "TRUSTED" : "LOW SAMPLE"}</em>
-      </div>
-      <div className="admin-list">
-        {phases.map((item) => (
-          <div className="admin-row" key={item.phase}>
-            <strong>{item.phase}</strong>
-            <span>{item.status} · {item.detail}</span>
-          </div>
-        ))}
-      </div>
-      <p className="reason">{featureComplete ? `${moduleName} is complete for automatic paper trading. Real-money trust still requires enough non-QA paper/backtest samples.` : "Finish the READY rows above to complete the module."}</p>
-    </Panel>
-  );
-}
-
-function Module3ResultsReportPanel({ state }: { state: PanelState }) {
-  const trades = state.module3JournalTrades ?? [];
-  const closed = trades.filter((trade: any) => ["WIN", "LOSS", "BREAKEVEN"].includes(String(trade.outcome ?? "")));
-  const wins = closed.filter((trade: any) => trade.outcome === "WIN").length;
-  const losses = closed.filter((trade: any) => trade.outcome === "LOSS").length;
-  const totalR = closed.reduce((sum: number, trade: any) => sum + Number(trade.result_r ?? 0), 0);
-  const confidenceRow = (state.strategyConfidence?.modules ?? []).find((row: any) => row.moduleCode === "strategy_lab_3");
-  const latestReport = state.module3SessionReports?.[0];
-  const best = [...closed].sort((left: any, right: any) => Number(right.result_r ?? 0) - Number(left.result_r ?? 0))[0];
-  const worst = [...closed].sort((left: any, right: any) => Number(left.result_r ?? 0) - Number(right.result_r ?? 0))[0];
-  return (
-    <Panel icon={<LineChart />} title="Module 3 Results Report">
-      <div className="metrics-grid compact">
-        <Metric label="Paper trades" value={trades.length} />
-        <Metric label="Closed sample" value={closed.length} />
-        <Metric label="Wins / Losses" value={`${wins} / ${losses}`} />
-        <Metric label="Win rate" value={formatPercent(closed.length ? wins / closed.length : null)} />
-        <Metric label="Average R" value={formatR(closed.length ? totalR / closed.length : 0)} />
-        <Metric label="Total R" value={formatR(totalR)} />
-        <Metric label="Confidence" value={confidenceRow?.confidence?.label ?? "Do not trust yet"} />
-        <Metric label="Audit" value={confidenceRow?.audit?.summary?.status ?? "--"} />
-      </div>
-      <div className="module2-breakdown-grid">
-        <div className="mini-breakdown">
-          <strong>Best setup</strong>
-          <span>{best ? `${best.direction} · ${formatScenario(best.scenario)} · ${formatR(best.result_r)}` : "No closed winner yet"}</span>
-        </div>
-        <div className="mini-breakdown">
-          <strong>Worst setup</strong>
-          <span>{worst ? `${worst.direction} · ${formatScenario(worst.scenario)} · ${formatR(worst.result_r)}` : "No closed loser yet"}</span>
-        </div>
-        <div className="mini-breakdown">
-          <strong>Latest weekly/monthly report</strong>
-          <span>{latestReport ? `${latestReport.session_date} · ${latestReport.final_status} · ${formatR(latestReport.summary?.totalR)}` : "Generate a session report after Module 3 paper trades."}</span>
-        </div>
-      </div>
-      <p className="reason">{confidenceRow?.confidence?.reason ?? "Module 3 becomes trusted only after enough non-QA paper trades/backtests plus a clean audit."}</p>
-    </Panel>
-  );
-}
-
-function Module3SetupHistoryPanel({ history }: { history?: any[] }) {
-  const rows = history ?? [];
-  const valid = rows.filter((row: any) => ["BUY", "SELL"].includes(row.recommendation)).length;
-  const blocked = rows.filter((row: any) => row.recommendation === "NO TRADE").length;
-  const waiting = rows.filter((row: any) => row.recommendation === "WAIT").length;
-  return (
-    <Panel icon={<FileText />} title="Module 3 Setup History">
-      <div className="metrics-grid compact">
-        <Metric label="Total setups" value={rows.length} />
-        <Metric label="Buy/Sell signals" value={valid} />
-        <Metric label="No trade" value={blocked} />
-        <Metric label="Waiting" value={waiting} />
-        <Metric label="Latest blocker" value={formatScenario(rows[0]?.blocking_rule)} />
-        <Metric label="Latest recommendation" value={rows[0]?.recommendation ?? "--"} />
-      </div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Detected</th>
-              <th>Recommendation</th>
-              <th>Direction</th>
-              <th>Scenario</th>
-              <th>Checklist</th>
-              <th>Blocked By</th>
-              <th>Paper Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, 20).map((row: any) => (
-              <tr key={row.id}>
-                <td>{formatNepalTime(row.detected_at)}</td>
-                <td><span className={`status-pill ${["BUY", "SELL"].includes(row.recommendation) ? "good" : row.recommendation === "NO TRADE" ? "bad" : "warn"}`}>{row.recommendation}</span></td>
-                <td>{row.direction ?? "--"}</td>
-                <td>{formatScenario(row.scenario)}</td>
-                <td>{row.checklist_passed ?? 0}/{row.checklist_count ?? 0}</td>
-                <td>{formatScenario(row.blocking_rule)}</td>
-                <td>{row.outcome ? `${row.outcome} ${formatR(row.result_r)}` : row.trade_status ?? "--"}</td>
-              </tr>
-            ))}
-            {rows.length === 0 ? <tr><td colSpan={7}>No Module 3 setup history yet.</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -5642,20 +5247,6 @@ function ModuleLearningPanel({ moduleName, learning, onRun }: { moduleName: stri
   );
 }
 
-function Module3RuleAuditPanel({ setup }: { setup?: any }) {
-  const evaluations = setup?.module_code === "strategy_lab_3" ? setup?.evaluations ?? [] : [];
-  const gates = evaluations.filter((row: any) => ["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"].includes(row.rule_code ?? row.ruleCode));
-  const confirmations = evaluations.filter((row: any) => ["EMA_ALIGNMENT"].includes(row.rule_code ?? row.ruleCode));
-  const filters = evaluations.filter((row: any) => ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "SIGNAL_SCORE"].includes(row.rule_code ?? row.ruleCode));
-  return (
-    <Panel icon={<ShieldCheck />} title="Module 3 Rule Audit">
-      <Module2RuleLayer title="Signal Gates" rows={gates} empty="No Module 3 signal-gate evidence yet." />
-      <Module2RuleLayer title="Confirmations" rows={confirmations} empty="No Module 3 confirmation evidence yet." />
-      <Module2RuleLayer title="Safety Filters" rows={filters} empty="No Module 3 safety-filter evidence yet." />
-    </Panel>
-  );
-}
-
 function Module2BacktestTable({ latest }: { latest?: any }) {
   const trades = latest?.trades ?? [];
   const [selected, setSelected] = useState<any | null>(null);
@@ -5751,113 +5342,6 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
             })}
             {trades.length === 0 ? (
               <tr><td colSpan={10}>Run a Module 2 cache backtest after NY candles are stored to populate this table.</td></tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-    </Panel>
-  );
-}
-
-function Module3BacktestTable({ latest }: { latest?: any }) {
-  const trades = latest?.trades ?? [];
-  const [selected, setSelected] = useState<any | null>(null);
-  const detail = selected?.details ?? {};
-  const zone = detail.entryZone ?? {};
-  const drive = detail.drive ?? {};
-  const summary = latest?.summary ?? {};
-  const metrics = module2BacktestMetricMap(latest?.metrics ?? []);
-  const confidence = summary.confidence ?? metrics.confidence ?? {};
-  const failureAnalytics = summary.failureAnalytics ?? metrics.failure_analytics ?? {};
-  const directionBreakdown = summary.directionBreakdown ?? metrics.direction_breakdown ?? {};
-  return (
-    <Panel icon={<LineChart />} title="Module 3 Backtest Table">
-      <div className="journal-detail-card">
-        <div>
-          <strong>{confidence.label ?? "No confidence report yet"}</strong>
-          <span>{confidence.recommendation ?? "Run a Module 3 cache backtest after NY 5-minute candles are available."}</span>
-        </div>
-        <div className="journal-evidence-grid">
-          <Metric label="Trades" value={summary.trades ?? metrics.total_trades ?? 0} />
-          <Metric label="Win rate" value={formatPercent(summary.winRate ?? metrics.win_rate)} />
-          <Metric label="Average R" value={formatR(summary.averageR ?? metrics.average_r)} />
-          <Metric label="Total R" value={formatR(summary.totalR ?? metrics.total_r)} />
-          <Metric label="Max drawdown" value={formatR(summary.maxDrawdownR ?? metrics.max_drawdown_r)} />
-          <Metric label="Loss streak" value={summary.maxLossStreak ?? metrics.max_loss_streak ?? 0} />
-          <Metric label="Candles" value={summary.candleCount ?? metrics.candle_count ?? 0} />
-          <Metric label="Sessions" value={summary.sessionsTested ?? metrics.sessions_tested ?? 0} />
-        </div>
-        <div className="module2-breakdown-grid">
-          <MiniBreakdown title="BUY / SELL" rows={directionBreakdown} />
-          <MiniFailures title="Failed Rule Focus" rows={failureAnalytics.topFailedRules ?? []} />
-          <div className="mini-breakdown">
-            <strong>Module Logic</strong>
-            <span>NY opening drive, VWAP alignment, pullback zone, confirmation candle, RR gate.</span>
-          </div>
-        </div>
-      </div>
-      {selected ? (
-        <div className="journal-detail-card">
-          <div>
-            <strong>{selected.direction ?? "--"} · {formatScenario(selected.scenario)}</strong>
-            <span>{formatNepalTime(selected.entryTime ?? selected.session_date)} · {formatR(selected.resultR ?? selected.result_r)} · {selected.outcome}</span>
-          </div>
-          <div className="journal-evidence-grid">
-            <Metric label="Drive" value={drive.low == null ? "--" : `${Number(drive.low).toFixed(2)}-${Number(drive.high).toFixed(2)}`} />
-            <Metric label="VWAP" value={detail.vwap == null ? "--" : Number(detail.vwap).toFixed(2)} />
-            <Metric label="EMA 20" value={detail.ema == null ? "--" : Number(detail.ema).toFixed(2)} />
-            <Metric label="Pullback zone" value={zone.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
-            <Metric label="Score" value={selected.score ?? detail.score ?? "--"} />
-            <Metric label="RR" value={detail.riskReward == null ? "--" : Number(detail.riskReward).toFixed(2)} />
-            <Metric label="Entry" value={selected.entry_price ?? selected.entryPrice ?? "--"} />
-            <Metric label="Stop / target" value={`${selected.stop_price ?? selected.stopPrice ?? "--"} / ${selected.target_price ?? selected.targetPrice ?? "--"}`} />
-          </div>
-          <div className="evidence-notes">
-            <strong>Backtest Evidence</strong>
-            {detail.instruction ? <span>{detail.instruction.operatorInstruction}</span> : null}
-            <span>{detail.finalReason ?? detail.reason ?? "Backtest evidence is stored in the Module 3 details snapshot."}</span>
-            <span>Checklist rows: {(detail.evaluations ?? detail.checklist ?? []).length || "not stored for this older run"}</span>
-          </div>
-        </div>
-      ) : null}
-      <div className="table-wrap">
-        <table className="data-table module2-backtest-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Direction</th>
-              <th>VWAP</th>
-              <th>Drive</th>
-              <th>Pullback Zone</th>
-              <th>Score</th>
-              <th>RR</th>
-              <th>Result R</th>
-              <th>Outcome</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.slice(0, 16).map((trade: any, index: number) => {
-              const details = trade.details ?? {};
-              const entryZone = details.entryZone ?? {};
-              const openingDrive = details.drive ?? {};
-              return (
-                <tr key={`${trade.date ?? trade.entryTime}-${index}`}>
-                  <td>{formatNepalTime(details.entryTime ?? trade.entryTime ?? trade.date)}</td>
-                  <td>{trade.direction ?? "--"}</td>
-                  <td>{details.vwap == null ? "--" : Number(details.vwap).toFixed(2)}</td>
-                  <td>{openingDrive.low == null ? "--" : `${Number(openingDrive.low).toFixed(2)}-${Number(openingDrive.high).toFixed(2)}`}</td>
-                  <td>{entryZone.low == null ? "--" : `${Number(entryZone.low).toFixed(2)}-${Number(entryZone.high).toFixed(2)}`}</td>
-                  <td>{trade.score ?? details.score ?? "--"}</td>
-                  <td>{details.riskReward == null ? "--" : Number(details.riskReward).toFixed(2)}</td>
-                  <td>{formatR(trade.resultR ?? trade.result_r)}</td>
-                  <td>{trade.outcome ?? "--"}</td>
-                  <td><button onClick={() => setSelected(trade)}>Detail</button></td>
-                </tr>
-              );
-            })}
-            {trades.length === 0 ? (
-              <tr><td colSpan={10}>Run a Module 3 cache backtest after NY 5-minute candles are stored to populate this table.</td></tr>
             ) : null}
           </tbody>
         </table>
@@ -6208,7 +5692,6 @@ function notificationPayload(item: any) {
 function moduleCodeFromNotification(item: any) {
   const haystack = `${item?.event_type ?? ""} ${item?.title ?? ""} ${item?.body ?? ""}`.toUpperCase();
   if (haystack.includes("MODULE2") || haystack.includes("MODULE 2")) return "high_probability_strategy_2";
-  if (haystack.includes("MODULE3") || haystack.includes("MODULE 3")) return "strategy_lab_3";
   if (haystack.includes("MODULE1") || haystack.includes("MODULE 1") || haystack.includes("ORB")) return "orb_max_options";
   return null;
 }
@@ -6317,7 +5800,6 @@ function NotificationFilters({ filters, onChange, onRefresh }: { filters: any; o
       <select value={filters.moduleCode} onChange={(event) => update("moduleCode", event.target.value)}>
         <option value="">All modules</option>
         <option value="high_probability_strategy_2">Module 2</option>
-        <option value="strategy_lab_3">Module 3</option>
         <option value="orb_max_options">Module 1 ORB</option>
       </select>
       <select value={filters.priority} onChange={(event) => update("priority", event.target.value)}>
@@ -6332,8 +5814,6 @@ function NotificationFilters({ filters, onChange, onRefresh }: { filters: any; o
         <option value="ORB_REPLAY">Module 1 replay</option>
         <option value="MODULE2_SETUP_READY">Module 2 setup ready</option>
         <option value="MODULE2_REHEARSAL_TEST">Module 2 rehearsal</option>
-        <option value="MODULE3_SETUP_READY">Module 3 setup ready</option>
-        <option value="MODULE3_REHEARSAL_TEST">Module 3 rehearsal</option>
       </select>
       <label><input type="checkbox" checked={Boolean(filters.unreadOnly)} onChange={(event) => update("unreadOnly", event.target.checked)} /> Unread</label>
       <button onClick={onRefresh}><Bell size={16} />Apply</button>
@@ -6454,28 +5934,6 @@ function Module2TuningLabPanel({
 
 function ModuleStrategyPanel({ setup, moduleCode, moduleName }: { setup?: any; moduleCode: string; moduleName: string }) {
   const flags = setup?.scenario_flags ?? {};
-  if (moduleCode === "strategy_lab_3") {
-    const zone = flags.entryZone ?? {};
-    const drive = flags.drive ?? {};
-    return (
-      <Panel icon={<Database />} title={moduleShortName(moduleCode, moduleName)}>
-        <Metric label="Current state" value={String(flags.state ?? setup?.status ?? "WAITING")} />
-        <Metric label="Candidate direction" value={setup?.direction ?? "--"} />
-        <Metric label="Paper entry" value={setup?.status === "PAPER_TRADE_OPENED" ? "OPEN" : "NOT OPENED"} />
-        <Metric label="Score" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100 ${setup.favorability_grade ?? ""}`} />
-        <Metric label="Opening drive" value={drive?.high == null ? "--" : `${Number(drive.low).toFixed(2)}-${Number(drive.high).toFixed(2)}`} />
-        <Metric label="VWAP" value={flags.vwap == null ? "--" : Number(flags.vwap).toFixed(2)} />
-        <Metric label="EMA" value={flags.ema == null ? "--" : Number(flags.ema).toFixed(2)} />
-        <Metric label="Pullback zone" value={zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`} />
-        <Metric label="Risk reward" value={flags.riskReward == null ? "--" : `${Number(flags.riskReward).toFixed(2)}R`} />
-        <div className="tag-row">
-          {(setup?.favorability_reasons ?? []).length > 0
-            ? setup.favorability_reasons.map((reason: string) => <span key={reason}>{reason}</span>)
-            : <span>Waiting for Module 3 NY opening-drive, VWAP pullback, and confirmation evidence</span>}
-        </div>
-      </Panel>
-    );
-  }
   const zone = flags.entryZone ?? {};
   const sweep = flags.sweep ?? {};
   const bos = flags.bos ?? {};
@@ -6970,62 +6428,6 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
   );
 }
 
-function VwapOpeningDriveSettings({ settings, onUpdate }: { settings: any[]; onUpdate: (key: string, value: unknown) => Promise<void> }) {
-  const setting = settings.find((item) => item.key === "vwapOpeningDrive.strategy");
-  const [draft, setDraft] = useState<any>(setting?.value ?? {});
-
-  useEffect(() => {
-    setDraft(setting?.value ?? {});
-  }, [setting?.value]);
-
-  function patch(path: string, value: unknown) {
-    const keys = path.split(".");
-    setDraft((current: any) => {
-      const next = { ...(current ?? {}) };
-      let cursor = next;
-      for (const key of keys.slice(0, -1)) {
-        cursor[key] = { ...(cursor[key] ?? {}) };
-        cursor = cursor[key];
-      }
-      cursor[keys[keys.length - 1]] = value;
-      return next;
-    });
-  }
-
-  return (
-    <Panel icon={<ShieldCheck />} title="Module 3 Strategy Config">
-      <div className="setting-row strategy-setting-row">
-        <div>
-          <strong>vwapOpeningDrive.strategy</strong>
-          <span>{setting?.description ?? "XAUUSD NY VWAP opening-drive pullback thresholds."}</span>
-          <em>{setting?.updated_at ? `Updated ${formatNepalTime(setting.updated_at)}` : "Using Module 3 defaults"}</em>
-          <p className="reason">Module 3 is independent from ORB and Sweep+BOS. These settings affect only VWAP opening-drive paper signals.</p>
-        </div>
-        <div className="setting-fields strategy-fields">
-          <label>NY start<input type="time" value={draft?.newYorkStartTime ?? "09:30"} onChange={(event) => patch("newYorkStartTime", event.target.value)} /></label>
-          <label>NY end<input type="time" value={draft?.newYorkEndTime ?? "12:00"} onChange={(event) => patch("newYorkEndTime", event.target.value)} /></label>
-          <label>Opening drive min<input type="number" min="5" max="90" value={draft?.openingDriveMinutes ?? 30} onChange={(event) => patch("openingDriveMinutes", Number(event.target.value))} /></label>
-          <label>Drive ATR<input type="number" min="0.1" max="5" step="0.05" value={draft?.minimumDriveRangeATR ?? 1} onChange={(event) => patch("minimumDriveRangeATR", Number(event.target.value))} /></label>
-          <label>Drive body %<input type="number" min="0" max="1" step="0.01" value={draft?.minimumDriveBodyPercent ?? 0.55} onChange={(event) => patch("minimumDriveBodyPercent", Number(event.target.value))} /></label>
-          <label>VWAP distance ATR<input type="number" min="0" max="2" step="0.01" value={draft?.minimumVwapDistanceATR ?? 0.05} onChange={(event) => patch("minimumVwapDistanceATR", Number(event.target.value))} /></label>
-          <label>Pullback bars<input type="number" min="1" max="40" value={draft?.pullbackMaxBars ?? 12} onChange={(event) => patch("pullbackMaxBars", Number(event.target.value))} /></label>
-          <label>Zone ATR<input type="number" min="0.01" max="2" step="0.01" value={draft?.pullbackZoneAtr ?? 0.35} onChange={(event) => patch("pullbackZoneAtr", Number(event.target.value))} /></label>
-          <label>Confirm body %<input type="number" min="0" max="1" step="0.01" value={draft?.confirmationBodyPercent ?? 0.45} onChange={(event) => patch("confirmationBodyPercent", Number(event.target.value))} /></label>
-          <label>EMA period<input type="number" min="5" max="200" value={draft?.emaPeriod ?? 20} onChange={(event) => patch("emaPeriod", Number(event.target.value))} /></label>
-          <label>Minimum R:R<input type="number" min="0.5" max="10" step="0.1" value={draft?.minimumRiskReward ?? 2} onChange={(event) => patch("minimumRiskReward", Number(event.target.value))} /></label>
-          <label>Max stop ATR<input type="number" min="0.1" max="10" step="0.05" value={draft?.maximumStopATR ?? 1.35} onChange={(event) => patch("maximumStopATR", Number(event.target.value))} /></label>
-          <label>Max spread<input type="number" min="0.01" max="20" step="0.01" value={draft?.maximumSpread ?? 0.8} onChange={(event) => patch("maximumSpread", Number(event.target.value))} /></label>
-          <label>Min score<input type="number" min="1" max="100" value={draft?.minimumSignalScore ?? 80} onChange={(event) => patch("minimumSignalScore", Number(event.target.value))} /></label>
-          <label>Max trades<input type="number" min="1" max="10" value={draft?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
-          <label><input type="checkbox" checked={draft?.enableNewsFilter !== false} onChange={(event) => patch("enableNewsFilter", event.target.checked)} /> News filter</label>
-          <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>
-        </div>
-        <button onClick={() => onUpdate("vwapOpeningDrive.strategy", draft).catch(() => undefined)}>Save Module 3</button>
-      </div>
-    </Panel>
-  );
-}
-
 function SettingControl({ setting, onUpdate }: { setting: any; onUpdate: (key: string, value: unknown) => Promise<void> }) {
   const [draft, setDraft] = useState<any>(setting.value);
 
@@ -7179,8 +6581,6 @@ function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" 
     ? maxOrbChecklistRows(evaluations, setup, session)
     : activeModuleCode === "high_probability_strategy_2"
       ? liquiditySweepChecklistRows(evaluations, setup)
-      : activeModuleCode === "strategy_lab_3"
-        ? vwapOpeningDriveChecklistRows(evaluations, setup)
       : genericModuleChecklistRows(evaluations, setup, activeModuleCode);
   const rows = liveScopedChecklistRows(rawRows, setup);
   const sections = groupedChecklistSections(activeModuleCode, rows);
@@ -7281,35 +6681,6 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       }
     ]);
   }
-  if (moduleCode === "strategy_lab_3") {
-    return checklistSections(rows, [
-      {
-        title: "Engine State",
-        description: "Current Module 3 VWAP opening-drive pullback state.",
-        codes: ["MODULE3_STATE"]
-      },
-      {
-        title: "Mandatory Entry Checklist",
-        description: "The weekday strategy cycle, anchored NY opening drive, VWAP alignment, pullback-zone touch, and confirmation candle must all pass.",
-        codes: ["STRATEGY_CYCLE_ACTIVE", "DAILY_TRADE_LIMIT", "OPENING_DRIVE_COMPLETE", "OPENING_DRIVE_STRONG", "VWAP_ALIGNMENT", "PULLBACK_ZONE_READY", "PULLBACK_ZONE_TOUCHED", "CONFIRMATION_CANDLE"]
-      },
-      {
-        title: "Confirmation Checklist",
-        description: "Trend continuation evidence supporting the VWAP pullback.",
-        codes: ["EMA_ALIGNMENT"]
-      },
-      {
-        title: "Risk & Quality Filters",
-        description: "Execution filters for spread, news, reward-to-risk, and stop size.",
-        codes: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]
-      },
-      {
-        title: "Final Automation Gate",
-        description: "Minimum confidence required before automatic paper trading.",
-        codes: ["SIGNAL_SCORE"]
-      }
-    ]);
-  }
   return [{ title: "Strategy Checklist", description: "Module-specific rules.", rows }];
 }
 
@@ -7349,40 +6720,6 @@ function liveScopedChecklistRows(rows: any[], setup?: any) {
       explanation: "Waiting for the latest Twelve Data candle evaluation. Previous module evidence remains on the chart until the live check refreshes."
     };
   });
-}
-
-function vwapOpeningDriveChecklistRows(evaluations: any[], setup?: any) {
-  const flags = setup?.scenario_flags ?? {};
-  const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
-  if (!byCode.has("STRATEGY_CYCLE_ACTIVE") && byCode.has("NY_SESSION_ACTIVE")) {
-    byCode.set("STRATEGY_CYCLE_ACTIVE", { ...byCode.get("NY_SESSION_ACTIVE"), rule_code: "STRATEGY_CYCLE_ACTIVE", ruleCode: "STRATEGY_CYCLE_ACTIVE" });
-  }
-  const setupState = flags.state ?? setup?.status;
-  const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
-  const defaults = [
-    ["STRATEGY_CYCLE_ACTIVE", "Weekday strategy cycle active", "Module 3 evaluates completed weekday candles from the latest eligible New York open until the next one."],
-    ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of Module 3 paper trades can trigger per session."],
-    ["OPENING_DRIVE_COMPLETE", "Opening drive complete", "The first NY impulse window must finish before pullback entries."],
-    ["OPENING_DRIVE_STRONG", "Opening drive strength", "The opening drive must meet ATR range and candle body requirements."],
-    ["VWAP_ALIGNMENT", "VWAP alignment", "Price must remain on the correct side of VWAP after the opening drive."],
-    ["EMA_ALIGNMENT", "20 EMA alignment", "EMA alignment supports the continuation context."],
-    ["PULLBACK_ZONE_READY", "VWAP/EMA pullback zone ready", "A valid VWAP/EMA value zone must exist before pullback entry."],
-    ["PULLBACK_ZONE_TOUCHED", "Pullback zone touched", "Price must pull back into the VWAP/EMA value zone."],
-    ["CONFIRMATION_CANDLE", "Confirmation candle", "A completed candle must confirm continuation away from the pullback zone."],
-    ["QUALITY_SPREAD", "Spread filter", "Spread must be acceptable for XAUUSD paper entry."],
-    ["QUALITY_NEWS", "No high-impact news", "News filter must be clear for automation."],
-    ["QUALITY_RR", "Minimum RR 2:1", "Reward-to-risk must meet the configured minimum."],
-    ["QUALITY_STOP_SIZE", "Maximum stop size", "Stop distance must remain inside the configured ATR limit."],
-    ["SIGNAL_SCORE", "Minimum signal score", "Module 3 requires a high-quality opening-drive pullback score."]
-  ];
-  const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
-  rows.unshift({
-    rule_code: "MODULE3_STATE",
-    name: "Module 3 state",
-    status: setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY" || setup?.status === "PAPER_TRADE_OPENED" ? "PASS" : "WAITING",
-    explanation: setupState ? `Current engine state: ${String(setupState).replaceAll("_", " ")}.` : "Waiting for NY opening-drive and VWAP pullback evidence."
-  });
-  return rows;
 }
 
 function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
@@ -7769,6 +7106,215 @@ function SignalPrice({ label, value, tone = "" }: { label: string; value: string
   return <div className={`signal-price ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
 }
 
+function PredictionsWorkspace({
+  data,
+  modules,
+  onRefresh,
+  onOpenChart,
+  onOpenSignals
+}: {
+  data?: { summary?: any; predictions?: any[] };
+  modules: any[];
+  onRefresh: () => void;
+  onOpenChart: (moduleCode: string) => void;
+  onOpenSignals: () => void;
+}) {
+  const [moduleFilter, setModuleFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const predictions = data?.predictions ?? [];
+  const summary = data?.summary ?? {};
+  const visible = predictions.filter((prediction) =>
+    (moduleFilter === "ALL" || prediction.moduleCode === moduleFilter) &&
+    (statusFilter === "ALL" || prediction.status === statusFilter)
+  );
+  const selected = predictions.find((prediction) => prediction.id === selectedId) ?? null;
+
+  if (selected) {
+    const actionTone = selected.action === "SELL" ? "sell" : selected.action === "BUY" ? "buy" : "";
+    return (
+      <section className="trade-signals-workspace prediction-workspace admin-section">
+        <div className="signal-detail-toolbar">
+          <button className="signal-back-button" onClick={() => setSelectedId(null)}><ArrowLeft size={17} />Back to predictions</button>
+          <button onClick={() => onOpenChart(selected.moduleCode)}><LineChart size={16} />Open live chart</button>
+          <button onClick={onOpenSignals}><ArrowUpDown size={16} />BUY & SELL</button>
+        </div>
+
+        <section className={`signal-detail-hero ${actionTone}`}>
+          <div>
+            <span>{moduleShortName(selected.moduleCode, selected.moduleName)}</span>
+            <h2>{selected.action} prediction</h2>
+            <p>{formatScenario(selected.scenario)}</p>
+          </div>
+          <div className="signal-detail-state">
+            <strong>{selected.status}</strong>
+            <span>{selected.setupTier} · {formatNepalTime(selected.detectedAt)}</span>
+          </div>
+        </section>
+
+        <div className="signal-price-strip">
+          <SignalPrice label="Predicted entry" value={formatSignalRange(selected.entryRange)} />
+          <SignalPrice label="Stop / invalidation" value={formatPriceValue(selected.stopLoss)} tone="stop" />
+          <SignalPrice label="Main TP" value={formatPriceValue(selected.target)} tone="target" />
+          <SignalPrice label="TP1 50p" value={formatPriceValue(selected.tp1)} tone="target" />
+          <SignalPrice label="TP2 100p" value={formatPriceValue(selected.tp2)} tone="target" />
+          <SignalPrice label="Probability" value={predictionProbabilityLabel(selected)} tone={predictionTone(selected)} />
+        </div>
+
+        <div className="signal-detail-grid">
+          <section className="signal-evidence-panel">
+            <div className="signal-section-heading">
+              <div>
+                <h3><Target size={18} />Prediction reasoning</h3>
+                <p>{selected.nextAction}</p>
+              </div>
+              <span className="signal-check-count">{selected.checklist?.passed ?? 0}/{selected.checklist?.total ?? 0} passed</span>
+            </div>
+            <div className="prediction-reason-stack">
+              {(selected.reasoning ?? []).map((reason: string) => <p key={reason}>{reason}</p>)}
+            </div>
+            <div className="prediction-evidence-grid">
+              {(selected.evidence ?? []).map((item: any) => (
+                <div key={`${item.label}-${item.value ?? item.price}`}>
+                  <span>{item.label}</span>
+                  <strong>{formatPredictionEvidence(item)}</strong>
+                </div>
+              ))}
+              {(selected.evidence ?? []).length === 0 ? <p className="reason">No module evidence has been captured yet.</p> : null}
+            </div>
+          </section>
+
+          <aside className="signal-trade-facts">
+            <h3><ShieldCheck size={18} />Trade readiness</h3>
+            <Metric label="Direction" value={selected.direction ?? "--"} />
+            <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
+            <Metric label="Reward/risk" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
+            <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
+            <Metric label="Grade" value={selected.grade ?? "--"} />
+            <Metric label="Invalidation" value={selected.invalidation ?? "--"} />
+            <Metric label="Paper trade" value={selected.trade?.status ?? "Not opened"} />
+            <Metric label="Horizon" value={tradeHorizonLabel(selected.tradeHorizon)} />
+          </aside>
+        </div>
+
+        <section className="prediction-missing-panel">
+          <h3><XCircle size={18} />Missing before stronger entry</h3>
+          <div className="signal-checklist-detail">
+            {(selected.missing ?? []).map((rule: any) => (
+              <div key={rule.ruleCode} className="signal-check-row fail">
+                <XCircle size={17} />
+                <div>
+                  <strong>{rule.name}</strong>
+                  <span>{rule.explanation}</span>
+                </div>
+                <b>{rule.status}</b>
+              </div>
+            ))}
+            {(selected.missing ?? []).length === 0 ? <p className="reason">No blocking checklist rules remain for this prediction.</p> : null}
+          </div>
+        </section>
+      </section>
+    );
+  }
+
+  return (
+    <section className="trade-signals-workspace prediction-workspace admin-section">
+      <div className="paper-trading-head">
+        <div>
+          <h2><Target size={20} />Predictions</h2>
+          <p>Module candidate entries before or alongside confirmed paper-trade signals. These are predictions, not broker orders.</p>
+        </div>
+        <button onClick={onRefresh}><LineChart size={16} />Refresh</button>
+      </div>
+
+      <div className="signal-summary-strip">
+        <Metric label="Predictions" value={summary.total ?? 0} />
+        <Metric label="BUY bias" value={summary.buy ?? 0} />
+        <Metric label="SELL bias" value={summary.sell ?? 0} />
+        <Metric label="Entry-ready" value={summary.validEntries ?? 0} />
+        <Metric label="Avg probability" value={(summary.averageProbability ?? 0) > 0 ? `${summary.averageProbability}%` : "--"} />
+      </div>
+
+      <div className="paper-toolbar">
+        <div className="paper-segmented" aria-label="Prediction status filter">
+          {["ALL", "VALID ENTRY", "CORE ENTRY", "CORE PREDICTION", "WATCHLIST", "WAITING"].map((status) => (
+            <button key={status} className={statusFilter === status ? "active" : ""} onClick={() => setStatusFilter(status)}>{status === "ALL" ? "All" : status}</button>
+          ))}
+        </div>
+        <label>
+          <span>Strategy</span>
+          <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
+            <option value="ALL">All assigned modules</option>
+            {modules.map((module) => <option key={module.code} value={module.code}>{moduleShortName(module.code, module.name)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="trade-horizon-note">
+        <strong>Prediction workflow</strong>
+        <span>Module 2 predicts from liquidity level {"->"} sweep close-back {"->"} displacement {"->"} BOS/CHoCH {"->"} FVG/OB entry zone {"->"} confirmation.</span>
+      </div>
+
+      <div className="trade-signal-grid prediction-grid">
+        {visible.map((prediction) => (
+          <button
+            key={prediction.id}
+            className={`trade-signal-card prediction-card ${prediction.action === "SELL" ? "sell" : prediction.action === "BUY" ? "buy" : ""}`}
+            onClick={() => setSelectedId(prediction.id)}
+          >
+            <div className="trade-signal-card-head">
+              <div>
+                <span>{moduleShortName(prediction.moduleCode, prediction.moduleName)}</span>
+                <strong>{prediction.action} {prediction.symbol}</strong>
+              </div>
+              <span className="signal-tier">{prediction.status}</span>
+            </div>
+            <div className="trade-signal-chance">
+              <span>Prediction probability</span>
+              <strong className={predictionTone(prediction)}>{predictionProbabilityLabel(prediction)}</strong>
+              <em>{prediction.setupTier} checklist · {prediction.checklist?.passed ?? 0}/{prediction.checklist?.total ?? 0}</em>
+            </div>
+            <div className="trade-signal-entry">
+              <span>Predicted entry zone</span>
+              <strong>{formatSignalRange(prediction.entryRange)}</strong>
+            </div>
+            <div className="trade-signal-levels">
+              <SignalPrice label="SL" value={formatPriceValue(prediction.stopLoss)} tone="stop" />
+              <SignalPrice label="TP" value={formatPriceValue(prediction.target)} tone="target" />
+              <SignalPrice label="RR" value={prediction.rewardToRisk == null ? "--" : `${Number(prediction.rewardToRisk).toFixed(2)}R`} />
+            </div>
+            <p className="prediction-card-reason">{prediction.nextAction}</p>
+            <div className="trade-signal-card-foot">
+              <span>{formatNepalTime(prediction.detectedAt)}</span>
+              <strong>{prediction.trade?.status === "ACTIVE" ? "Paper active" : prediction.setupStatus}</strong>
+            </div>
+          </button>
+        ))}
+      </div>
+      {visible.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No predictions yet</strong><span>Prediction cards appear after modules create live setup candidates from saved XAUUSD candles.</span></div> : null}
+    </section>
+  );
+}
+
+function predictionProbabilityLabel(prediction: any) {
+  const probability = Number(prediction?.probability);
+  return Number.isFinite(probability) ? `${Math.round(probability)}%` : "--";
+}
+
+function predictionTone(prediction: any) {
+  const probability = Number(prediction?.probability);
+  if (!Number.isFinite(probability)) return "";
+  if (probability >= 80) return "target high";
+  if (probability >= 62) return "target";
+  return "warn";
+}
+
+function formatPredictionEvidence(item: any) {
+  const value = item.value == null ? null : String(item.value).replaceAll("_", " ");
+  const price = item.price == null ? null : formatPriceValue(item.price);
+  return [value, price].filter(Boolean).join(" · ") || "--";
+}
+
 function targetLabel(signal: any, index: number, fallback: string) {
   const target = signal?.targets?.[index];
   return target?.pips == null ? fallback : `${target.label ?? `TP${index + 1}`} · ${target.pips} pips`;
@@ -7953,6 +7499,7 @@ function sectionTitle(section: ActiveSection) {
   const titles: Record<ActiveSection, string> = {
     command: "Command Center",
     live: "Live Chart",
+    predictions: "Predictions",
     signals: "BUY & SELL",
     paper: "Paper Trading",
     health: "System Status",
@@ -7971,6 +7518,7 @@ function sectionSubtitle(section: ActiveSection) {
   const subtitles: Record<ActiveSection, string> = {
     command: "One operational view for all enabled XAUUSD strategy modules, paper trades, confidence, and rehearsals.",
     live: "Realtime XAUUSD candles, live indicators, and automatic paper-trade signal state.",
+    predictions: "Candidate BUY and SELL entry predictions with module reasoning, checklist blockers, invalidation, and projected TP/SL.",
     signals: "Live validated BUY and SELL setups with entry range, stop loss, tiered targets, and checklist evidence.",
     paper: "Monitor simulated entries, current conditions, risk-to-reward, TP/SL, and completed outcomes across assigned modules.",
     health: "Live service checks for Twelve Data, PostgreSQL/cache, NY scheduler, chart readiness, and module automation.",
@@ -8071,13 +7619,12 @@ async function loadCommandSnapshots() {
 }
 
 function moduleTimeframe(moduleCode: string, fallback: number) {
-  return moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" || moduleCode === "strategy_lab_3" ? 5 : fallback;
+  return moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" ? 5 : fallback;
 }
 
 function moduleTimingLabel(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "15M OR range / 5M trigger";
   if (moduleCode === "high_probability_strategy_2") return "5M sweep + BOS / 15M bias";
-  if (moduleCode === "strategy_lab_3") return "5M VWAP pullback / 15M bias";
   return `${DEFAULT_TIMEFRAME_MINUTES}M execution`;
 }
 
@@ -8195,22 +7742,6 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
   const moduleSetup = setup?.module_code === moduleCode ? setup : null;
   if (!moduleSetup) return [];
   const flags = moduleSetup.scenario_flags ?? {};
-  if (moduleCode === "strategy_lab_3") {
-    const zone = flags.entryZone ?? {};
-    const drive = flags.drive ?? {};
-    return [
-      { title: "VWAP", price: flags.vwap, color: "#38bdf8" },
-      { title: "EMA 20", price: flags.ema, color: "#f0b429" },
-      { title: "Zone High", price: zone.high, color: "#a78bfa" },
-      { title: "Zone 50%", price: zone.midpoint, color: "#c4b5fd" },
-      { title: "Zone Low", price: zone.low, color: "#a78bfa" },
-      { title: "Drive High", price: drive.high, color: "#7c9cff" },
-      { title: "Drive Low", price: drive.low, color: "#7c9cff" },
-      { title: "Entry", price: moduleSetup.entry_price, color: "#16a46c" },
-      { title: "Stop", price: moduleSetup.stop_price, color: "#e05252" },
-      { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" }
-    ];
-  }
   const sweepPrice = flags.sweep?.level?.price;
   const bosLevel = flags.bos?.level;
   const zone = flags.entryZone ?? {};
@@ -8237,7 +7768,6 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
 function moduleShortName(moduleCode: string, name?: string) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
   if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
-  if (moduleCode === "strategy_lab_3") return "Module 3 VWAP Drive";
   return name ?? "Strategy Module";
 }
 

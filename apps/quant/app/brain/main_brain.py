@@ -7,7 +7,6 @@ from typing import Any
 
 from .module1_orb_brain import decide as decide_module1
 from .module2_sweep_bos_brain import decide as decide_module2
-from .module3_vwap_drive_brain import decide as decide_module3
 
 try:
     import psycopg
@@ -19,13 +18,11 @@ except ImportError as exc:  # pragma: no cover
 MODULES = {
     "orb_max_options": "Module 1 ORB",
     "high_probability_strategy_2": "Module 2 Sweep + BOS",
-    "strategy_lab_3": "Module 3 VWAP Drive",
 }
 
 MODULE_BRAINS = {
     "orb_max_options": decide_module1,
     "high_probability_strategy_2": decide_module2,
-    "strategy_lab_3": decide_module3,
 }
 
 
@@ -72,7 +69,7 @@ def enabled_modules(cur, tenant_id: str) -> list[str]:
         (tenant_id,),
     )
     rows = [row["code"] for row in cur.fetchall()]
-    return rows or list(MODULES.keys())
+    return [row for row in rows if row in MODULES] or list(MODULES.keys())
 
 
 def candle_health(cur) -> dict[str, Any]:

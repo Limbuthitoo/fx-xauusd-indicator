@@ -3,15 +3,15 @@ SET configuration_json = jsonb_set(
   jsonb_set(configuration_json, '{maximumTradesPerSession}', '3'::jsonb, true),
   '{paperTrading,maximumTradesPerSession}', '3'::jsonb, true
 )
-WHERE configuration_json->>'moduleCode' IN ('high_probability_strategy_2', 'strategy_lab_3');
+WHERE configuration_json->>'moduleCode' = 'high_probability_strategy_2';
 
 UPDATE tenant_module_settings
 SET value = jsonb_set(
   jsonb_set(value, '{maximumTradesPerSession}', '3'::jsonb, true),
   '{paperTrading,maximumTradesPerSession}', '3'::jsonb, true
 )
-WHERE module_code IN ('high_probability_strategy_2', 'strategy_lab_3')
-  AND key IN ('liquiditySweep.strategy', 'vwapOpeningDrive.strategy');
+WHERE module_code = 'high_probability_strategy_2'
+  AND key = 'liquiditySweep.strategy';
 
 UPDATE strategy_versions
 SET configuration_json = jsonb_set(

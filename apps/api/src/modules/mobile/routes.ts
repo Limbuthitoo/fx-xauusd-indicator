@@ -72,7 +72,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       `SELECT 1
        FROM tenant_modules tm
        JOIN platform_strategy_modules m ON m.id = tm.module_id
-       WHERE tm.tenant_id = $1 AND m.code = $2 AND tm.status = 'ENABLED'
+       WHERE tm.tenant_id = $1 AND m.code = $2 AND tm.status = 'ENABLED' AND m.status = 'ACTIVE'
        LIMIT 1`,
       [session.tenantId, moduleCode]
     );
@@ -462,7 +462,6 @@ async function modulePerformance(tenantId: string, moduleCode: string, period: "
 function moduleShortName(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
   if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
-  if (moduleCode === "strategy_lab_3") return "Module 3 VWAP Drive";
   return "Strategy Module";
 }
 
@@ -524,19 +523,13 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
     if (bosLevel != null) levels.push({ label: "BOS / CHoCH", price: Number(bosLevel), tone: "entry" });
     if (displacementPrice != null) levels.push({ label: "Displacement", price: Number(displacementPrice), tone: "entry" });
   }
-  if (moduleCode === "strategy_lab_3") {
-    const drive = flags.drive ?? {};
-    if (drive.high != null) levels.push({ label: "Opening Drive High", price: Number(drive.high), tone: "warn" });
-    if (drive.low != null) levels.push({ label: "Opening Drive Low", price: Number(drive.low), tone: "warn" });
-  }
   const zone = flags.entryZone ?? flags.pullbackZone;
   if (zone?.low != null && zone?.high != null) {
-    const zoneName = zone.kind === "ORDER_BLOCK" ? "OB" : zone.kind === "VWAP_PULLBACK_ZONE" ? "Pullback" : "FVG";
+    const zoneName = zone.kind === "ORDER_BLOCK" ? "OB" : "FVG";
     levels.push({ label: `${zoneName} Low`, price: Number(zone.low), tone: "neutral" });
     if (zone.midpoint != null) levels.push({ label: `${zoneName} Mid`, price: Number(zone.midpoint), tone: "neutral" });
     levels.push({ label: `${zoneName} High`, price: Number(zone.high), tone: "neutral" });
   }
-  if (flags.vwap != null) levels.push({ label: "VWAP", price: Number(flags.vwap), tone: "entry" });
   return dedupeMobileLevels(levels.filter((level) => Number.isFinite(level.price)));
 }
 

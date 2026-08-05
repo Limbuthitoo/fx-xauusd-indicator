@@ -822,29 +822,6 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
   const direction = setup.direction;
   const isLong = direction === "LONG";
   const markers: SeriesMarker<Time>[] = [];
-  if (setup.module_code === "strategy_lab_3") {
-    const driveTime = flags.drive?.end?.timestampUtc ?? flags.drive?.start?.timestampUtc;
-    if (driveTime) {
-      markers.push({
-        time: toChartTime(driveTime),
-        position: isLong ? "belowBar" : "aboveBar",
-        color: "#38bdf8",
-        shape: isLong ? "arrowUp" : "arrowDown",
-        text: "M3 Drive"
-      });
-    }
-    const zoneTime = setup.detected_at;
-    if (zoneTime && flags.entryZone?.low != null && flags.entryZone?.high != null) {
-      markers.push({
-        time: toChartTime(zoneTime),
-        position: isLong ? "belowBar" : "aboveBar",
-        color: "#a78bfa",
-        shape: "circle",
-        text: "M3 VWAP Pullback"
-      });
-    }
-    return markers;
-  }
   if (setup.module_code !== "high_probability_strategy_2") return [];
   const sweepTime = flags.sweep?.closedBackAt ?? flags.sweep?.sweptAt;
   const confirmedEntry = flags.mandatoryChecklistMatched === true || ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(String(setup.status));
@@ -977,35 +954,8 @@ function buildPositionedOverlays(input: {
     addHorizontalLine("orb-low", "15M ORB Low", "orbLow", input.openingRange?.low);
     return overlays;
   }
-  if ((input.moduleCode === "high_probability_strategy_2" || input.moduleCode === "strategy_lab_3") && input.session?.session_start_at && input.session?.signal_window_end_at) {
+  if (input.moduleCode === "high_probability_strategy_2" && input.session?.session_start_at && input.session?.signal_window_end_at) {
     addBox("ny-session", "New York", "session", input.session.session_start_at, input.session.signal_window_end_at, sessionLow, sessionHigh);
-  }
-
-  if (input.setup?.module_code === "strategy_lab_3" && input.setup.scenario_flags) {
-    const flags = input.setup.scenario_flags;
-    const evidenceEnd = input.setup.detected_at ?? latestTime;
-    const zone = flags.entryZone;
-    if (zone?.low != null && zone?.high != null) {
-      addBox("module3-vwap-zone", "VWAP Pullback", "fvg", flags.drive?.end?.timestampUtc ?? input.session?.session_start_at, evidenceEnd, zone.low, zone.high);
-    }
-    const drive = flags.drive;
-    if (drive?.start?.timestampUtc && drive?.end?.timestampUtc) {
-      addBox("module3-opening-drive", "Opening Drive", "displacement", drive.start.timestampUtc, drive.end.timestampUtc, drive.low, drive.high);
-    }
-    const entry = numberValue(input.setup.entry_price);
-    const stop = numberValue(input.setup.stop_price);
-    const target = numberValue(input.setup.target_price);
-    const planEnd = latestTime && latestTime !== evidenceEnd ? latestTime : addMinutes(evidenceEnd ?? latestTime, input.moduleCode === "strategy_lab_3" ? 45 : 30);
-    if (entry != null && stop != null) {
-      addBox("module3-risk-box", "Risk", "invalid", evidenceEnd, planEnd, Math.min(entry, stop), Math.max(entry, stop));
-    }
-    if (entry != null && target != null) {
-      addBox("module3-reward-box", "Reward", "reward", evidenceEnd, planEnd, Math.min(entry, target), Math.max(entry, target));
-    }
-    if (entry != null) {
-      addBox("module3-entry-band", "Entry", "entry", evidenceEnd, planEnd, entry - 0.03, entry + 0.03);
-    }
-    return overlays;
   }
 
   if (input.setup?.module_code !== "high_probability_strategy_2" || !input.setup.scenario_flags) return overlays;

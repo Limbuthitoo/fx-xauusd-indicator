@@ -58,7 +58,7 @@ SET configuration_json = jsonb_set(
 FROM strategies s
 LEFT JOIN strategy_sources src ON src.id = s.source_id
 WHERE sv.strategy_id = s.id
-  AND COALESCE(sv.configuration_json->>'moduleCode', src.metadata->>'moduleCode', 'orb_max_options') IN ('high_probability_strategy_2', 'strategy_lab_3');
+  AND COALESCE(sv.configuration_json->>'moduleCode', src.metadata->>'moduleCode', 'orb_max_options') = 'high_probability_strategy_2';
 
 UPDATE tenant_module_settings
 SET value = jsonb_set(
@@ -74,4 +74,4 @@ SET value = jsonb_set(
     ),
     updated_at = now()
 WHERE (module_code = 'high_probability_strategy_2' AND key = 'liquiditySweep.strategy')
-   OR (module_code = 'strategy_lab_3' AND key = 'vwapOpeningDrive.strategy');
+   OR false;

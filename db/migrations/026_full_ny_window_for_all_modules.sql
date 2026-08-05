@@ -12,7 +12,7 @@ SET
   value = jsonb_set(value, '{newYorkEndTime}', '"16:00"'::jsonb, true),
   updated_at = now()
 WHERE (module_code = 'high_probability_strategy_2' AND key = 'liquiditySweep.strategy')
-   OR (module_code = 'strategy_lab_3' AND key = 'vwapOpeningDrive.strategy');
+   OR false;
 
 UPDATE trading_sessions
 SET
@@ -23,8 +23,8 @@ SET
       THEN 'OPENING_RANGE_LOCKED'
     ELSE state
   END
-WHERE module_code IN ('high_probability_strategy_2', 'strategy_lab_3')
-  AND session_preset IN ('NY_SWEEP_BOS', 'NY_VWAP_DRIVE')
+WHERE module_code = 'high_probability_strategy_2'
+  AND session_preset = 'NY_SWEEP_BOS'
   AND signal_window_end_at < session_start_at + interval '6 hours 30 minutes'
   AND state NOT IN ('TRADE_CLOSED', 'SESSION_COMPLETED', 'NO_TRADE');
 
@@ -45,7 +45,7 @@ SET
     ELSE phase
   END,
   updated_at = now()
-WHERE module_code IN ('high_probability_strategy_2', 'strategy_lab_3')
+WHERE module_code = 'high_probability_strategy_2'
   AND session_start_at IS NOT NULL
   AND signal_window_end_at IS NOT NULL
   AND signal_window_end_at < session_start_at + interval '6 hours 30 minutes';

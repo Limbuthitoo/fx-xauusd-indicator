@@ -7,6 +7,7 @@ export async function strategyRoutes(app: FastifyInstance) {
       SELECT s.*, COALESCE(json_agg(sv.*) FILTER (WHERE sv.id IS NOT NULL), '[]') AS versions
       FROM strategies s
       LEFT JOIN strategy_versions sv ON sv.strategy_id = s.id
+      WHERE s.status <> 'RETIRED'
       GROUP BY s.id
       ORDER BY s.created_at DESC
     `);

@@ -21,7 +21,7 @@ The mobile chart does not call Twelve Data. It uses the backend API for initial 
 The API stores Expo push tokens in PostgreSQL and sends push alerts when automation creates tenant notifications through the live market-data path:
 
 - NY pre-session warning.
-- Valid Module 1, Module 2, or Module 3 setup alert.
+- Valid Module 1 or Module 2 setup alert.
 - Paper trade opened.
 - Paper trade closed by TP, SL, or session close.
 
@@ -126,7 +126,7 @@ For a physical phone, the API URL cannot be `localhost` unless the API is runnin
 
 - Home: session posture, quick actions, assigned-module watch, and latest alert shortcut.
 - BUY & SELL: Short/Long setup tabs, actionable module setup cards, detail screen with entry range, SL, TP, RR, chance, paper status, and grouped checklist evidence.
-- Live Chart: selected-module XAUUSD chart using backend cache and websocket updates, with compact Module 1 ORB, Module 2 Sweep+BOS, and Module 3 VWAP overlay legends.
+- Live Chart: selected-module XAUUSD chart using backend cache and websocket updates, with compact Module 1 ORB and Module 2 Sweep+BOS overlay legends.
 - Paper Trading: journal/performance view for automatic paper trades.
 - More: alerts/history, push settings, security, assigned modules, support, app updates, websocket status, and app details.
 - Home shows an update banner when Platform Admin has uploaded a newer APK; More > App Updates shows release details, changelog, file size, and download.

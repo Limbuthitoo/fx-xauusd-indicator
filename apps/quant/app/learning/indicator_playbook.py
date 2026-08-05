@@ -78,80 +78,9 @@ MODULE2_RULES: dict[str, dict[str, str]] = {
 }
 
 
-MODULE3_RULES: dict[str, dict[str, str]] = {
-    "STRATEGY_CYCLE_ACTIVE": {
-        "indicator": "Weekday strategy cycle",
-        "meaning": "Evaluate completed candles from the latest eligible New York open until the next eligible New York open.",
-        "treatment": "Hard gate. Saturday, Sunday, configured market holidays, and candles outside the anchored cycle remain blocked.",
-    },
-    "NY_SESSION_ACTIVE": {
-        "indicator": "Legacy New York session gate",
-        "meaning": "Historical Module 3 setups used the former New York-only strategy gate.",
-        "treatment": "Compatibility evidence only. New Module 3 setups use STRATEGY_CYCLE_ACTIVE.",
-    },
-    "OPENING_DRIVE_COMPLETE": {
-        "indicator": "Opening drive",
-        "meaning": "The first impulse window has completed so the system can define drive direction.",
-        "treatment": "Hard gate. Do not enter before the drive window finishes.",
-    },
-    "OPENING_DRIVE_STRONG": {
-        "indicator": "Drive strength",
-        "meaning": "The NY impulse has enough range and body commitment relative to recent volatility.",
-        "treatment": "Hard gate. Weak drives are likely chop and should not trigger continuation entries.",
-    },
-    "VWAP_ALIGNMENT": {
-        "indicator": "VWAP alignment",
-        "meaning": "Price remains on the continuation side of VWAP after the opening drive.",
-        "treatment": "Hard gate. Losing VWAP weakens the continuation thesis.",
-    },
-    "VWAP_DATA_QUALITY": {
-        "indicator": "VWAP data quality",
-        "meaning": "At least 80% of session candles contain usable provider volume for a true volume-weighted calculation.",
-        "treatment": "Full-quality confirmation. Missing volume falls back to a clearly labelled typical-price proxy and cannot receive a FULL grade.",
-    },
-    "EMA_ALIGNMENT": {
-        "indicator": "EMA alignment",
-        "meaning": "Short-term trend agrees with the opening-drive direction.",
-        "treatment": "Confirmation. Useful for grading and confidence.",
-    },
-    "HTF_15M_BIAS": {
-        "indicator": "Completed 15-minute bias",
-        "meaning": "Completed 15-minute structure and EMA slope agree with the 5-minute opening-drive direction.",
-        "treatment": "Full-quality confirmation. A mandatory-tier paper observation may proceed without it, but it cannot be graded FULL.",
-    },
-    "PULLBACK_ZONE_READY": {
-        "indicator": "VWAP/EMA pullback zone",
-        "meaning": "VWAP and EMA create a value area where pullback risk can be defined.",
-        "treatment": "Hard gate. Without a zone, there is no structured entry.",
-    },
-    "PULLBACK_ZONE_TOUCHED": {
-        "indicator": "Pullback touch",
-        "meaning": "Price has returned to the VWAP/EMA zone after the drive.",
-        "treatment": "Hard gate. Avoid chasing away from value.",
-    },
-    "CONFIRMATION_CANDLE": {
-        "indicator": "Continuation candle",
-        "meaning": "A completed candle confirms price is leaving the pullback zone in the drive direction.",
-        "treatment": "Hard gate for paper entry.",
-    },
-    "QUALITY_RR": {
-        "indicator": "Reward-to-risk",
-        "meaning": "The VWAP pullback plan offers enough reward compared with stop distance.",
-        "treatment": "Quality gate. Below 2R should be avoided or kept as watch-only.",
-    },
-    "QUALITY_STOP_SIZE": {
-        "indicator": "Stop size",
-        "meaning": "The SL is not too wide relative to current volatility.",
-        "treatment": "Quality gate.",
-    },
-}
-
-
 def playbook_for(module_code: str) -> dict[str, dict[str, str]]:
     if module_code == "high_probability_strategy_2":
         return MODULE2_RULES
-    if module_code == "strategy_lab_3":
-        return MODULE3_RULES
     return {}
 
 

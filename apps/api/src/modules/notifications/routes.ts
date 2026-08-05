@@ -49,8 +49,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     );
     const modules = [
       { moduleCode: "orb_max_options", moduleName: "Module 1 ORB", prefixes: ["MODULE1", "ORB"] },
-      { moduleCode: "high_probability_strategy_2", moduleName: "Module 2 Sweep + BOS", prefixes: ["MODULE2"] },
-      { moduleCode: "strategy_lab_3", moduleName: "Module 3 VWAP Drive", prefixes: ["MODULE3"] }
+      { moduleCode: "high_probability_strategy_2", moduleName: "Module 2 Sweep + BOS", prefixes: ["MODULE2"] }
     ];
     return modules.map((module) => {
       const items = rows.rows.filter((item: any) => notificationBelongsToModule(item, module.prefixes));
@@ -82,7 +81,6 @@ export async function notificationRoutes(app: FastifyInstance) {
 
 function notificationModulePrefix(moduleCode: string) {
   if (moduleCode === "high_probability_strategy_2") return "MODULE2";
-  if (moduleCode === "strategy_lab_3") return "MODULE3";
   if (moduleCode === "orb_max_options") return "MODULE1";
   return "";
 }

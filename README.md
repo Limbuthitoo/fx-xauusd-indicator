@@ -12,7 +12,7 @@ Ready locally:
 
 - Tenant dashboard
 - Platform admin dashboard
-- Module 1, 2, and 3 strategy automation foundations
+- Module 1 and Module 2 strategy automation foundations
 - Shared XAUUSD Twelve Data feed architecture
 - PostgreSQL migrations and seed data
 - Redis-ready worker coordination
@@ -52,17 +52,6 @@ Independent module for New York liquidity sweep plus displacement and BOS/CHoCH.
 - Trade grade/confidence
 - FVG/order-block/sweep/BOS visual evidence
 - Paper trade, journal, learning, replay, and backtest tooling
-
-### Module 3: NY VWAP Opening Drive Pullback
-
-Independent VWAP opening-drive pullback module for XAUUSD.
-
-- 5-minute timeframe
-- VWAP/opening-drive logic
-- Continuous weekday evaluation anchored to the most recent eligible New York open
-- One-minute evaluation during the shared NY feed and ordered 5-minute backlog evaluation after each 30-minute off-session catch-up
-- Module-specific checklist and paper trading
-- Journal, reports, replay, and readiness tooling
 
 ## Notifications
 
@@ -489,9 +478,9 @@ Twelve Data free-tier planning currently assumes:
 
 The expected weekday baseline is about 390 live-window requests plus about 34 off-session catch-ups and, when needed after a restart, one startup recovery request: approximately 424-425 credits. Chart refreshes and tenant readiness checks read PostgreSQL and consume zero Twelve Data credits. Only the dedicated worker and an explicit platform super-admin force sync can call the provider.
 
-The shared source interval is always 5 minutes. Module 1 builds its 15-minute opening range from the first three completed 5-minute New York candles. Modules 2 and 3 execute on completed 5-minute candles and derive completed 15-minute context from the same stored source, so they do not consume separate Twelve Data calls. Module 3 remains available between New York live windows by evaluating every newly stored 5-minute candle in order after the shared 30-minute catch-up; this does not add provider calls. Module 1 remains restricted to its New York strategy window, and all live strategy entries remain disabled on Saturday and Sunday.
+The shared source interval is always 5 minutes. Module 1 builds its 15-minute opening range from the first three completed 5-minute New York candles. Module 2 executes on completed 5-minute candles and derives completed 15-minute context from the same stored source, so it does not consume separate Twelve Data calls. Module 1 remains restricted to its New York strategy window, and all live strategy entries remain disabled on Saturday and Sunday.
 
-Module 2 follows `liquidity level -> NY sweep and close-back -> displacement -> candle-close BOS/CHoCH -> fresh FVG/order block -> retrace -> confirmation`. Module 3 follows `completed NY opening drive -> session VWAP alignment -> dynamic VWAP/EMA pullback -> confirmation`, with completed 15-minute context required for a FULL grade. Mandatory-only setups remain small paper observations; no real broker orders are supported.
+Module 2 follows `liquidity level -> NY sweep and close-back -> displacement -> candle-close BOS/CHoCH -> fresh FVG/order block -> retrace -> confirmation`. Mandatory-only setups remain small paper observations; no real broker orders are supported.
 
 ## Disclaimer
 

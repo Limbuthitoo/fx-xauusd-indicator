@@ -14,7 +14,7 @@ except ImportError as exc:  # pragma: no cover
 from .indicator_playbook import indicator_summary, playbook_for
 
 
-MODULES = ("high_probability_strategy_2", "strategy_lab_3")
+MODULES = ("high_probability_strategy_2",)
 
 
 def run_indicator_audit(database_url: str, tenant_id: str, module_code: str | None = None) -> dict[str, Any]:
@@ -108,25 +108,6 @@ def overlay_from_setup(setup: dict[str, Any]) -> dict[str, Any]:
     flags = setup.get("scenario_flags") or {}
     if isinstance(flags, str):
         flags = json.loads(flags)
-    module_code = "strategy_lab_3" if "drive" in flags else "high_probability_strategy_2"
-    if module_code == "strategy_lab_3":
-        zone = flags.get("entryZone") or {}
-        drive = flags.get("drive") or {}
-        return {
-            "setupId": str(setup["id"]),
-            "moduleCode": module_code,
-            "signal": setup.get("direction"),
-            "levels": compact_levels(
-                [
-                    level("VWAP", flags.get("vwap"), "vwap"),
-                    level("EMA", flags.get("ema"), "ema"),
-                    level("Entry", setup.get("entry_price"), "entry"),
-                    level("Stop", setup.get("stop_price"), "stop"),
-                    level("Target", setup.get("target_price"), "target"),
-                ]
-            ),
-            "boxes": compact_boxes([box("Opening Drive", drive.get("low"), drive.get("high"), drive.get("start", {}).get("timestampUtc"), drive.get("end", {}).get("timestampUtc")), box("VWAP Pullback Zone", zone.get("low"), zone.get("high"), None, setup.get("detected_at"))]),
-        }
     sweep = flags.get("sweep") or {}
     displacement = flags.get("displacement") or {}
     bos = flags.get("bos") or {}
@@ -192,14 +173,6 @@ def treatment_rules(module_code: str) -> list[str]:
             "Displacement must show body commitment after the sweep; overlapping chop stays watch-only.",
             "BOS/CHoCH must be a candle-close break beyond a valid swing, not a wick-only break.",
             "Use fresh FVG/order-block retrace for entry definition; avoid chasing far from the zone.",
-            "Mandatory setup can open a small paper trade; full confirmation upgrades confidence.",
-        ]
-    if module_code == "strategy_lab_3":
-        return [
-            "Do not enter before the opening-drive window completes.",
-            "The drive must have real range/body expansion before VWAP pullback logic is valid.",
-            "VWAP side and pullback-zone touch are mandatory; EMA is confirmation.",
-            "Confirmation candle must leave the pullback zone in the drive direction.",
             "Mandatory setup can open a small paper trade; full confirmation upgrades confidence.",
         ]
     return []

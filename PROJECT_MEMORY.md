@@ -89,19 +89,17 @@ Expected daily usage target:
 - Confirmation and quality filters score the setup.
 - Module 2 can continue evaluating outside Module 1 ORB rules where strategy rules allow.
 
-### Module 3: NY VWAP Opening Drive Pullback
+## Predictions
 
-- Code: `strategy_lab_3`
-- Purpose: VWAP opening-drive pullback strategy for XAUUSD.
-- Execution: 5-minute candles.
-- Context/bias: 15-minute trend/VWAP bias.
-- Must detect and display:
-  - NY opening drive.
-  - VWAP alignment.
-  - Pullback into VWAP/EMA zone.
-  - Confirmation candle.
-  - Risk/reward plan.
-- Module 3 should work independently from Module 1 and Module 2 logic.
+The tenant dashboard includes a `Predictions` sidebar page.
+
+Rules:
+
+- Predictions come from module-owned setup candidates and checklist evaluations stored in PostgreSQL.
+- Predictions do not call Twelve Data.
+- Module 2 prediction flow is: liquidity level -> sweep close-back -> displacement -> BOS/CHoCH -> FVG/order-block entry zone -> confirmation.
+- Prediction cards show BUY/SELL bias, predicted entry zone, SL, TP, probability, evidence, missing blockers, invalidation, and next action.
+- Predictions are not guaranteed entries. Paper trades and BUY/SELL cards require the module rules to pass.
 
 ## BUY & SELL Page
 
@@ -158,6 +156,7 @@ Sidebar includes:
 
 - Command Center
 - Live Chart
+- Predictions
 - BUY & SELL
 - Paper Trading
 - System Status
@@ -208,7 +207,6 @@ Platform admin should not log into tenant dashboard as a tenant.
 - Mobile chart overlays:
   - Module 1: 15M ORB High/Mid/Low plus paper entry/SL/TP levels.
   - Module 2: liquidity sweep, sweep high/low, BOS/CHoCH, displacement, FVG/OB entry zone, entry/SL/TP.
-  - Module 3: VWAP, opening-drive high/low, pullback zone, entry/SL/TP.
 - Mobile app uses app icon/logo assets from the project.
 - APK builds should auto-increase version when using the project build script.
 

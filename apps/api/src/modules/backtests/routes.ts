@@ -7,7 +7,6 @@ import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantModuleStrategyConfiguration, updateTenantModuleSetting } from "../admin/settings.js";
 import { runModule2LearningPython, runStrategyIndicatorAuditPython, runStrategyModuleLearningPython } from "../admin/learning.js";
 import { requireTenantModule } from "../auth/routes.js";
-import { evaluateVwapOpeningDrive } from "../market-data/routes.js";
 
 type BacktestTrade = {
   sessionDate: string;
@@ -28,7 +27,7 @@ export async function backtestRoutes(app: FastifyInstance) {
     const moduleCode = body.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
     const symbol = body.symbol ?? "XAUUSD";
-    const timeframe = moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" || moduleCode === "strategy_lab_3" ? 5 : body.timeframeMinutes ?? 5;
+    const timeframe = moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" ? 5 : body.timeframeMinutes ?? 5;
     const version = await selectedStrategyVersion(moduleCode);
     const candles = (await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
@@ -72,8 +71,6 @@ export async function backtestRoutes(app: FastifyInstance) {
     try {
       const configuration = moduleCode === "high_probability_strategy_2"
         ? await getTenantModuleStrategyConfiguration(auth.tenantId, moduleCode, "liquiditySweep.strategy", version.configuration_json)
-        : moduleCode === "strategy_lab_3"
-          ? await getTenantModuleStrategyConfiguration(auth.tenantId, moduleCode, "vwapOpeningDrive.strategy", version.configuration_json)
         : version.configuration_json;
       const researchConfiguration = researchBacktestConfiguration(configuration);
       const result = moduleCode === "high_probability_strategy_2"
@@ -82,15 +79,6 @@ export async function backtestRoutes(app: FastifyInstance) {
           timeframe,
           candles,
           strategyVersionId: version.id,
-          configuration: researchConfiguration,
-          source: candleSource
-        })
-        : moduleCode === "strategy_lab_3"
-          ? runVwapOpeningDriveMemoryCacheBacktest({
-            symbol,
-            timeframe,
-            candles,
-            strategyVersionId: version.id,
             configuration: researchConfiguration,
             source: candleSource
           })
@@ -421,7 +409,7 @@ export async function backtestRoutes(app: FastifyInstance) {
 
 async function runPostBacktestLearning(tenantId: string | null, moduleCode: string) {
   if (!tenantId) return null;
-  if (!["orb_max_options", "high_probability_strategy_2", "strategy_lab_3"].includes(moduleCode)) return null;
+  if (!["orb_max_options", "high_probability_strategy_2"].includes(moduleCode)) return null;
   try {
     return await runStrategyModuleLearningPython(tenantId, moduleCode);
   } catch (error) {
@@ -578,155 +566,6 @@ function runLiquiditySweepMemoryCacheBacktest(input: {
       directionBreakdown,
       gradeBreakdown,
       liquidityBreakdown,
-      scenarioBreakdown: metrics.scenario_breakdown
-    }
-  };
-}
-
-function runVwapOpeningDriveMemoryCacheBacktest(input: {
-  symbol: string;
-  timeframe: number;
-  candles: Candle[];
-  strategyVersionId: string;
-  configuration: any;
-  source?: string;
-}) {
-  const candles = [...input.candles].sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
-  const config = input.configuration ?? {};
-  const sessionStart = String(config.newYorkStartTime ?? "09:30");
-  const tradeWindowEnd = String(config.newYorkEndTime ?? "16:00");
-  const byDate = new Map<string, Candle[]>();
-  for (const candle of candles) {
-    const date = newYorkDate(new Date(candle.timestampUtc));
-    byDate.set(date, [...(byDate.get(date) ?? []), candle]);
-  }
-
-  const trades: BacktestTrade[] = [];
-  let sessionsTested = 0;
-  let skippedSessions = 0;
-
-  for (const [sessionDate, group] of [...byDate.entries()].sort()) {
-    sessionsTested += 1;
-    const times = sessionTimesForDate(sessionDate, sessionStart, 0, tradeWindowEnd);
-    const signalCandles = group.filter((candle) => candle.timestampUtc >= times.sessionStartAt && candle.timestampUtc <= times.signalWindowEndAt);
-    if (signalCandles.length < 25) {
-      skippedSessions += 1;
-      continue;
-    }
-    for (let index = 0; index < signalCandles.length; index += 1) {
-      const current = signalCandles[index];
-      const setupCandles = group.filter((candle) => candle.timestampUtc <= current.timestampUtc);
-      const decision: any = evaluateVwapOpeningDrive({
-        now: current.timestampUtc,
-        symbol: input.symbol,
-        candles: setupCandles,
-        biasCandles: aggregateCandles(candles.filter((candle) => candle.timestampUtc <= current.timestampUtc).slice(-600), input.timeframe, 15)
-          .filter((candle) => new Date(candle.timestampUtc).getTime() <= new Date(current.timestampUtc).getTime() - 15 * 60_000),
-        sessionStartAt: times.sessionStartAt,
-        sessionEndAt: times.signalWindowEndAt,
-        spread: current.spread ?? null,
-        newsStatus: "CLEAR",
-        tradesTakenThisSession: trades.filter((trade) => trade.sessionDate === sessionDate).length,
-        configuration: config
-      });
-      if (decision.status !== "LONG SETUP READY" && decision.status !== "SHORT SETUP READY") continue;
-      if (!decision.direction || decision.entryPrice == null || decision.stopPrice == null || decision.targetPrice == null) continue;
-      const exit = simulateExit(signalCandles.slice(index + 1), decision.direction as Direction, decision.entryPrice, decision.stopPrice, decision.targetPrice);
-      const flags = decision.scenarioFlags ?? {};
-      trades.push({
-        sessionDate,
-        scenario: decision.scenario,
-        direction: decision.direction as Direction,
-        entryPrice: decision.entryPrice,
-        stopPrice: decision.stopPrice,
-        targetPrice: decision.targetPrice,
-        resultR: exit.resultR,
-        outcome: exit.outcome,
-        ambiguous: exit.ambiguous,
-        details: {
-          moduleCode: "strategy_lab_3",
-          entryTime: current.timestampUtc,
-          exitTime: exit.exitTime,
-          finalReason: decision.finalReason,
-          favorabilityScore: decision.favorabilityScore,
-          favorabilityGrade: decision.favorabilityGrade,
-          drive: (flags as any).drive ?? null,
-          vwap: (flags as any).vwap ?? null,
-          ema: (flags as any).ema ?? null,
-          entryZone: (flags as any).entryZone ?? null,
-          riskReward: (flags as any).riskReward ?? null,
-          evaluations: decision.evaluations ?? [],
-          instruction: tradeInstruction({
-            moduleCode: "strategy_lab_3",
-            direction: decision.direction as Direction,
-            entry: decision.entryPrice,
-            stop: decision.stopPrice,
-            target: decision.targetPrice,
-            reason: decision.finalReason,
-            checklist: decision.evaluations ?? []
-          }),
-          checklist: (decision.evaluations ?? []).map((evaluation: any) => ({
-            ruleCode: evaluation.ruleCode,
-            name: evaluation.name,
-            status: evaluation.status,
-            blocking: evaluation.blocking,
-            explanation: evaluation.explanation
-          })),
-          hourNewYork: new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date(current.timestampUtc)),
-          weekday: new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(new Date(current.timestampUtc)),
-          scenarioFlags: flags
-        }
-      });
-      if (exit.exitOffset == null) break;
-      index += exit.exitOffset + 1;
-    }
-  }
-
-  const metrics = buildMetrics(trades, sessionsTested, sessionsTested - skippedSessions, skippedSessions, candles.length);
-  const directionBreakdown = breakdownByTrade(trades, (trade) => trade.direction ?? "UNKNOWN");
-  const gradeBreakdown = breakdownByTrade(trades, (trade) => String((trade.details as any).favorabilityGrade ?? "UNKNOWN"));
-  const advanced = {
-    max_drawdown_r: maxDrawdownR(trades),
-    max_loss_streak: maxLossStreak(trades),
-    best_trade: bestTrade(trades),
-    worst_trade: worstTrade(trades),
-    confidence: {
-      status: trades.length >= 30 ? "RESEARCH_READY" : "LOW_SAMPLE",
-      reason: trades.length >= 30 ? "Module 3 has enough sample trades for early tuning review." : "Module 3 needs more NY sessions before trusting win-rate claims.",
-      sampleSize: trades.length
-    },
-    direction_breakdown: directionBreakdown,
-    grade_breakdown: gradeBreakdown
-  };
-  return {
-    trades,
-    metrics: {
-      ...metrics,
-      ...advanced,
-      hour_breakdown: breakdownByDetail(trades, "hourNewYork"),
-      weekday_breakdown: breakdownByDetail(trades, "weekday"),
-      score_breakdown: scoreBreakdown(trades)
-    },
-    summary: {
-      source: input.source ?? "LIVE_MEMORY_CACHE",
-      moduleCode: "strategy_lab_3",
-      symbol: input.symbol,
-      timeframeMinutes: input.timeframe,
-      candleCount: candles.length,
-      sessionsTested,
-      sessionsWithRange: sessionsTested - skippedSessions,
-      skippedSessions,
-      trades: trades.length,
-      winRate: metrics.win_rate,
-      totalR: metrics.total_r,
-      averageR: metrics.average_r,
-      maxDrawdownR: advanced.max_drawdown_r,
-      maxLossStreak: advanced.max_loss_streak,
-      confidence: advanced.confidence,
-      bestTrade: advanced.best_trade,
-      worstTrade: advanced.worst_trade,
-      directionBreakdown,
-      gradeBreakdown,
       scenarioBreakdown: metrics.scenario_breakdown
     }
   };
@@ -1817,17 +1656,6 @@ async function selectedStrategyVersion(moduleCode = "orb_max_options") {
        FROM strategy_versions sv
        JOIN strategies s ON s.id = sv.strategy_id
        WHERE s.id = '00000000-0000-0000-0000-000000000302'
-       ORDER BY sv.activated_at DESC NULLS LAST, sv.created_at DESC
-       LIMIT 1`
-    );
-    return result.rows[0] as any;
-  }
-  if (moduleCode === "strategy_lab_3") {
-    const result = await query(
-      `SELECT sv.*
-       FROM strategy_versions sv
-       JOIN strategies s ON s.id = sv.strategy_id
-       WHERE s.id = '00000000-0000-0000-0000-000000000303'
        ORDER BY sv.activated_at DESC NULLS LAST, sv.created_at DESC
        LIMIT 1`
     );
