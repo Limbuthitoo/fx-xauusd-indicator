@@ -8,6 +8,7 @@ export type LiquiditySweepState =
   | "WAITING_FOR_CONFIRMATION"
   | "STRUCTURE_BREAK_CANDIDATE"
   | "STRUCTURE_BREAK_CONFIRMED"
+  | "WAITING_FOR_RETEST"
   | "RETEST_REACHED"
   | "ENTRY_READY"
   | "TRADE_ACTIVE"
@@ -99,8 +100,8 @@ export type LiquiditySweepConfig = {
   roundNumberStep: number;
   roundNumberWindowSteps: number;
   manualLevels?: Array<{ price: number; side?: "BUY_SIDE" | "SELL_SIDE"; label?: string; priority?: "HIGH" | "MEDIUM" | "LOW" }>;
-  emaFilterMode: "OFF" | "RECORD_ONLY" | "REQUIRE_ALIGNMENT";
-  volumeFilterMode: "OFF" | "RECORD_ONLY" | "REQUIRE_EXPANSION";
+  emaFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_ALIGNMENT" | "REQUIRE_COUNTERTREND";
+  volumeFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_EXPANSION";
   maximumTradesPerSession: number;
   zoneToleranceATR: number;
   equalityToleranceATR: number;
@@ -359,6 +360,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "ENTRY_ZONE_READY", "Fresh entry zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "fresh FVG or order block", zone ? "A fresh imbalance/order-block zone is available for entry." : "No fresh FVG or order-block zone is available after BOS/CHoCH.");
   if (!zone) return waitDecision("WAITING_FOR_ENTRY_ZONE", "BOS/CHoCH is confirmed. Waiting for a fresh FVG/order-block entry zone.", evaluations, flags, levels, htfBias, sweep, direction, zone);
   flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
 
   const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
   push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
@@ -373,6 +375,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const volumeExpansionOk = confirmsVolumeExpansion(setupCandles, currentIndex);
   const emaAlignmentOk = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
     && (!config.requireHtfBias || htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH"));
+  const emaCountertrendOk = !emaAlignmentOk && htfBias === (direction === "LONG" ? "BEARISH" : "BULLISH");
   const ema200Ok = config.emaFilterMode === "OFF" ? false : emaAlignmentOk;
   const sessionCandles = setupCandles.filter((candle) =>
     newYorkDateKey(candle.timestampUtc) === newYorkDateKey(current.timestampUtc)
@@ -382,12 +385,16 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const vwapRows = sessionCandles.length > 0 ? sessionCandles : setupCandles;
   const vwapVolumeCoverage = vwapRows.length > 0 ? vwapRows.filter((candle) => Number(candle.volume) > 0).length / vwapRows.length : 0;
   const vwapOk = vwapVolumeCoverage >= 0.8 && (direction === "LONG" ? current.close >= vwap : current.close <= vwap);
-  const emaModeOk = config.emaFilterMode !== "REQUIRE_ALIGNMENT" || emaAlignmentOk;
+  const emaModeOk = config.emaFilterMode === "REQUIRE_ALIGNMENT"
+    ? emaAlignmentOk
+    : config.emaFilterMode === "REQUIRE_COUNTERTREND"
+      ? emaCountertrendOk
+      : true;
   const volumeModeOk = config.volumeFilterMode !== "REQUIRE_EXPANSION" || volumeExpansionOk;
   const fvgOk = Boolean(fvg);
   const orderBlockRetestOk = Boolean(orderBlock && current.low <= orderBlock.high && current.high >= orderBlock.low);
   const confirmations = [
-    { code: "CONFIRM_EMA_200", name: "15M structure and 200 EMA alignment", passed: ema200Ok, points: 15, actual: `${config.emaFilterMode} / ${htfBias} / ${emaAlignmentOk ? "aligned" : "not aligned"}`, required: `${direction === "LONG" ? "BULLISH" : "BEARISH"} 15M context`, explanation: config.emaFilterMode === "OFF" ? "EMA mode is OFF; alignment is not counted as a confirmation." : ema200Ok ? "The completed 15M structure and EMA context align with the setup." : "The 15M structure/EMA context is neutral or opposes the setup." },
+    { code: "CONFIRM_EMA_200", name: "15M structure and 200 EMA alignment", passed: ema200Ok, points: 15, actual: `${config.emaFilterMode} / ${htfBias} / ${emaAlignmentOk ? "aligned" : emaCountertrendOk ? "countertrend" : "not aligned"}`, required: `${direction === "LONG" ? "BULLISH" : "BEARISH"} 15M context`, explanation: config.emaFilterMode === "OFF" ? "EMA mode is OFF; alignment is not counted as a confirmation." : ema200Ok ? "The completed 15M structure and EMA context align with the setup." : "The 15M structure/EMA context is neutral or opposes the setup." },
     { code: "CONFIRM_VWAP", name: "Session VWAP alignment", passed: vwapOk, points: 10, actual: `${current.close.toFixed(2)} / ${Math.round(vwapVolumeCoverage * 100)}% volume`, required: direction === "LONG" ? `>= ${vwap.toFixed(2)} with >=80% volume` : `<= ${vwap.toFixed(2)} with >=80% volume`, explanation: vwapOk ? "Price is aligned with a volume-backed session VWAP." : "Price is misaligned or provider volume is insufficient for true VWAP confirmation." },
     { code: "CONFIRM_FRESH_FVG", name: "Fresh Fair Value Gap", passed: fvgOk, points: 15, actual: fvg?.kind ?? null, required: "fresh FVG", explanation: fvgOk ? "A fresh FVG is available after displacement." : "No fresh FVG is available." },
     { code: "CONFIRM_ORDER_BLOCK_RETEST", name: "Order block retest", passed: orderBlockRetestOk, points: 10, actual: orderBlock ? `${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}` : null, required: "retest", explanation: orderBlockRetestOk ? "Price retested the detected order block." : "No order-block retest is confirmed." },
@@ -421,8 +428,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
   const qualityCount = quality.filter((item) => item.passed).length;
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
-  push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, config.emaFilterMode === "REQUIRE_ALIGNMENT", "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / REQUIRE_ALIGNMENT", emaModeOk ? "EMA mode does not block this setup." : "EMA mode requires alignment, but 15M EMA/context is not aligned.");
-  push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
+  push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
+  push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
@@ -460,6 +467,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     ema: config.emaFilterMode,
     volume: config.volumeFilterMode,
     emaAlignmentOk,
+    emaCountertrendOk,
     volumeExpansionOk,
     emaModeOk,
     volumeModeOk
@@ -1495,14 +1503,17 @@ function push(evaluations: RuleEvaluation[], ruleCode: string, name: string, pas
 }
 
 function waitDecision(scenario: string, reason: string, evaluations: RuleEvaluation[], flags: Record<string, unknown>, levels?: unknown, htfBias?: unknown, sweep?: unknown, direction?: Direction, zone?: unknown): LiquiditySweepDecision {
+  const state = stateFromScenario(scenario);
+  const at = latestStateTransitionTime(flags) ?? new Date().toISOString();
+  const stateMachine = appendStateTransition(flags.stateMachine, state, at, reason);
   return {
     scenario,
     direction: direction ?? null,
     status: "WAIT",
-    state: stateFromScenario(scenario),
+    state,
     finalReason: reason,
     evaluations,
-    scenarioFlags: { ...flags, levels, htfBias, sweep, entryZone: zone, state: stateFromScenario(scenario) },
+    scenarioFlags: { ...flags, levels, htfBias, sweep, entryZone: zone, state, stateMachine },
     favorabilityScore: 0,
     favorabilityGrade: "D",
     favorabilityReasons: [reason]
@@ -1510,6 +1521,8 @@ function waitDecision(scenario: string, reason: string, evaluations: RuleEvaluat
 }
 
 function blockedDecision(scenario: string, reason: string, evaluations: RuleEvaluation[], flags: Record<string, unknown>, direction?: Direction | null, score = 0): LiquiditySweepDecision {
+  const at = latestStateTransitionTime(flags) ?? new Date().toISOString();
+  const stateMachine = appendStateTransition(flags.stateMachine, "INVALIDATED", at, reason);
   return {
     scenario,
     direction: direction ?? null,
@@ -1517,11 +1530,17 @@ function blockedDecision(scenario: string, reason: string, evaluations: RuleEval
     state: "INVALIDATED",
     finalReason: reason,
     evaluations,
-    scenarioFlags: { ...flags, state: "INVALIDATED", invalidationReason: reason },
+    scenarioFlags: { ...flags, state: "INVALIDATED", stateMachine, invalidationReason: reason },
     favorabilityScore: score,
     favorabilityGrade: grade(score),
     favorabilityReasons: [reason]
   };
+}
+
+function latestStateTransitionTime(flags: Record<string, unknown>) {
+  const transitions = Array.isArray((flags.stateMachine as any)?.transitions) ? (flags.stateMachine as any).transitions : [];
+  const latest = transitions.at(-1)?.at;
+  return typeof latest === "string" ? latest : null;
 }
 
 function appendStateTransition(machine: unknown, to: LiquiditySweepState, at: string, reason: string) {

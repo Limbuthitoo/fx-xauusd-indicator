@@ -1217,6 +1217,12 @@ function predictionSetupView(row: any, evaluations: any[]) {
     invalidation: predictionInvalidation(row, flags, direction, stopLoss),
     nextAction: predictionNextAction(row, action, blocking, mandatoryMatched, fullChecklistMatched),
     tradeHorizon: DAY_TRADING_HOLD_WINDOW
+    ,
+    variantCode: flags.module2Variant?.code ?? flags.variantCode ?? null,
+    variantName: flags.module2Variant?.name ?? flags.variantName ?? null,
+    variantVersion: flags.module2Variant?.version ?? flags.variantVersion ?? null,
+    variantStatus: flags.module2Variant?.approvalStatus ?? flags.module2Variant?.status ?? null,
+    selectedVariant: flags.module2Variant ?? null
   };
 }
 
@@ -1285,20 +1291,28 @@ function predictionStatus(row: any, mandatoryMatched: boolean, fullChecklistMatc
 function predictionReasoning(row: any, evaluations: any[], flags: any, action: string) {
   const passNames = evaluations.filter((rule) => rule.status === "PASS").slice(0, 5).map((rule) => rule.name);
   const base = row.final_reason ?? `${row.module_name} is monitoring for the next valid ${action === "WAIT" ? "BUY/SELL" : action} setup.`;
+  const variant = flags.module2Variant ?? {};
   const moduleReason = row.module_code === "high_probability_strategy_2"
-    ? "Prediction follows liquidity first, then displacement, BOS/CHoCH, entry-zone retrace, and confirmation."
+    ? `Prediction follows the ${variant.name ?? flags.variantCode ?? "selected Module 2 variant"} chain: potential liquidity, sweep rejection, displacement, BOS/MSS, entry-zone retrace, confirmation, then risk.`
     : "Prediction follows 15M opening range, 5M breakout/acceptance, retest or sweep-reversal evidence.";
-  return [moduleReason, base, passNames.length ? `Matched: ${passNames.join(", ")}.` : null].filter(Boolean);
+  const missing = Array.isArray(variant.missingRules) && variant.missingRules.length > 0
+    ? `Variant waiting on: ${variant.missingRules.slice(0, 4).join(", ")}.`
+    : null;
+  return [moduleReason, base, missing, passNames.length ? `Matched: ${passNames.join(", ")}.` : null].filter(Boolean);
 }
 
 function predictionEvidence(moduleCode: string, flags: any) {
   if (moduleCode === "high_probability_strategy_2") {
     return [
+      evidenceRow("Variant", flags.module2Variant?.name ?? flags.variantCode, null),
       evidenceRow("Liquidity", flags.sweep?.level?.type, flags.sweep?.level?.price),
       evidenceRow("Sweep", flags.sweep?.time ?? flags.sweep?.timestampUtc, flags.sweep?.high ?? flags.sweep?.low),
+      evidenceRow("Displacement", flags.displacement?.direction ?? flags.displacement?.type, flags.displacement?.rangeAtr),
       evidenceRow("BOS / CHoCH", flags.bos?.type ?? flags.structure?.type, flags.bos?.level),
       evidenceRow("Entry zone", flags.entryZone?.kind, flags.entryZone?.midpoint ?? flags.entryZone?.low),
-      evidenceRow("HTF bias", flags.htfBias, null)
+      evidenceRow("HTF bias", flags.htfBias, null),
+      evidenceRow("Confirmations", `${flags.confirmationLayer?.count ?? 0}/${flags.confirmationLayer?.required ?? 3}`, null),
+      evidenceRow("Quality", `${flags.qualityLayer?.count ?? 0}/${flags.qualityLayer?.required ?? 3}`, null)
     ].filter(Boolean);
   }
   return [

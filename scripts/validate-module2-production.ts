@@ -146,6 +146,32 @@ async function validateCatalog(tenantId: string | null) {
     detail: "Module 2 state transition and variant metric snapshot tables are required for Ultimate completion audit evidence."
   });
 
+  const setting = tenantId ? await one(
+    `SELECT value
+     FROM tenant_settings
+     WHERE tenant_id = $1
+       AND module_code = $2
+       AND key = 'liquiditySweep.strategy'
+     LIMIT 1`,
+    [tenantId, MODULE_CODE]
+  ) : null;
+  const value = setting?.value ?? {};
+  checks.push({
+    name: "Module 2 Ultimate configuration fields",
+    status: setting && hasUltimateConfigurationFields(value) ? "PASS" : setting ? "WARN" : "WARN",
+    detail: setting
+      ? "Tenant Module 2 settings include Ultimate liquidity/filter fields or will receive them on next save."
+      : "No tenant Module 2 setting row found; defaults will be used until settings are saved.",
+    evidence: {
+      nyPremarketStartTime: value.nyPremarketStartTime ?? null,
+      orbStartTime: value.orbStartTime ?? null,
+      roundNumberStep: value.roundNumberStep ?? null,
+      manualLevels: Array.isArray(value.manualLevels) ? value.manualLevels.length : 0,
+      emaFilterMode: value.emaFilterMode ?? null,
+      volumeFilterMode: value.volumeFilterMode ?? null
+    }
+  });
+
   if (!tenantId) return;
   const assignment = await one(
     `SELECT tm.status, m.name
@@ -393,6 +419,19 @@ function isEntryReady(row: any) {
 
 function setupHasVariant(row: any) {
   return Boolean(row.scenario_flags?.module2Variant?.code ?? row.scenario_flags?.variantCode);
+}
+
+function hasUltimateConfigurationFields(value: any) {
+  return [
+    "nyPremarketStartTime",
+    "orbStartTime",
+    "orbEndTime",
+    "roundNumberStep",
+    "roundNumberWindowSteps",
+    "manualLevels",
+    "emaFilterMode",
+    "volumeFilterMode"
+  ].every((key) => Object.prototype.hasOwnProperty.call(value ?? {}, key));
 }
 
 function isBeforeRegistry(row: any, registryCreatedAt: Date | null) {

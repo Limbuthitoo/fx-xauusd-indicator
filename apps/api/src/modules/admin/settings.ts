@@ -301,8 +301,9 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       maximumSpread: positiveNumber(input.maximumSpread, 0.8, 20),
       roundNumberStep: positiveNumber(input.roundNumberStep, 10, 1000),
       roundNumberWindowSteps: positiveInteger(input.roundNumberWindowSteps, 4, 12),
-      emaFilterMode: ["OFF", "RECORD_ONLY", "REQUIRE_ALIGNMENT"].includes(String(input.emaFilterMode)) ? String(input.emaFilterMode) : "RECORD_ONLY",
-      volumeFilterMode: ["OFF", "RECORD_ONLY", "REQUIRE_EXPANSION"].includes(String(input.volumeFilterMode)) ? String(input.volumeFilterMode) : "RECORD_ONLY",
+      manualLevels: sanitizeManualLiquidityLevels(input.manualLevels),
+      emaFilterMode: ["OFF", "RECORD_ONLY", "WARN_ONLY", "REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(String(input.emaFilterMode)) ? String(input.emaFilterMode) : "RECORD_ONLY",
+      volumeFilterMode: ["OFF", "RECORD_ONLY", "WARN_ONLY", "REQUIRE_EXPANSION"].includes(String(input.volumeFilterMode)) ? String(input.volumeFilterMode) : "RECORD_ONLY",
       enableNewsFilter: booleanValue(input.enableNewsFilter, true),
       requireHtfBias: booleanValue(input.requireHtfBias, true),
       paperTrading: {
@@ -460,6 +461,23 @@ function moduleSettingDescription(moduleCode: string, key: string) {
     return "User-account Module 2 thresholds for XAUUSD New York liquidity sweep + BOS paper-trade automation.";
   }
   return "User-account module configuration.";
+}
+
+function sanitizeManualLiquidityLevels(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).flatMap((item) => {
+    const input = objectValue(item) as Record<string, unknown>;
+    const price = Number(input.price);
+    if (!Number.isFinite(price) || price <= 0) return [];
+    const side = String(input.side ?? "BUY_SIDE");
+    const priority = String(input.priority ?? "HIGH");
+    return [{
+      price,
+      side: side === "SELL_SIDE" ? "SELL_SIDE" : "BUY_SIDE",
+      label: stringValue(input.label, "Manual level").slice(0, 80),
+      priority: ["HIGH", "MEDIUM", "LOW"].includes(priority) ? priority : "HIGH"
+    }];
+  });
 }
 
 function supportedTimeframe(value: number) {

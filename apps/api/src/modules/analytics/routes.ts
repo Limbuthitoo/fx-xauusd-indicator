@@ -532,6 +532,14 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
 }
 
 async function buildModule2VariantMetrics(tenantId: string | null) {
+  if (!tenantId) {
+    return {
+      generatedAt: new Date().toISOString(),
+      summary: { totalVariants: 0, productionApproved: 0, paperEligible: 0, livePaperTrades: 0 },
+      variants: [],
+      transitions: []
+    };
+  }
   const variants = await query(
     `SELECT code, name, category, approval_status, paper_eligible, sort_order
      FROM module2_strategy_variants
@@ -590,6 +598,7 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
     [tenantId]
   );
   const byVariant = new Map(performance.rows.map((row: any) => [row.variant_code, row]));
+  const resultsByVariant = await module2LiveResultsByVariant(tenantId);
   const blockerMap = new Map<string, any>();
   for (const row of blockers.rows as any[]) {
     if (!blockerMap.has(row.variant_code)) blockerMap.set(row.variant_code, row);
@@ -602,6 +611,9 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
     const decided = wins + losses;
     const winRate = decided > 0 ? wins / decided : 0;
     const topBlocker = blockerMap.get(variant.code)?.rule_code ?? null;
+    const results = resultsByVariant.get(variant.code) ?? [];
+    const profitFactorValue = module2ProfitFactor(results);
+    const maxDrawdownValue = module2MaxDrawdownR(results);
     return {
       ...variant,
       trades,
@@ -611,8 +623,11 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
       winRate,
       averageR: Number(perf?.average_r ?? 0),
       totalR: Number(perf?.total_r ?? 0),
+      profitFactor: profitFactorValue,
+      maxDrawdownR: maxDrawdownValue,
+      blockerCount: blockers.rows.filter((item: any) => item.variant_code === variant.code).reduce((sum: number, item: any) => sum + Number(item.count ?? 0), 0),
       topBlocker,
-      recommendation: module2VariantMetricRecommendation(variant, trades, winRate, Number(perf?.average_r ?? 0), topBlocker)
+      recommendation: module2VariantMetricRecommendation(variant, trades, winRate, Number(perf?.average_r ?? 0), topBlocker, profitFactorValue, maxDrawdownValue)
     };
   });
   for (const row of rows) {
@@ -649,10 +664,51 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
   };
 }
 
-function module2VariantMetricRecommendation(variant: any, trades: number, winRate: number, averageR: number, topBlocker: string | null) {
+async function module2LiveResultsByVariant(tenantId: string) {
+  const rows = await query(
+    `SELECT
+       COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode', 'UNCLASSIFIED_VARIANT') AS variant_code,
+       COALESCE(t.result_r, 0)::float AS result_r
+     FROM setup_candidates sc
+     JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+     JOIN trades t ON t.trade_plan_id = tp.id
+     WHERE sc.tenant_id = $1
+       AND sc.module_code = 'high_probability_strategy_2'
+       AND t.outcome IN ('WIN','LOSS','BREAKEVEN')
+     ORDER BY t.closed_at ASC NULLS LAST, t.opened_at ASC`,
+    [tenantId]
+  );
+  const byVariant = new Map<string, number[]>();
+  for (const row of rows.rows as any[]) {
+    const key = String(row.variant_code ?? "UNCLASSIFIED_VARIANT");
+    byVariant.set(key, [...(byVariant.get(key) ?? []), Number(row.result_r ?? 0)]);
+  }
+  return byVariant;
+}
+
+function module2ProfitFactor(results: number[]) {
+  const grossWin = results.filter((result) => result > 0).reduce((sum, result) => sum + result, 0);
+  const grossLoss = Math.abs(results.filter((result) => result < 0).reduce((sum, result) => sum + result, 0));
+  if (grossLoss === 0) return grossWin > 0 ? Number(grossWin.toFixed(4)) : 0;
+  return Number((grossWin / grossLoss).toFixed(4));
+}
+
+function module2MaxDrawdownR(results: number[]) {
+  let equity = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const result of results) {
+    equity += result;
+    peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak - equity);
+  }
+  return Number(maxDrawdown.toFixed(4));
+}
+
+function module2VariantMetricRecommendation(variant: any, trades: number, winRate: number, averageR: number, topBlocker: string | null, profitFactorValue = 0, maxDrawdownR = 0) {
   if (!variant.paper_eligible) return "Research-only. Track evidence, but do not allow automatic paper entry.";
   if (trades < 10) return topBlocker ? `Collect more paper data. Most common blocker: ${topBlocker}.` : "Collect at least 10 paper trades before judging this variant.";
-  if (winRate >= 0.7 && averageR > 0) return "Strong paper evidence. Keep active and continue monitoring drawdown.";
+  if (winRate >= 0.7 && averageR > 0 && profitFactorValue >= 1.4) return `Strong paper evidence. Keep active and monitor drawdown (${maxDrawdownR.toFixed(2)}R).`;
   if (averageR <= 0) return topBlocker ? `Needs tuning before trust. Focus blocker: ${topBlocker}.` : "Needs tuning before trust; average R is not positive.";
   return "Usable paper evidence. Keep active, but wait for a larger sample before increasing trust.";
 }

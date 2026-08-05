@@ -5699,6 +5699,8 @@ function Module2VariantMetricsPanel({ metrics }: { metrics?: any }) {
               <th>Trades</th>
               <th>Win</th>
               <th>Avg R</th>
+              <th>PF</th>
+              <th>DD</th>
               <th>Blocker</th>
               <th>Recommendation</th>
             </tr>
@@ -5714,6 +5716,8 @@ function Module2VariantMetricsPanel({ metrics }: { metrics?: any }) {
                 <td>{row.trades ?? 0}</td>
                 <td>{formatPercent(row.winRate)}</td>
                 <td>{formatR(row.averageR)}</td>
+                <td>{formatPriceValue(row.profitFactor)}</td>
+                <td>{formatR(row.maxDrawdownR)}</td>
                 <td>{row.topBlocker ? formatScenario(row.topBlocker) : "--"}</td>
                 <td>{row.recommendation ?? "--"}</td>
               </tr>
@@ -6797,6 +6801,26 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
     });
   }
 
+  function updateManualLevel(index: number, field: string, value: unknown) {
+    const manualLevels = Array.isArray(draft?.manualLevels) ? [...draft.manualLevels] : [];
+    manualLevels[index] = { ...(manualLevels[index] ?? {}), [field]: value };
+    setDraft((current: any) => ({ ...(current ?? {}), manualLevels }));
+  }
+
+  function addManualLevel() {
+    const manualLevels = Array.isArray(draft?.manualLevels) ? draft.manualLevels : [];
+    setDraft((current: any) => ({
+      ...(current ?? {}),
+      manualLevels: [...manualLevels, { label: "Manual level", price: "", side: "BUY_SIDE", priority: "HIGH" }]
+    }));
+  }
+
+  function removeManualLevel(index: number) {
+    const manualLevels = Array.isArray(draft?.manualLevels) ? [...draft.manualLevels] : [];
+    manualLevels.splice(index, 1);
+    setDraft((current: any) => ({ ...(current ?? {}), manualLevels }));
+  }
+
   return (
     <Panel icon={<ShieldCheck />} title="Module 2 Strategy Config">
       <div className="setting-row strategy-setting-row">
@@ -6826,16 +6850,42 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
           <label>EMA mode<select value={draft?.emaFilterMode ?? "RECORD_ONLY"} onChange={(event) => patch("emaFilterMode", event.target.value)}>
             <option value="OFF">Off</option>
             <option value="RECORD_ONLY">Record only</option>
+            <option value="WARN_ONLY">Warn only</option>
             <option value="REQUIRE_ALIGNMENT">Require alignment</option>
+            <option value="REQUIRE_COUNTERTREND">Require countertrend</option>
           </select></label>
           <label>Volume mode<select value={draft?.volumeFilterMode ?? "RECORD_ONLY"} onChange={(event) => patch("volumeFilterMode", event.target.value)}>
             <option value="OFF">Off</option>
             <option value="RECORD_ONLY">Record only</option>
+            <option value="WARN_ONLY">Warn only</option>
             <option value="REQUIRE_EXPANSION">Require expansion</option>
           </select></label>
           <label>Max trades<input type="number" min="1" max="10" value={draft?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.enableNewsFilter !== false} onChange={(event) => patch("enableNewsFilter", event.target.checked)} /> News filter</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>
+        </div>
+        <div className="manual-level-editor">
+          <div>
+            <strong>Manual Liquidity Levels</strong>
+            <span>Optional research levels. The engine treats them as potential liquidity zones, never guaranteed institutional liquidity.</span>
+          </div>
+          {(Array.isArray(draft?.manualLevels) ? draft.manualLevels : []).map((level: any, index: number) => (
+            <div className="manual-level-row" key={`${index}-${level?.label ?? "level"}`}>
+              <input value={level?.label ?? ""} placeholder="Label" onChange={(event) => updateManualLevel(index, "label", event.target.value)} />
+              <input type="number" min="0" step="0.01" value={level?.price ?? ""} placeholder="Price" onChange={(event) => updateManualLevel(index, "price", Number(event.target.value))} />
+              <select value={level?.side ?? "BUY_SIDE"} onChange={(event) => updateManualLevel(index, "side", event.target.value)}>
+                <option value="BUY_SIDE">Buy-side</option>
+                <option value="SELL_SIDE">Sell-side</option>
+              </select>
+              <select value={level?.priority ?? "HIGH"} onChange={(event) => updateManualLevel(index, "priority", event.target.value)}>
+                <option value="HIGH">High</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="LOW">Low</option>
+              </select>
+              <button type="button" onClick={() => removeManualLevel(index)}><Trash2 size={14} />Remove</button>
+            </div>
+          ))}
+          <button type="button" onClick={addManualLevel}><Plus size={16} />Add Manual Level</button>
         </div>
         <button onClick={() => onUpdate("liquiditySweep.strategy", draft).catch(() => undefined)}>Save Module 2</button>
       </div>
@@ -7145,9 +7195,12 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
   const defaults = [
     ["NY_SESSION_ACTIVE", "New York session active", "Module 2 only evaluates during its configured NY liquidity window."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of paper trades can trigger per session."],
-    ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "PDH/PDL, Asian, London, or equal high/low liquidity must be available."],
+    ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "Previous week/day, Asian, London, NY premarket, ORB, swing, equal, round-number, or manual liquidity must be available."],
     ["LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", "Price must sweep liquidity and close back through the level."],
+    ["SWEEP_REJECTION_CONFIRMED", "Sweep rejection confirmed", "Close-back, wick rejection, delayed reclaim, or deep-sweep rejection must be objectively detected."],
+    ["SWEEP_ACCEPTANCE_BLOCK", "No acceptance beyond level", "The setup is blocked if price accepts beyond the swept liquidity level."],
     ["DISPLACEMENT_CONFIRMED", "Displacement confirmed", "A strong reversal candle must appear after the sweep."],
+    ["PROTECTED_POINT_CONFIDENCE", "Protected point confidence", "The protected high/low must meet the configured confidence threshold."],
     ["BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed", "A candle body must close beyond internal structure."],
     ["ENTRY_ZONE_READY", "Fresh entry zone ready", "A fresh FVG or order-block zone must exist after BOS/CHoCH."],
     ["ENTRY_ZONE_RETRACE", "Entry zone retrace", "Price must return into the fresh FVG/order-block zone before paper entry."],
@@ -7155,8 +7208,13 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["CONFIRM_VWAP", "Confirmation: VWAP alignment", "Scored confirmation worth 10 points."],
     ["CONFIRM_FRESH_FVG", "Confirmation: fresh FVG", "Scored confirmation worth 15 points."],
     ["CONFIRM_ORDER_BLOCK_RETEST", "Confirmation: order block retest", "Scored confirmation worth 10 points."],
+    ["CONFIRM_ENGULFING", "Confirmation: engulfing", "Candle-pattern confirmation used for research and scoring."],
+    ["CONFIRM_PIN_BAR", "Confirmation: pin bar rejection", "Candle-pattern confirmation used for research and scoring."],
+    ["CONFIRM_INSIDE_BAR_BREAK", "Confirmation: inside-bar break", "Candle-pattern confirmation used for research and scoring."],
+    ["CONFIRM_DOJI_REJECTION", "Confirmation: doji rejection", "Candle-pattern confirmation used for research and scoring."],
+    ["CONFIRM_VOLUME_EXPANSION", "Confirmation: volume expansion", "Provider-volume evidence is recorded conservatively."],
     ["CONFIRM_ENTRY_CANDLE", "Entry confirmation candle", "Mandatory entry trigger and scored confirmation worth 10 points."],
-    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 of 5 confirmation rules must pass."],
+    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 confirmation rules must pass."],
     ["QUALITY_ATR_VOLATILITY", "Quality: ATR volatility", "Optimization quality filter."],
     ["QUALITY_SPREAD", "Quality: spread", "Optimization quality filter."],
     ["QUALITY_NEWS", "Quality: no high-impact news", "Optimization quality filter."],
@@ -7164,6 +7222,9 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_STOP_SIZE", "Quality: stop size", "Optimization quality filter."],
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Optimization quality filter."],
     ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."],
+    ["EMA_FILTER_MODE", "EMA filter mode", "OFF, record-only, warning, alignment-required, or countertrend-required mode is respected."],
+    ["VOLUME_FILTER_MODE", "Volume filter mode", "OFF, record-only, warning, or expansion-required mode is respected."],
+    ["VARIANT_SELECTED", "Production variant selected", "Only paper-eligible variants can open automatic paper trades."],
     ["SIGNAL_SCORE", "Minimum signal score", "The final Module 2 confidence score must pass the configured threshold."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
@@ -7655,6 +7716,8 @@ function PredictionsWorkspace({
             <Metric label="Reward/risk" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
             <Metric label="Grade" value={selected.grade ?? "--"} />
+            <Metric label="Variant" value={selected.variantName ?? selected.variantCode ?? "--"} />
+            <Metric label="Variant status" value={formatScenario(selected.variantStatus ?? "--")} />
             <Metric label="Invalidation" value={selected.invalidation ?? "--"} />
             <Metric label="Paper trade" value={selected.trade?.status ?? "Not opened"} />
             <Metric label="Horizon" value={tradeHorizonLabel(selected.tradeHorizon)} />
@@ -7738,6 +7801,12 @@ function PredictionsWorkspace({
               <strong className={predictionTone(prediction)}>{predictionProbabilityLabel(prediction)}</strong>
               <em>{prediction.setupTier} checklist · {prediction.checklist?.passed ?? 0}/{prediction.checklist?.total ?? 0}</em>
             </div>
+            {prediction.variantName || prediction.variantCode ? (
+              <div className="prediction-variant-badge">
+                <span>Variant</span>
+                <strong>{prediction.variantName ?? formatScenario(prediction.variantCode)}</strong>
+              </div>
+            ) : null}
             <div className="trade-signal-entry">
               <span>Predicted entry zone</span>
               <strong>{formatSignalRange(prediction.entryRange)}</strong>

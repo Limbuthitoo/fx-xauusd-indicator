@@ -2522,6 +2522,26 @@ button:hover,
   line-height: 1.45;
 }
 
+.prediction-variant-badge {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #304138;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.prediction-variant-badge span {
+  color: #94a39a;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.prediction-variant-badge strong {
+  color: #edf4ef;
+  font-size: 13px;
+}
+
 .prediction-workspace .signal-detail-hero.buy {
   border-color: #24583f;
   border-left-color: #35d895;
@@ -3358,6 +3378,37 @@ button:hover,
 
 .strategy-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.manual-level-editor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #304138;
+  border-radius: 8px;
+  background: rgba(35, 196, 131, 0.04);
+}
+
+.manual-level-editor > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.manual-level-editor > div:first-child span {
+  color: #9aa69d;
+  font-size: 12px;
+}
+
+.manual-level-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) minmax(90px, 0.8fr) minmax(100px, 0.8fr) minmax(90px, 0.7fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.manual-level-row input,
+.manual-level-row select {
+  min-width: 0;
 }
 
 .setting-row textarea {

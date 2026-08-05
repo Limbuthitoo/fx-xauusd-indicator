@@ -1788,6 +1788,19 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
         const projectedExit = projection
           ? simulateExit(signalCandles.slice(signalIndex + 1), projection.direction, projection.entry, projection.stop, projection.target)
           : null;
+        const passedRules = (decision.evaluations ?? [])
+          .filter((evaluation) => evaluation.status === "PASS")
+          .map((evaluation) => evaluation.ruleCode)
+          .slice(0, 12);
+        const missingRules = (nearVariant.missingRules ?? []).map((ruleCode: string) => {
+          const evaluation = (decision.evaluations ?? []).find((item) => item.ruleCode === ruleCode);
+          return {
+            ruleCode,
+            name: evaluation?.name ?? ruleCode,
+            status: evaluation?.status ?? "WAITING",
+            explanation: evaluation?.explanation ?? `The ${ruleCode} rule did not pass for this variant.`
+          };
+        });
         variantMisses.push({
           sessionDate,
           at: current.timestampUtc,
@@ -1806,7 +1819,28 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
           projectedTarget: projection?.target ?? null,
           projectedOutcome: projectedExit?.outcome ?? null,
           projectedResultR: projectedExit?.resultR ?? null,
-          projectedExitTime: projectedExit?.exitTime ?? null
+          projectedExitTime: projectedExit?.exitTime ?? null,
+          liquidity: (flags as any).sweep?.level ?? null,
+          sweep: (flags as any).sweep ?? null,
+          displacement: (flags as any).displacement ?? null,
+          structureBreak: (flags as any).bos ?? null,
+          entryZone: (flags as any).entryZone ?? null,
+          passedRules,
+          missingRuleDetails: missingRules,
+          instruction: projection
+            ? tradeInstruction({
+              moduleCode: "high_probability_strategy_2",
+              direction: projection.direction,
+              entry: projection.entry,
+              stop: projection.stop,
+              target: projection.target,
+              reason: `Near-miss ${nearVariant.name}: blocked by ${failed.ruleCode}.`,
+              checklist: decision.evaluations ?? []
+            })
+            : `Near-miss ${nearVariant.name}: wait for ${missingRules.map((rule: any) => rule.name).join(", ") || failed.ruleCode}.`,
+          learningNote: projectedExit
+            ? `${nearVariant.name} near-miss would have ended ${projectedExit.outcome} (${projectedExit.resultR}R) under conservative backtest rules.`
+            : `${nearVariant.name} near-miss could not project entry/SL/TP yet.`
         });
       }
       const failedRule = failed?.ruleCode;
