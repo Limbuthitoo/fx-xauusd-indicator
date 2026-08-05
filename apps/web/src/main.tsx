@@ -3207,8 +3207,8 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
         <div><span>Liquidity</span><strong>{sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`}</strong></div>
         <div><span>Sweep</span><strong>{formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt)}</strong></div>
         <div><span>Displacement</span><strong>{displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`}</strong></div>
-        <div><span>BOS / CHoCH</span><strong>{bos?.level == null ? "--" : Number(bos.level).toFixed(2)}</strong></div>
-        <div><span>Entry zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
+        <div><span>Reversal MSS</span><strong>{bos?.level == null ? "--" : Number(bos.level).toFixed(2)}</strong></div>
+        <div><span>MSS retest</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
         <div><span>Missing</span><strong>{missingVariant?.missingRules?.length ? missingVariant.missingRules.slice(0, 2).map(formatScenario).join(", ") : "--"}</strong></div>
       </div>
     );
@@ -3220,7 +3220,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
   const cockpit = module2CockpitState(state, setup, trade);
   const signal = getSignal(setup, trade);
   const rows = liveScopedChecklistRows(liquiditySweepChecklistRows(setup?.evaluations ?? [], setup), setup);
-  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"].includes(row.rule_code ?? row.ruleCode));
+  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"].includes(row.rule_code ?? row.ruleCode));
   const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
   const passed = (items: any[]) => items.filter((row: any) => row.status === "PASS").length;
@@ -3295,12 +3295,12 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
       value: displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`
     },
     {
-      label: "BOS / CHoCH",
+      label: "Reversal MSS",
       status: bos?.candle ? "PASS" : "WAIT",
       value: bos?.level == null ? "--" : Number(bos.level).toFixed(2)
     },
     {
-      label: "Entry Zone",
+      label: "MSS Retest",
       status: zone?.low != null && zone?.high != null ? "PASS" : "WAIT",
       value: zone?.low == null ? "--" : `${zone.kind ?? "Zone"} ${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`
     }
@@ -3316,7 +3316,7 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
         ))}
       </div>
       <div className="module2-live-metrics">
-        <Metric label="Variant" value={variant?.name ?? flags.variantCode ?? "--"} />
+        <Metric label="Profile" value={variant?.name ?? flags.variantCode ?? "--"} />
         <Metric label="Confirm layer" value={confirmationLayer?.count == null ? "--" : `${confirmationLayer.count}/${confirmationLayer.required ?? 5}`} />
         <Metric label="Quality layer" value={qualityLayer?.count == null ? "--" : `${qualityLayer.count}/${qualityLayer.required ?? 3}`} />
         <Metric label="Setup tier" value={flags.setupTier ?? "--"} />
@@ -8307,8 +8307,8 @@ function moduleShortName(moduleCode: string, name?: string) {
 function module2RuleLayer(code?: string) {
   if (!code) return "other";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "SIGNAL_SCORE") return "quality";
-  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"].includes(code)) return "hard";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
+  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK", "SIGNAL_SCORE"].includes(code)) return "hard";
   if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }

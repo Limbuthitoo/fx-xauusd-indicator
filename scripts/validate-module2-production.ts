@@ -127,15 +127,16 @@ async function validateCatalog(tenantId: string | null) {
       `SELECT
          count(*)::int AS total,
          count(*) FILTER (WHERE approval_status = 'PRODUCTION_APPROVED')::int AS production_approved,
-         count(*) FILTER (WHERE paper_eligible = true)::int AS paper_eligible
+         count(*) FILTER (WHERE paper_eligible = true)::int AS paper_eligible,
+         count(*) FILTER (WHERE code = 'SWEEP_MSS_RETEST' AND approval_status = 'PRODUCTION_APPROVED' AND paper_eligible = true)::int AS strict_mss_retest
        FROM module2_strategy_variants
        WHERE module_code = $1`,
       [MODULE_CODE]
     );
     checks.push({
       name: "Module 2 variant registry",
-      status: Number(registry?.total ?? 0) >= 10 && Number(registry?.production_approved ?? 0) >= 3 ? "PASS" : "FAIL",
-      detail: `${registry?.total ?? 0} variant(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible.`,
+      status: Number(registry?.total ?? 0) >= 10 && Number(registry?.strict_mss_retest ?? 0) === 1 && Number(registry?.paper_eligible ?? 0) === 1 ? "PASS" : "FAIL",
+      detail: `${registry?.total ?? 0} evidence profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. Strict MSS retest must be the only paper-eligible live entry profile.`,
       evidence: registry
     });
   }

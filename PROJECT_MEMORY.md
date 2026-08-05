@@ -92,19 +92,14 @@ Expected daily usage target:
   - Optional retest.
   - Risk validation.
   - Trade decision and automatic paper trade when setup-ready.
-- Module 2 variant engine:
+- Module 2 strict production profile:
   - Variant version is stored as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
   - Current variant metadata is persisted in `setup_candidates.scenario_flags.module2Variant`, plus `variantCode` and `variantVersion`.
-  - Research-only variants are recorded for backtesting and learning but must not open automatic paper trades.
-  - Paper-entry variants must pass `VARIANT_SELECTED`, which is a final required entry gate.
-  - Supported variants:
-    - `SWEEP_CLOSE_BACK_INSIDE` research-only.
-    - `SWEEP_BOS` research-only.
-    - `SWEEP_MSS` research-only.
-    - `SWEEP_DISPLACEMENT_RETEST` paper-entry eligible.
-    - `SWEEP_EMA_ALIGNMENT` paper-entry eligible.
-    - `SWEEP_BOS_RETEST` paper-entry eligible.
-    - `SWEEP_MSS_RETEST` highest-priority paper-entry eligible.
+  - Research-only profiles are recorded for backtesting and learning but must not open automatic paper trades.
+  - The only production paper-entry profile is `SWEEP_MSS_RETEST`.
+  - `VARIANT_SELECTED` means the strict live profile passed; it does not mean the platform compared and chose among weaker variants.
+  - Live BUY/SELL must never come from sweep-only, BOS-only, EMA-only, volume-only, or candle-pattern-only evidence.
+  - Required live path: healthy data, active NY entry window, valid ranked liquidity, sweep, close-back rejection, no acceptance, protected structure, reversal MSS, MSS retest, entry confirmation candle, risk approval, and signal score.
   - Web and mobile notification/details should show the selected variant name/code/version when available.
 - Terms must be explicit and versioned. Use `POTENTIAL_LIQUIDITY_LEVELS`, not confirmed institutional liquidity.
 - `CHoCH` is a UI alias for structure shift; internally classify reversal confirmation as `REVERSAL_MSS`.
@@ -483,19 +478,19 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 1 strategy entry logic should evaluate against the current active session ORB; previous session ORBs are chart/reference context.
 - New York keeps the 1-minute live Twelve Data polling cadence.
 - Sydney/Tokyo/London ORB evaluation should use the shared 30-minute catch-up candles to protect the 800/day Twelve Data credit budget.
-- Module 2 remains separate and now uses the Ultimate Liquidity Sweep + Structure Confirmation strategy-family rules, not one hard-coded `Liquidity Sweep + BOS` strategy.
-- Module 2 variants are registry-backed in `module2_strategy_variants` and versioned as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
-- Module 2 variants are confirmation profiles evaluated independently after the base conditions pass: valid liquidity level, sweep detected, session active, and healthy candle data.
-- Module 2 actionable variants: A `SWEEP_CLOSE_BACK_INSIDE`, B `SWEEP_BOS`, C `SWEEP_MSS`, D `SWEEP_ENGULFING`, E `SWEEP_BOS_RETEST`, F `SWEEP_MSS_RETEST`, G `SWEEP_EMA_ALIGNMENT`, H `SWEEP_VOLUME_EXPANSION`, and I `SWEEP_MSS_DISPLACEMENT_RETEST`. If a profile's mandatory rules pass, the risk engine can approve BUY_READY/SELL_READY.
-- Module 2 backtest-only/control variant: J `SWEEP_NO_CONFIRMATION`. It records sweep-only behavior for comparison and must not open paper trades.
-- Module 2 paper trades require closed 5M candles, base sweep conditions, one completed actionable confirmation profile, risk guardrails, and Python brain approval. Higher-confirmation profiles such as MSS+Retest and MSS+Displacement+Retest should outrank lower-confirmation profiles when several pass at once.
+- Module 2 remains separate and now uses the Ultimate Liquidity Sweep + MSS + Retest production model, not the old `Liquidity Sweep + BOS` strategy.
+- Module 2 profile evidence is registry-backed in `module2_strategy_variants` and versioned as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
+- Module 2 evidence profiles can be tracked for backtesting, but live paper trading is not a profile comparison system.
+- Module 2 actionable live profile: only `SWEEP_MSS_RETEST`.
+- Module 2 research/control profiles: sweep close-back, sweep-only, engulfing, BOS, MSS without retest, volume expansion, displacement retest, EMA alignment, BOS retest, and MSS+displacement+retest. They can explain context and near misses but must not open paper trades.
+- Module 2 paper trades require closed 5M candles, strict sweep + close-back + reversal MSS + MSS retest confirmation, risk guardrails, minimum confidence, and Python brain approval.
 - Module 2 liquidity selection now includes previous week high/low, previous day high/low, Asian high/low, London high/low, NY premarket high/low, ORB high/low, equal high/low, swing high/low, round numbers, and optional manual levels.
 - Module 2 confirmation layer currently tracks 10 plugins: 15M/EMA alignment, VWAP, fresh FVG, order-block retest, engulfing candle, pin-bar rejection, inside-bar break, doji rejection, volume expansion, and entry confirmation candle. Volume expansion remains record-only by default because XAUUSD provider volume may be incomplete.
 - Module 2 tenant settings include EMA mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_ALIGNMENT`, `REQUIRE_COUNTERTREND`) and volume mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_EXPANSION`), plus NY premarket, ORB, round-number, and manual liquidity-level controls.
 - Module 2 state transitions are persisted in `module2_state_transitions` so sweep, displacement, BOS/CHoCH, entry-zone, waiting-for-retest, retrace, entry-ready, invalidated, and expired evidence can be audited after the chart moves on.
 - Module 2 manual liquidity levels are optional research inputs. Tenant settings sanitize and retain up to 20 manual levels with label, price, side, and priority. The engine treats them as potential liquidity zones only, never confirmed institutional liquidity.
 - Module 2 per-variant live paper metrics are exposed through `/api/module2/variant-metrics` and snapshotted into `module2_variant_metric_snapshots`.
-- Module 2 backtests must include variant analytics: each trade stores the selected variant, variant performance is summarized by win rate/R/PF/drawdown, and near-miss variants explain which one or two rules blocked a possible setup.
+- Module 2 backtests may include profile/evidence analytics, but production live performance should be measured primarily against the strict `SWEEP_MSS_RETEST` profile.
 - Module 2 missed-trade backtest evidence now includes variant, blocker, missing rule details, projected entry/SL/TP, projected outcome/result R, liquidity/sweep/displacement/structure/entry-zone snapshots, instruction text, and learning notes.
 - Module 2 QA/replay must expose the real variant families: sweep-only research, sweep no-confirmation control, sweep+engulfing research, sweep+BOS research, sweep+MSS research, sweep+volume research, displacement retest, BOS retest, MSS retest, MSS+displacement+retest, and EMA-aligned sweep. Backtest UI should show missed setup instructions and evidence markers for swept liquidity, displacement, BOS/CHoCH, FVG/OB zone, and entry/SL/TP.
 - Module 2 live evidence must stay aligned across live chart, Strategy Center, Predictions, BUY & SELL, web notifications, and mobile notification detail. These views should show variant, mandatory/confirmation/quality counts, missing blocking rules, liquidity, displacement, BOS/CHoCH, entry zone, and entry/SL/TP when available.

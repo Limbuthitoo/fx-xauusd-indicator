@@ -4,7 +4,7 @@ from typing import Any
 
 
 MODULE_CODE = "high_probability_strategy_2"
-MODULE_NAME = "Module 2 Ultimate Sweep"
+MODULE_NAME = "Module 2 Liquidity Sweep + MSS + Retest"
 
 MANDATORY_RULES = [
     "NY_SESSION_ACTIVE",
@@ -13,12 +13,14 @@ MANDATORY_RULES = [
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE",
+    "RISK_OK",
+    "SIGNAL_SCORE",
     "VARIANT_SELECTED",
 ]
 
@@ -50,7 +52,7 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
             return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper trade whose originating setup did not pass the authoritative Ultimate Liquidity Sweep checklist.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 paper trade is active. Manage the TP/SL lifecycle.", False)
     if not setup:
-        return payload("WAITING_FOR_SWEEP_BOS_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for a New York liquidity sweep, displacement, BOS/CHoCH, and entry-zone retrace.", False)
+        return payload("WAITING_FOR_SWEEP_MSS_RETEST_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for a New York liquidity sweep, close-back rejection, reversal MSS, and protected-structure retest.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
@@ -63,21 +65,21 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
         should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         setup_tier = "FULL" if full else "MANDATORY"
-        decision_type = "SWEEP_BOS_FULL_ENTRY_READY" if full else "SWEEP_BOS_MANDATORY_ENTRY_READY"
+        decision_type = "SWEEP_MSS_RETEST_FULL_ENTRY_READY" if full else "SWEEP_MSS_RETEST_MANDATORY_ENTRY_READY"
         reason = (
             f"Module 2 {setup_tier} setup passed. {action} plan is ready from liquidity sweep, "
-            "displacement, BOS/CHoCH, retrace, and confirmation candle."
+            "close-back rejection, reversal MSS, protected-structure retest, and confirmation candle."
         )
-        return payload(decision_type if should_open else "SWEEP_BOS_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
+        return payload(decision_type if should_open else "SWEEP_MSS_RETEST_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
-        return payload("SWEEP_BOS_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the mandatory Ultimate Sweep checklist is not fully passed.", False)
+        return payload("SWEEP_MSS_RETEST_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the mandatory Sweep + MSS + Retest checklist is not fully passed.", False)
 
     blocker = first_blocker(checklist)
     reason = setup.get("final_reason") or "Module 2 is waiting for mandatory Ultimate Sweep rules."
     if blocker:
         reason = f"{reason} Current blocker: {blocker['ruleCode']}."
-    return payload("SWEEP_BOS_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
+    return payload("SWEEP_MSS_RETEST_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
 
 
 def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:

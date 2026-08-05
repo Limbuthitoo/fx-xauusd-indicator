@@ -29,8 +29,6 @@ export type LiquidityLevelType =
   | "PREVIOUS_WEEK_LOW"
   | "PREVIOUS_DAY_HIGH"
   | "PREVIOUS_DAY_LOW"
-  | "NY_PREMARKET_HIGH"
-  | "NY_PREMARKET_LOW"
   | "ORB_HIGH"
   | "ORB_LOW"
   | "ASIAN_HIGH"
@@ -149,7 +147,7 @@ export type LiquiditySweepContext = {
 export type LiquiditySweepDecision = {
   scenario: string;
   direction: Direction | null;
-  status: "WAIT" | "LONG SETUP READY" | "SHORT SETUP READY" | "NO TRADE" | "BLOCKED";
+  status: "WAIT" | "LONG SETUP READY" | "SHORT SETUP READY" | "NO TRADE" | "BLOCKED" | "INVALIDATED" | "EXPIRED";
   state: LiquiditySweepState;
   entryPrice?: number;
   stopPrice?: number;
@@ -221,7 +219,7 @@ type SweepInvalidation = {
 const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
   newYorkStartTime: "09:30",
-  newYorkEndTime: "16:00",
+  newYorkEndTime: "11:30",
   nyPremarketStartTime: "08:00",
   orbStartTime: "09:30",
   orbEndTime: "09:45",
@@ -234,7 +232,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   manualLevels: [],
   emaFilterMode: "RECORD_ONLY",
   volumeFilterMode: "RECORD_ONLY",
-  maximumTradesPerSession: 3,
+  maximumTradesPerSession: 1,
   zoneToleranceATR: 0.02,
   equalityToleranceATR: 0.05,
   minimumSwingProminenceATR: 0.2,
@@ -242,7 +240,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   protectedPointMinimumConfidence: "MEDIUM",
   minimumSweepDistanceATR: 0.02,
   maximumSweepDistanceATR: 0.5,
-  minimumSweepRejectionWickRatio: 0.35,
+  minimumSweepRejectionWickRatio: 0.25,
   acceptanceCloseCount: 2,
   acceptanceCloseDistanceATR: 0.15,
   doubleSweepLookbackBars: 6,
@@ -308,14 +306,30 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "NY_SESSION_ACTIVE", "New York session active", sessionActive, true, "AUTOMATIC", timeOnly(current.timestampUtc), `${config.newYorkStartTime}-${config.newYorkEndTime}`, sessionActive ? "Current candle is inside the configured New York sweep window." : "No Module 2 signal is allowed outside the configured New York window.");
   push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
 
-  if (!sessionActive || !tradeLimitOk) {
+  if (!sessionActive) {
+    const nowMinutes = newYorkMinutes(current.timestampUtc);
+    const startMinutes = parseTime(config.newYorkStartTime);
+    const endMinutes = parseTime(config.newYorkEndTime);
+    if (nowMinutes < startMinutes) {
+      return waitDecision("SESSION_INACTIVE", "Waiting for the New York Module 2 entry window before evaluating live sweep entries.", evaluations, flags);
+    }
+    if (nowMinutes > endMinutes) {
+      return expiredDecision("SESSION_EXPIRED", "Module 2 entry window has expired for this session.", evaluations, flags);
+    }
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
+  }
+  if (!tradeLimitOk) {
+    return blockedDecision("TRADE_LIMIT_BLOCK", "Module 2 session trade limit has already been reached.", evaluations, flags);
   }
 
   const sweepAnalysis = analyzeSweepCandidates(setupCandles, levels, atr, config);
   const sequence = detectBestLiquiditySequence(setupCandles, sweepAnalysis.candidates, pivots, internalSwings, atr, config);
   const sweep = sequence?.sweep ?? null;
-  const latestSweepInvalidation = sweepAnalysis.invalidations.at(-1) ?? null;
+  const latestSweepInvalidation = sweep
+    ? sweepAnalysis.invalidations
+      .filter((item) => sameLiquidityLevel(item.level, sweep.level) && item.index >= sweep.sweepIndex && item.index <= sweep.index)
+      .at(-1) ?? null
+    : sweepAnalysis.invalidations.at(-1) ?? null;
   const sweepAcceptanceOk = !latestSweepInvalidation || !["ACCEPTED_BEYOND_LEVEL", "POSSIBLE_BREAKOUT", "SWEEP_TOO_DEEP"].includes(latestSweepInvalidation.reason);
   const doubleSweepOk = !sweepAnalysis.doubleSweepWarning;
   push(evaluations, "LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", Boolean(sweep?.level), true, "AUTOMATIC", sweep?.level?.type ?? null, "PDH/PDL, Asian, London, equal high/low", sweep?.level ? `${sweep.level.type} at ${sweep.level.price.toFixed(2)} was selected.` : "No valid liquidity level has been swept.");
@@ -347,7 +361,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     ? "REVERSAL_MSS"
     : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "CONTINUATION_BOS" : "REVERSAL_MSS");
   push(evaluations, "PROTECTED_POINT_CONFIDENCE", "Protected structure point has usable confidence", Boolean(bos?.protectedPoint && protectedConfidenceRank(bos.protectedPoint.confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)), true, "AUTOMATIC", bos?.protectedPoint?.confidence ?? null, `>= ${config.protectedPointMinimumConfidence}`, bos?.protectedPoint ? `${bos.protectedPoint.type} at ${bos.protectedPoint.price.toFixed(2)} selected with ${bos.protectedPoint.confidence} confidence.` : "No protected structure point is available yet.");
-  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close BOS/MSS has confirmed yet.");
+  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close reversal MSS has confirmed yet.");
+  push(evaluations, "MSS_STRENGTH", "MSS strength confirmed", Boolean(bos?.breakDistanceAtr != null && bos.breakDistanceAtr >= config.minimumBosCloseDistanceATR && bos.bodyRatio >= 0.5), true, "AUTOMATIC", bos ? `${bos.breakDistanceAtr.toFixed(2)} ATR / ${Math.round(bos.bodyRatio * 100)}% body` : null, `>= ${config.minimumBosCloseDistanceATR} ATR and >= 50% body`, bos ? "The MSS close has enough break distance and body strength." : "Waiting for a strong closed-candle MSS.");
   if (bos) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "STRUCTURE_BREAK_CONFIRMED", bos.candle.timestampUtc, `${structureType} confirmed by candle close beyond protected structure.`);
   }
@@ -358,21 +373,21 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const zone = sequence?.zone ?? null;
 
   const setupFresh = bos ? currentIndex - bos.index <= config.maximumBarsAfterBosForEntry : currentIndex - sweep.index <= config.maximumBarsAfterSweep;
-  if (!setupFresh) return blockedDecision("SETUP_TIMEOUT", "Module 2 setup expired before a valid candidate trade.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
+  if (!setupFresh) return expiredDecision("RETEST_EXPIRED", "Module 2 setup expired before a valid MSS retest entry.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
 
-  push(evaluations, "ENTRY_ZONE_READY", "Fresh entry zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "fresh FVG or order block", zone ? "A fresh imbalance/order-block zone is available for entry." : "No fresh FVG or order-block zone is available after BOS/CHoCH.");
+  push(evaluations, "ENTRY_ZONE_READY", "MSS retest zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "protected structure +/- 0.05 ATR", zone ? "The broken protected structure created a strict MSS retest zone." : "No protected-structure retest zone is available after MSS.");
   if (zone) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
     flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
   }
 
   const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
-  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
+  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retested MSS zone", retrace, true, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps MSS retest zone", retrace ? "Price has returned into the protected-structure MSS retest zone." : "Price has not returned into the MSS retest zone yet.");
   if (retrace) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
   }
 
-  const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
+  const entryConfirmation = zone && bos ? confirmsMssRetest(current, direction, zone, bos.level, sweep) : false;
   const engulfingOk = confirmsEngulfingReversal(setupCandles, currentIndex, direction);
   const pinBarOk = confirmsPinBarRejection(current, direction);
   const insideBarBreakOk = confirmsInsideBarBreak(setupCandles, currentIndex, direction);
@@ -419,12 +434,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   const plan = buildLayeredTradePlan(setupCandles, levels, direction, sweep, zone, current, atr, config);
   const atrVolatilityOk = current.close > 0 && atr / current.close >= 0.00015;
-  const rrOk = plan.rr >= config.minimumRiskReward;
+  const rrOk = plan.rr >= 2 && plan.availableRewardRisk >= config.minimumRiskReward;
+  const spreadRatio = context.spread == null ? 0 : context.spread / Math.max(0.01, Math.abs(plan.entry - plan.stop));
+  const spreadDistanceOk = context.spread == null || spreadRatio <= 0.1;
   const quality = [
     { code: "QUALITY_ATR_VOLATILITY", name: "ATR volatility filter", passed: atrVolatilityOk, actual: `${((atr / current.close) * 100).toFixed(3)}%`, required: ">= 0.015%", explanation: atrVolatilityOk ? "ATR shows enough volatility for the setup." : "ATR volatility is too low." },
-    { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadOk, blocking: true, actual: context.spread ?? "unknown", required: `<= ${config.maximumSpread}`, explanation: spreadOk ? "Spread is acceptable." : "Spread is above the configured maximum." },
+    { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadDistanceOk, blocking: true, actual: context.spread == null ? "unknown" : `${Math.round(spreadRatio * 100)}% of stop`, required: "<= 10% of stop distance", explanation: spreadDistanceOk ? "Spread is acceptable relative to the stop distance." : "Spread is too large relative to the stop distance." },
     { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, blocking: true, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
-    { code: "QUALITY_RR", name: "Minimum RR 2:1", passed: rrOk, blocking: true, actual: Number(plan.rr.toFixed(2)), required: `>= ${config.minimumRiskReward}`, explanation: rrOk ? "Reward-to-risk meets the minimum." : "Reward-to-risk is below the minimum." },
+    { code: "QUALITY_RR", name: "Minimum RR and opposing liquidity", passed: rrOk, blocking: true, actual: `${plan.rr.toFixed(2)}R target / ${plan.availableRewardRisk.toFixed(2)}R available`, required: "2R target and >= 1.5R before opposing liquidity", explanation: rrOk ? "Fixed 2R target is valid and opposing liquidity leaves enough room." : "Nearest opposing liquidity does not leave enough reward distance." },
     { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR`, explanation: plan.stopValid ? "Stop size is acceptable." : "Stop size is too large." },
     { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: bos ? currentIndex - bos.index : currentIndex - sweep.index, required: bos ? `<= ${config.maximumBarsAfterBosForEntry} candles after BOS` : `<= ${config.maximumBarsAfterSweep} candles after sweep`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
   ];
@@ -435,7 +452,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
   push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
   push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
-  const riskOk = spreadOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk;
+  const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk;
   push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop <= ${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
@@ -463,7 +480,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     score
   });
   const selectedVariant = selectModule2Variant(variants);
-  push(evaluations, "VARIANT_SELECTED", "Confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "A-I profile mandatory rules pass; J remains backtest-only", selectedVariant ? selectedVariant.reason : "No paper-approved Module 2 confirmation profile has completed its mandatory rule chain.");
+  push(evaluations, "VARIANT_SELECTED", "Strict MSS retest profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "SWEEP_MSS_RETEST mandatory rules pass", selectedVariant ? selectedVariant.reason : "The only live paper profile is Sweep + MSS + Retest; sweep-only, pattern-only, EMA-only, or volume-only evidence is not enough.");
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
   const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
   const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
@@ -500,11 +517,11 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
       validLiquidityLevel: Boolean(sweep?.level),
       sweepDetected: Boolean(sweep)
     },
-    finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
+    finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk && scoreOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
     selectedProfile: selectedVariant?.code ?? null,
     riskOk
   };
-  flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk;
+  flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk && scoreOk;
   flags.fullChecklistMatched = fullChecklistPassed;
   flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
   flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
@@ -535,17 +552,20 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   if (!riskOk) {
     return blockedDecision("RISK_ENGINE_BLOCK", `BLOCK: ${selectedVariant?.name ?? "selected profile"} mandatory rules passed, but risk engine blocked entry.`, evaluations, flags, direction, score);
   }
+  if (!scoreOk) {
+    return blockedDecision("LOW_SETUP_QUALITY", `NO TRADE: strict MSS retest path passed, but confidence ${score}% is below ${config.minimumSignalScore}%.`, evaluations, flags, direction, score);
+  }
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
     return {
-      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_VARIANT_BUY" : "MANDATORY_LIQUIDITY_SWEEP_VARIANT_SELL",
+      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_MSS_RETEST_BUY" : "MANDATORY_LIQUIDITY_SWEEP_MSS_RETEST_SELL",
       direction,
       status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
       state: "SIGNAL_ACTIVE",
       entryPrice: plan.entry,
       stopPrice: plan.stop,
       targetPrice: plan.target,
-      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "variant"} checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6, confidence ${score}%.`,
+      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "strict MSS retest"} checklist passed. Paper setup created from closed-candle sweep, reversal MSS, retest confirmation, and risk approval. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6, confidence ${score}%.`,
       evaluations,
       scenarioFlags: flags,
       favorabilityScore: score,
@@ -555,14 +575,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
 
   return {
-    scenario: direction === "LONG" ? "NY_LIQUIDITY_SWEEP_VARIANT_BUY" : "NY_LIQUIDITY_SWEEP_VARIANT_SELL",
+    scenario: direction === "LONG" ? "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY" : "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL",
     direction,
     status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
     state: "SIGNAL_ACTIVE",
     entryPrice: plan.entry,
     stopPrice: plan.stop,
     targetPrice: plan.target,
-    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} ${selectedVariant?.name ?? "Module 2 variant"} passed hard rules, ${confirmationCount}/${confirmations.length} confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
+    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} strict Liquidity Sweep + MSS + Retest passed closed-candle mandatory rules, ${confirmationCount}/${confirmations.length} confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
     evaluations,
     scenarioFlags: flags,
     favorabilityScore: score,
@@ -582,9 +602,12 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE",
+    "RISK_OK",
+    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
   return [...required].every((ruleCode) =>
@@ -603,9 +626,12 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE",
+    "RISK_OK",
+    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
@@ -628,19 +654,14 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   const currentDate = newYorkDateKey(now);
   const priorDates = [...new Set(candles.map((candle) => newYorkDateKey(candle.timestampUtc)).filter((date) => date < currentDate))].sort();
   const previousCalendarDate = priorDates.at(-1);
+  const previousWeekDates = priorDates.slice(-7);
   const previousTradingDate = [...priorDates].reverse().find((date) => !isWeekendDateKey(date));
-  const previousTradingWeekDates = [...priorDates].reverse().filter((date) => !isWeekendDateKey(date)).slice(0, 5);
+  const previousWeek = previousWeekDates.length > 0 ? candles.filter((candle) => previousWeekDates.includes(newYorkDateKey(candle.timestampUtc))) : [];
   const previousDay = previousTradingDate ? candles.filter((candle) => newYorkDateKey(candle.timestampUtc) === previousTradingDate) : [];
-  const previousWeek = candles.filter((candle) => previousTradingWeekDates.includes(newYorkDateKey(candle.timestampUtc)));
   const preSession = candles.filter((candle) => {
     const date = newYorkDateKey(candle.timestampUtc);
     const minute = newYorkMinutes(candle.timestampUtc);
     return date < currentDate || (date === currentDate && minute < parseTime(config.newYorkStartTime));
-  });
-  const nyPremarket = candles.filter((candle) => {
-    const date = newYorkDateKey(candle.timestampUtc);
-    const minute = newYorkMinutes(candle.timestampUtc);
-    return date === currentDate && minute >= parseTime(config.nyPremarketStartTime) && minute < parseTime(config.newYorkStartTime);
   });
   const openingRange = candles.filter((candle) => {
     const date = newYorkDateKey(candle.timestampUtc);
@@ -663,12 +684,11 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   addRangeLevels(levels, previousDay, "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "HIGH");
   addRangeLevels(levels, asian, "ASIAN_HIGH", "ASIAN_LOW", "MEDIUM");
   addRangeLevels(levels, london, "LONDON_HIGH", "LONDON_LOW", "HIGH");
-  addRangeLevels(levels, nyPremarket, "NY_PREMARKET_HIGH", "NY_PREMARKET_LOW", "MEDIUM");
   addRangeLevels(levels, openingRange, "ORB_HIGH", "ORB_LOW", "HIGH");
   const pivots = detectPivots(preSession, 2, 2).slice(-18);
+  addExternalSwingLevels(levels, pivots);
   addEqualHighLowLevels(levels, pivots, atr);
-  addRoundNumberLevels(levels, candles.at(-1)?.close ?? 0, config);
-  addManualLevels(levels, config.manualLevels ?? []);
+  addManualLevels(levels, config);
   return dedupeLevels(levels.map((level) => liquidityZone(level, atr, config)));
 }
 
@@ -676,47 +696,6 @@ function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: L
   if (candles.length === 0) return;
   levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), priority, priorityScore: levelPriorityScore(highType, priority), source: highType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
   levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, priorityScore: levelPriorityScore(lowType, priority), source: lowType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
-}
-
-function addRoundNumberLevels(levels: LiquidityLevel[], close: number, config: LiquiditySweepConfig) {
-  const step = Math.max(1, Number(config.roundNumberStep ?? 10));
-  const windowSteps = Math.max(1, Math.min(12, Number(config.roundNumberWindowSteps ?? 4)));
-  if (!Number.isFinite(close) || close <= 0) return;
-  const anchor = Math.round(close / step) * step;
-  for (let offset = -windowSteps; offset <= windowSteps; offset += 1) {
-    const price = anchor + offset * step;
-    if (price <= 0) continue;
-    levels.push({
-      type: "ROUND_NUMBER",
-      side: price >= close ? "BUY_SIDE" : "SELL_SIDE",
-      price,
-      priority: "MEDIUM",
-      priorityScore: levelPriorityScore("ROUND_NUMBER", "MEDIUM"),
-      source: `ROUND_${step}`,
-      touchCount: 1,
-      clusterSize: 1,
-      status: "ACTIVE"
-    });
-  }
-}
-
-function addManualLevels(levels: LiquidityLevel[], manualLevels: NonNullable<LiquiditySweepConfig["manualLevels"]>) {
-  for (const item of manualLevels) {
-    const price = Number(item.price);
-    if (!Number.isFinite(price) || price <= 0) continue;
-    const priority = item.priority ?? "HIGH";
-    levels.push({
-      type: "MANUAL_LEVEL",
-      side: item.side ?? "BUY_SIDE",
-      price,
-      priority,
-      priorityScore: levelPriorityScore("MANUAL_LEVEL", priority),
-      source: item.label ?? "MANUAL_LEVEL",
-      touchCount: 1,
-      clusterSize: 1,
-      status: "ACTIVE"
-    });
-  }
 }
 
 function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySweepConfig): LiquidityLevel {
@@ -733,24 +712,22 @@ function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySwee
 
 function levelPriorityScore(type: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
   const typeScores: Record<LiquidityLevelType, number> = {
-    PREVIOUS_WEEK_HIGH: 98,
-    PREVIOUS_WEEK_LOW: 98,
+    PREVIOUS_WEEK_HIGH: 100,
+    PREVIOUS_WEEK_LOW: 100,
     PREVIOUS_DAY_HIGH: 95,
     PREVIOUS_DAY_LOW: 95,
-    ORB_HIGH: 90,
-    ORB_LOW: 90,
-    LONDON_HIGH: 85,
-    LONDON_LOW: 85,
-    NY_PREMARKET_HIGH: 82,
-    NY_PREMARKET_LOW: 82,
-    ASIAN_HIGH: 80,
-    ASIAN_LOW: 80,
+    LONDON_HIGH: 90,
+    LONDON_LOW: 90,
+    ASIAN_HIGH: 85,
+    ASIAN_LOW: 85,
+    ORB_HIGH: 80,
+    ORB_LOW: 80,
     EQUAL_HIGH: 70,
     EQUAL_LOW: 70,
-    ROUND_NUMBER: 60,
-    MANUAL_LEVEL: 88,
-    SWING_HIGH: 45,
-    SWING_LOW: 45
+    SWING_HIGH: 75,
+    SWING_LOW: 75,
+    MANUAL_LEVEL: priorityScore(priority) * 20,
+    ROUND_NUMBER: 35
   };
   return typeScores[type] ?? priorityScore(priority) * 10;
 }
@@ -760,10 +737,10 @@ function detectBestLiquiditySequence(candles: Candle[], sweeps: SweepCandidate[]
   const sequences = sweeps.map((sweep) => {
     const direction: Direction = sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT";
     const displacement = detectDisplacement(candles, sweep.index, direction, atr, config);
-    const bos = displacement ? detectBos(candles, sweep.index, displacement.index, direction, pivots, swings, atr, config) : null;
+    const bos = detectBos(candles, sweep.index, displacement?.index ?? sweep.index, direction, pivots, swings, atr, config);
     const fvg = displacement ? detectFreshFvg(candles, sweep.index, displacement.index, direction, atr, config) : null;
     const orderBlock = displacement ? detectOrderBlock(candles, displacement.index, direction, atr) : null;
-    const zone = bos ? selectFreshEntryZone(candles, currentIndex, direction, fvg, orderBlock) : null;
+    const zone = bos ? mssRetestZone(bos, atr) : null;
     const retrace = zone ? candles[currentIndex].low <= zone.high && candles[currentIndex].high >= zone.low : false;
     const confirmation = zone ? confirmsEntry(candles[currentIndex], direction, zone) : false;
     const agePenalty = Math.max(0, currentIndex - (bos?.index ?? displacement?.index ?? sweep.index)) * 0.01;
@@ -782,6 +759,18 @@ function detectBestLiquiditySequence(candles: Candle[], sweeps: SweepCandidate[]
     return { sweep, direction, displacement, bos, fvg, orderBlock, zone, retrace, confirmation, score };
   });
   return sequences.sort((left, right) => right.score - left.score || right.sweep.index - left.sweep.index)[0] ?? null;
+}
+
+function mssRetestZone(bos: NonNullable<ReturnType<typeof detectBos>>, atr: number) {
+  const zoneHalfWidth = Math.max(0.01, atr * 0.05);
+  return {
+    kind: "MSS_RETEST",
+    low: bos.level - zoneHalfWidth,
+    high: bos.level + zoneHalfWidth,
+    midpoint: bos.level,
+    createdAt: bos.candle.timestampUtc,
+    index: bos.index
+  };
 }
 
 function analyzeSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr: number, config: LiquiditySweepConfig) {
@@ -814,6 +803,12 @@ function analyzeSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr
           const range = candle.high - candle.low;
           const rejectionWick = level.side === "SELL_SIDE" ? Math.min(candle.open, candle.close) - candle.low : candle.high - Math.max(candle.open, candle.close);
           const wickRatio = range > 0 ? Math.max(0, rejectionWick) / range : 0;
+          const bodyRatio = range > 0 ? Math.abs(candle.close - candle.open) / range : 0;
+          const oppositeBody = level.side === "SELL_SIDE" ? closeBackCandle.close > closeBackCandle.open : closeBackCandle.close < closeBackCandle.open;
+          if (wickRatio < config.minimumSweepRejectionWickRatio && !(oppositeBody && bodyRatio >= 0.55)) {
+            invalidations.push(sweepInvalidation(index, level, candle, "NO_REJECTION", distanceAtr, `Price closed back inside ${level.type}, but rejection quality failed: wick ${Math.round(wickRatio * 100)}%, body ${Math.round(bodyRatio * 100)}%.`));
+            continue;
+          }
           const resolutionBars = closeIndex - index;
           const sweepType = classifySweepType(candle, closeIndex, index, distanceAtr, wickRatio, level, config);
           const rejectionType = resolutionBars === 0 && wickRatio >= config.minimumSweepRejectionWickRatio
@@ -842,6 +837,10 @@ function analyzeSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr
 
 function sweepInvalidation(index: number, level: LiquidityLevel, candle: Candle, reason: SweepInvalidation["reason"], distanceAtr: number, detail: string): SweepInvalidation {
   return { index, level, candle, reason, distanceAtr, occurredAt: candle.timestampUtc, detail };
+}
+
+function sameLiquidityLevel(left: LiquidityLevel, right: LiquidityLevel) {
+  return left.type === right.type && left.side === right.side && Math.abs(left.price - right.price) < 0.05;
 }
 
 function acceptedBeyondLevel(candles: Candle[], sweepIndex: number, endIndex: number, level: LiquidityLevel, atr: number, config: LiquiditySweepConfig) {
@@ -892,11 +891,7 @@ function detectDisplacement(candles: Candle[], sweepIndex: number, direction: Di
 
 function detectBos(candles: Candle[], sweepIndex: number, displacementIndex: number, direction: Direction, pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
   const protectedPoint = findProtectedPoint(swings, sweepIndex, direction, config);
-  const structure = protectedPoint
-    ? { index: protectedPoint.candleIndex, kind: protectedPoint.type, price: protectedPoint.price, time: protectedPoint.formedAt }
-    : [...pivots]
-        .reverse()
-        .find((pivot) => pivot.index < sweepIndex && (direction === "LONG" ? pivot.kind === "HIGH" : pivot.kind === "LOW"));
+  const structure = protectedPoint ? { index: protectedPoint.candleIndex, kind: protectedPoint.type, price: protectedPoint.price, time: protectedPoint.formedAt } : null;
   if (!structure) return null;
   const end = Math.min(candles.length - 1, sweepIndex + config.maximumBarsAfterSweepForBos);
   for (let index = displacementIndex; index <= end; index += 1) {
@@ -907,7 +902,8 @@ function detectBos(candles: Candle[], sweepIndex: number, displacementIndex: num
       const range = candle.high - candle.low;
       const bodyRatio = range > 0 ? Math.abs(candle.close - candle.open) / range : 0;
       const breakDistanceAtr = atr > 0 ? Math.abs(candle.close - structure.price) / atr : 0;
-      const subtype = protectedPoint ? "REVERSAL_MSS" : "CONTINUATION_BOS";
+      if (breakDistanceAtr < config.minimumBosCloseDistanceATR || bodyRatio < 0.5) continue;
+      const subtype = "REVERSAL_MSS";
       return {
         index,
         level: structure.price,
@@ -1002,17 +998,13 @@ function isZoneFresh(candles: Candle[], zone: NonNullable<ReturnType<typeof dete
 
 function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: SweepCandidate, zone: { midpoint: number; low: number; high: number }, current: Candle, atr: number, config: LiquiditySweepConfig) {
   const entry = current.close;
-  const stop = direction === "LONG" ? Math.min(sweep.candle.low, zone.low) - atr * config.stopBufferATR : Math.max(sweep.candle.high, zone.high) + atr * config.stopBufferATR;
-  const targets = levels
-    .filter((level) => direction === "LONG" ? level.side === "BUY_SIDE" && level.price > entry : level.side === "SELL_SIDE" && level.price < entry)
-    .sort((left, right) => direction === "LONG" ? left.price - right.price : right.price - left.price);
-  const fallback = direction === "LONG" ? entry + Math.abs(entry - stop) * config.minimumRiskReward : entry - Math.abs(entry - stop) * config.minimumRiskReward;
-  const target = targets[0]?.price ?? fallback;
+  const stop = direction === "LONG" ? sweep.candle.low - atr * config.stopBufferATR : sweep.candle.high + atr * config.stopBufferATR;
   const risk = Math.abs(entry - stop);
-  const reward = Math.abs(target - entry);
-  const rr = risk > 0 ? reward / risk : 0;
+  const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const availableRewardRisk = opposingLiquidityRewardRisk(levels, direction, entry, risk);
+  const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
   const stopDistanceAtr = atr > 0 ? risk / atr : 999;
-  return { entry, stop, target, rr, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
+  return { entry, stop, target, rr, availableRewardRisk, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
 }
 
 function buildLayeredTradePlan(
@@ -1020,7 +1012,7 @@ function buildLayeredTradePlan(
   levels: LiquidityLevel[],
   direction: Direction,
   sweep: SweepCandidate,
-  zone: ReturnType<typeof selectFreshEntryZone>,
+  zone: { midpoint: number; low: number; high: number } | null,
   current: Candle,
   atr: number,
   config: LiquiditySweepConfig
@@ -1028,16 +1020,21 @@ function buildLayeredTradePlan(
   if (zone) return buildTradePlan(candles, levels, direction, sweep, zone, current, atr, config);
   const entry = current.close;
   const stop = direction === "LONG" ? sweep.candle.low - atr * config.stopBufferATR : sweep.candle.high + atr * config.stopBufferATR;
-  const targets = levels
-    .filter((level) => direction === "LONG" ? level.side === "BUY_SIDE" && level.price > entry : level.side === "SELL_SIDE" && level.price < entry)
-    .sort((left, right) => direction === "LONG" ? left.price - right.price : right.price - left.price);
-  const fallback = direction === "LONG" ? entry + Math.abs(entry - stop) * config.minimumRiskReward : entry - Math.abs(entry - stop) * config.minimumRiskReward;
-  const target = targets[0]?.price ?? fallback;
   const risk = Math.abs(entry - stop);
-  const reward = Math.abs(target - entry);
-  const rr = risk > 0 ? reward / risk : 0;
+  const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const availableRewardRisk = opposingLiquidityRewardRisk(levels, direction, entry, risk);
+  const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
   const stopDistanceAtr = atr > 0 ? risk / atr : 999;
-  return { entry, stop, target, rr, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
+  return { entry, stop, target, rr, availableRewardRisk, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
+}
+
+function opposingLiquidityRewardRisk(levels: LiquidityLevel[], direction: Direction, entry: number, risk: number) {
+  if (risk <= 0) return 0;
+  const opposing = levels
+    .filter((level) => direction === "LONG" ? level.side === "BUY_SIDE" && level.price > entry : level.side === "SELL_SIDE" && level.price < entry)
+    .sort((left, right) => direction === "LONG" ? left.price - right.price : right.price - left.price)[0];
+  if (!opposing) return 2;
+  return Math.abs(opposing.price - entry) / risk;
 }
 
 function confirmsEntry(candle: Candle, direction: Direction, zone: { low: number; high: number; midpoint: number }) {
@@ -1047,6 +1044,22 @@ function confirmsEntry(candle: Candle, direction: Direction, zone: { low: number
   const upperWick = candle.high - Math.max(candle.open, candle.close);
   if (direction === "LONG") return candle.close > zone.midpoint && (candle.close > candle.open || lowerWick / range >= 0.35);
   return candle.close < zone.midpoint && (candle.close < candle.open || upperWick / range >= 0.35);
+}
+
+function confirmsMssRetest(candle: Candle, direction: Direction, zone: { low: number; high: number; midpoint: number }, protectedLevel: number, sweep: SweepCandidate) {
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const bodyRatio = Math.abs(candle.close - candle.open) / range;
+  const enteredZone = candle.low <= zone.high && candle.high >= zone.low;
+  if (!enteredZone || bodyRatio < 0.45) return false;
+  if (direction === "LONG") {
+    return candle.close > protectedLevel
+      && candle.close > candle.open
+      && candle.close > sweep.candle.low;
+  }
+  return candle.close < protectedLevel
+    && candle.close < candle.open
+    && candle.close < sweep.candle.high;
 }
 
 function confirmsDirectionalEntry(candle: Candle, direction: Direction) {
@@ -1230,10 +1243,13 @@ function classifyStructure(swings: SwingPoint[], atr: number, config: LiquidityS
 function detectPivots(candles: Candle[], left: number, right: number) {
   const pivots: Array<{ index: number; kind: "HIGH" | "LOW"; price: number; time: string }> = [];
   for (let index = left; index < candles.length - right; index += 1) {
-    const window = candles.slice(index - left, index + right + 1);
     const candle = candles[index];
-    if (candle.high === Math.max(...window.map((item) => item.high))) pivots.push({ index, kind: "HIGH", price: candle.high, time: candle.timestampUtc });
-    if (candle.low === Math.min(...window.map((item) => item.low))) pivots.push({ index, kind: "LOW", price: candle.low, time: candle.timestampUtc });
+    const leftCandles = candles.slice(index - left, index);
+    const rightCandles = candles.slice(index + 1, index + right + 1);
+    const swingHigh = leftCandles.every((item) => candle.high > item.high) && rightCandles.every((item) => candle.high >= item.high);
+    const swingLow = leftCandles.every((item) => candle.low < item.low) && rightCandles.every((item) => candle.low <= item.low);
+    if (swingHigh) pivots.push({ index, kind: "HIGH", price: candle.high, time: candle.timestampUtc });
+    if (swingLow) pivots.push({ index, kind: "LOW", price: candle.low, time: candle.timestampUtc });
   }
   return pivots;
 }
@@ -1310,6 +1326,54 @@ function addEqualHighLowLevels(levels: LiquidityLevel[], pivots: ReturnType<type
   addEqualLevels(levels, pivots.filter((pivot) => pivot.kind === "LOW"), "EQUAL_LOW", "SELL_SIDE", tolerance);
 }
 
+function addExternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>) {
+  const latestHigh = [...pivots].reverse().find((pivot) => pivot.kind === "HIGH");
+  const latestLow = [...pivots].reverse().find((pivot) => pivot.kind === "LOW");
+  if (latestHigh) {
+    levels.push({
+      type: "SWING_HIGH",
+      side: "BUY_SIDE",
+      price: latestHigh.price,
+      priority: "MEDIUM",
+      priorityScore: levelPriorityScore("SWING_HIGH", "MEDIUM"),
+      source: "CONFIRMED_EXTERNAL_SWING_HIGH",
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+  if (latestLow) {
+    levels.push({
+      type: "SWING_LOW",
+      side: "SELL_SIDE",
+      price: latestLow.price,
+      priority: "MEDIUM",
+      priorityScore: levelPriorityScore("SWING_LOW", "MEDIUM"),
+      source: "CONFIRMED_EXTERNAL_SWING_LOW",
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+}
+
+function addManualLevels(levels: LiquidityLevel[], config: LiquiditySweepConfig) {
+  for (const item of config.manualLevels ?? []) {
+    if (!Number.isFinite(item.price)) continue;
+    levels.push({
+      type: "MANUAL_LEVEL",
+      side: item.side ?? "BUY_SIDE",
+      price: item.price,
+      priority: item.priority ?? "MEDIUM",
+      priorityScore: levelPriorityScore("MANUAL_LEVEL", item.priority ?? "MEDIUM"),
+      source: item.label ? `MANUAL: ${item.label}` : "MANUAL_LEVEL",
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+}
+
 function addEqualLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, type: LiquidityLevelType, side: LiquidityLevel["side"], tolerance: number) {
   for (let index = 0; index < pivots.length; index += 1) {
     const cluster = pivots.filter((pivot, otherIndex) => otherIndex !== index && Math.abs(pivot.price - pivots[index].price) <= tolerance);
@@ -1360,57 +1424,59 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "ENTRY_GRADE", "PAPER_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "RESEARCH", "RESEARCH_ONLY", false, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
-    ], "Variant A passed: sweep and close-back-inside confirmed.", base, input.direction),
+    ], "Research evidence only: sweep and close-back-inside confirmed, but no live paper trade can open without reversal MSS and retest.", base, input.direction),
     variant("SWEEP_NO_CONFIRMATION", "Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
     ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction),
-    variant("SWEEP_ENGULFING", "Sweep + engulfing", "ENTRY_GRADE", "PAPER_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
+    variant("SWEEP_ENGULFING", "Sweep + engulfing", "RESEARCH", "RESEARCH_ONLY", false, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_ENGULFING", input.engulfingOk]
-    ], "Variant D passed: sweep and engulfing confirmation are complete.", base, input.direction),
-    variant("SWEEP_BOS", "Sweep + BOS", "ENTRY_GRADE", "PAPER_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS"], [
+    ], "Research evidence only: engulfing confirmation is not enough without the strict MSS retest path.", base, input.direction),
+    variant("SWEEP_BOS", "Sweep + BOS", "RESEARCH", "RESEARCH_ONLY", false, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)]
-    ], "Variant B passed: sweep, close-back-inside, and continuation BOS are confirmed.", base, input.direction),
-    variant("SWEEP_MSS", "Sweep + MSS", "ENTRY_GRADE", "PAPER_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS"], [
+    ], "Research evidence only: continuation BOS is not the live Module 2 MVP entry path.", base, input.direction),
+    variant("SWEEP_MSS", "Sweep + MSS", "RESEARCH", "RESEARCH_ONLY", false, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)]
-    ], "Variant C passed: sweep, close-back-inside, and reversal MSS are confirmed.", base, input.direction),
-    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "ENTRY_GRADE", "PAPER_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
+    ], "Research evidence only: reversal MSS is visible, but retest confirmation is still required.", base, input.direction),
+    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "RESEARCH", "RESEARCH_ONLY", false, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
-    ], "Variant H passed: sweep and provider volume expansion are confirmed.", base, input.direction),
-    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "ENTRY_GRADE", "PAPER_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
+    ], "Research evidence only: provider volume is not sufficient for live entry.", base, input.direction),
+    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "RESEARCH", "RESEARCH_ONLY", false, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
       ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Displacement retest profile passed.", base, input.direction),
-    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
+    ], "Research evidence only: displacement/retest without reversal MSS is not enough.", base, input.direction),
+    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "RESEARCH", "RESEARCH_ONLY", false, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_EMA_200", input.ema200Ok]
-    ], "Variant G passed: sweep and EMA alignment are confirmed.", base, input.direction),
-    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
+    ], "Research evidence only: EMA alignment cannot issue a signal alone.", base, input.direction),
+    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "RESEARCH", "RESEARCH_ONLY", false, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
       ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Variant E passed: sweep, continuation BOS, and retest confirmation are complete.", base, input.direction),
-    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_RETRACE"], [
+    ], "Research evidence only: continuation BOS retest is tracked, but live Module 2 requires reversal MSS retest.", base, input.direction),
+    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Variant F passed: sweep, reversal MSS, and retest are complete.", base, input.direction),
-    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation]
+    ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
+    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "RESEARCH", "RESEARCH_ONLY", false, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
       ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Variant I passed: sweep, reversal MSS, displacement, and retest are complete.", base, input.direction)
+    ], "Research evidence only: displacement is context, not a separate live-entry profile.", base, input.direction)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
@@ -1447,9 +1513,7 @@ function variant(
 }
 
 function selectModule2Variant(variants: Module2Variant[]) {
-  return variants
-    .filter((row) => row.paperEligible)
-    .sort((left, right) => right.score - left.score)[0] ?? null;
+  return variants.find((row) => row.code === "SWEEP_MSS_RETEST" && row.paperEligible) ?? null;
 }
 
 function scoreSetup(input: any) {
@@ -1540,11 +1604,28 @@ function blockedDecision(scenario: string, reason: string, evaluations: RuleEval
   return {
     scenario,
     direction: direction ?? null,
-    status: scenario.includes("BLOCK") ? "BLOCKED" : "NO TRADE",
+    status: scenario.includes("INVALID") ? "INVALIDATED" : scenario.includes("BLOCK") ? "BLOCKED" : "NO TRADE",
     state: "INVALIDATED",
     finalReason: reason,
     evaluations,
     scenarioFlags: { ...flags, state: "INVALIDATED", stateMachine, invalidationReason: reason },
+    favorabilityScore: score,
+    favorabilityGrade: grade(score),
+    favorabilityReasons: [reason]
+  };
+}
+
+function expiredDecision(scenario: string, reason: string, evaluations: RuleEvaluation[], flags: Record<string, unknown>, direction?: Direction | null, score = 0): LiquiditySweepDecision {
+  const at = latestStateTransitionTime(flags) ?? new Date().toISOString();
+  const stateMachine = appendStateTransition(flags.stateMachine, "EXPIRED", at, reason);
+  return {
+    scenario,
+    direction: direction ?? null,
+    status: "EXPIRED",
+    state: "EXPIRED",
+    finalReason: reason,
+    evaluations,
+    scenarioFlags: { ...flags, state: "EXPIRED", stateMachine, expirationReason: reason },
     favorabilityScore: score,
     favorabilityGrade: grade(score),
     favorabilityReasons: [reason]
@@ -1575,6 +1656,8 @@ function appendStateTransition(machine: unknown, to: LiquiditySweepState, at: st
 }
 
 function stateFromScenario(scenario: string): LiquiditySweepState {
+  if (scenario.includes("SESSION_INACTIVE")) return "IDLE";
+  if (scenario.includes("WAITING_FOR_MSS")) return "WAITING_FOR_CONFIRMATION";
   if (scenario.includes("WAITING_FOR_RETRACE")) return "WAITING_FOR_RETRACE";
   if (scenario.includes("ENTRY_CONFIRMATION")) return "ENTRY_CONFIRMATION";
   if (scenario.includes("ENTRY_ZONE_READY")) return "ENTRY_ZONE_READY";

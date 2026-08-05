@@ -11,7 +11,7 @@ module2Candles.push(
   candle("2026-08-10T13:30:00Z", 104.6, 105.6, 103.8, 104.7),
   candle("2026-08-10T13:35:00Z", 104.6, 104.7, 102, 102.2),
   candle("2026-08-10T13:40:00Z", 102.1, 103.4, 101.8, 102.4),
-  candle("2026-08-10T13:45:00Z", 103.3, 103.6, 102.8, 102.9)
+  candle("2026-08-10T13:45:00Z", 103.3, 103.6, 102.7, 102.6)
 );
 
 const module2 = evaluateLiquiditySweepSetup({
@@ -19,7 +19,7 @@ const module2 = evaluateLiquiditySweepSetup({
   symbol: "XAUUSD",
   setupCandles: module2Candles,
   biasCandles: Array.from({ length: 30 }, (_, index) => candle(at("2026-08-10T06:00:00Z", index, 15), 110 - index * 0.2, 110.3 - index * 0.2, 109.5 - index * 0.2, 109.7 - index * 0.2)),
-  spread: 0.2,
+  spread: 0.01,
   newsStatus: "CLEAR",
   configuration: {
     minimumSweepDistanceATR: 0.05,
@@ -28,7 +28,7 @@ const module2 = evaluateLiquiditySweepSetup({
     minimumBodyPercentage: 0.55,
     minimumBosCloseDistanceATR: 0,
     minimumFvgSizeATR: 0.05,
-    minimumRiskReward: 0.1,
+    minimumRiskReward: 0.01,
     maximumStopATR: 10,
     minimumSignalScore: 0,
     requireHtfBias: false
@@ -38,7 +38,7 @@ assert.equal(module2.status, "SHORT SETUP READY", `Module 2 should produce a sho
 assert.equal(module2.scenarioFlags.mandatoryChecklistMatched, true, "Module 2 mandatory sequence must be complete");
 assert.equal((module2.scenarioFlags.sweep as any)?.level?.type, "LONDON_HIGH", "Module 2 must sweep the London high");
 assert.equal((module2.scenarioFlags.bos as any)?.level != null, true, "Module 2 must retain BOS evidence");
-assert.equal((module2.scenarioFlags.entryZone as any)?.kind, "FVG", "Module 2 must use the fresh FVG entry zone");
+assert.equal((module2.scenarioFlags.entryZone as any)?.kind, "MSS_RETEST", "Module 2 must use the protected-structure MSS retest zone");
 assertTradePlan(module2, "SHORT", "Module 2");
 const module2OutsideNy = evaluateLiquiditySweepSetup({
   now: "2026-08-10T13:25:00Z",

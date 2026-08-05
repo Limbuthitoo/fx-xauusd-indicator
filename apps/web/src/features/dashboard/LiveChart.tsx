@@ -1039,8 +1039,8 @@ function buildPositionedOverlays(input: {
   if (zone?.low != null && zone?.high != null) {
     addBox(
       `entry-zone-${zone.kind ?? "zone"}`,
-      zone.kind === "ORDER_BLOCK" ? "Order Block" : "FVG",
-      zone.kind === "ORDER_BLOCK" ? "orderBlock" : "fvg",
+      zone.kind === "ORDER_BLOCK" ? "Order Block" : zone.kind === "MSS_RETEST" ? "MSS Retest" : "FVG",
+      zone.kind === "ORDER_BLOCK" ? "orderBlock" : zone.kind === "MSS_RETEST" ? "bos" : "fvg",
       zone.createdAt ?? flags.displacement?.candle?.timestampUtc,
       evidenceEnd,
       zone.low,
@@ -1071,7 +1071,7 @@ function buildPositionedOverlays(input: {
   const bos = flags.bos;
   if (bos?.candle?.timestampUtc && bos?.level != null) {
     const pad = Math.max(0.18, (sessionHigh - sessionLow) * 0.006);
-    addBox("module2-bos", "BOS / CHoCH", "bos", bos.candle.timestampUtc, evidenceEnd, Number(bos.level) - pad, Number(bos.level) + pad);
+    addBox("module2-bos", "Reversal MSS", "bos", bos.candle.timestampUtc, evidenceEnd, Number(bos.level) - pad, Number(bos.level) + pad);
   }
 
   const invalidation = flags.invalidation;
