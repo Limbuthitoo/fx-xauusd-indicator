@@ -505,8 +505,10 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 displacement is context by default (`WARN_ONLY`), not mandatory unless `displacementFilterMode` is set to `REQUIRED`.
 - Module 2 EMA defaults to `WARN_ONLY`; volume defaults to `RECORD_ONLY`; market context defaults to `RECORD_ONLY`; manual confirmation defaults to `false` for automatic paper trading.
 - Module 2 ranked liquidity now scores previous week/day, London, Asian, ORB, equal highs/lows, external swings, and manual levels using base priority plus untouched/reaction/HTF/cluster bonuses and accepted/old/low-liquidity penalties. Nearby levels with similar scores are merged into one zone.
+- Module 2 ranked liquidity also includes lower-priority internal swing high/low levels, applies minimum 3 bars between confirmed swings, uses 0.03 ATR structure tolerance, adds overlap bonus, and penalizes liquidity that is too close to opposing liquidity.
 - Module 2 conflict resolution blocks simultaneous unresolved buy/sell setups; a confirmed MSS retest with entry confirmation can override weaker opposite sweep evidence.
 - Module 2 final profile on VPS must be backed by migration `063_module2_complete_entry_contract.sql`. The validator fails if `SWEEP_MSS_RETEST` is missing any production gate.
+- Migration `064_module2_swing_contract_backfill.sql` backfills the final swing contract fields for databases that already applied migration `063`.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 
 ## Operating Principles

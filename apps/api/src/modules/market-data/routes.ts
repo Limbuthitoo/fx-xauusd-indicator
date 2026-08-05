@@ -1171,9 +1171,10 @@ function module2LearningGuardrailsForCloseout(recommendation: any, proposed: any
 
 function module2RuleLayerForCloseout(code?: string) {
   if (!code) return "none";
+  if (code === "CONFIRM_ENTRY_CANDLE") return "hard";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
-  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
+  if (requiredEntryRules("high_probability_strategy_2").includes(code)) return "hard";
   if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }
@@ -3754,7 +3755,31 @@ function requiredEntryRules(moduleCode: string) {
   if (moduleCode === "orb_max_options") {
     return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"];
   }
-  return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "VARIANT_SELECTED"];
+  return [
+    "DATA_HEALTHY",
+    "MARKET_CONTEXT_READY",
+    "MARKET_REGIME_CLASSIFIED",
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
+    "PROTECTED_POINT_CONFIDENCE",
+    "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "CONFIRM_ENTRY_CANDLE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
+    "RISK_OK",
+    "SIGNAL_SCORE",
+    "VARIANT_SELECTED"
+  ];
 }
 
 function moduleRuleLayer(moduleCode: string, ruleCode: string) {
@@ -3762,7 +3787,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module1Quality = new Set(["NEWS_FILTER"]);
   const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
   const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
-  const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE"]);
+  const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
   if (moduleCode === "orb_max_options") {

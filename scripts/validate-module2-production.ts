@@ -217,7 +217,10 @@ async function validateCatalog(tenantId: string | null) {
       marketContextMode: value.marketContextMode ?? null,
       manualConfirmationRequired: value.manualConfirmationRequired ?? null,
       maximumActiveSetupsPerSymbol: value.maximumActiveSetupsPerSymbol ?? null,
-      maximumActivePositions: value.maximumActivePositions ?? null
+      maximumActivePositions: value.maximumActivePositions ?? null,
+      minimumSwingProminenceATR: value.minimumSwingProminenceATR ?? null,
+      minimumBarsBetweenSwings: value.minimumBarsBetweenSwings ?? null,
+      structureToleranceATR: value.structureToleranceATR ?? null
     }
   });
 
@@ -488,7 +491,10 @@ function hasUltimateConfigurationFields(value: any) {
     "riskPerTradePercent",
     "maximumDailyLossPercent",
     "maximumWeeklyLossPercent",
-    "maximumConsecutiveLosses"
+    "maximumConsecutiveLosses",
+    "minimumSwingProminenceATR",
+    "minimumBarsBetweenSwings",
+    "structureToleranceATR"
   ].every((key) => Object.prototype.hasOwnProperty.call(value ?? {}, key));
 }
 

@@ -116,6 +116,7 @@ export type LiquiditySweepConfig = {
   zoneToleranceATR: number;
   equalityToleranceATR: number;
   minimumSwingProminenceATR: number;
+  minimumBarsBetweenSwings: number;
   structureToleranceATR: number;
   protectedPointMinimumConfidence: "LOW" | "MEDIUM" | "HIGH";
   minimumSweepDistanceATR: number;
@@ -266,7 +267,8 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   zoneToleranceATR: 0.02,
   equalityToleranceATR: 0.05,
   minimumSwingProminenceATR: 0.2,
-  structureToleranceATR: 0.05,
+  minimumBarsBetweenSwings: 3,
+  structureToleranceATR: 0.03,
   protectedPointMinimumConfidence: "MEDIUM",
   minimumSweepDistanceATR: 0.02,
   maximumSweepDistanceATR: 0.5,
@@ -860,6 +862,8 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   const pivots = detectPivots(preSession, 2, 2).slice(-18);
   addExternalSwingLevels(levels, pivots);
   addEqualHighLowLevels(levels, pivots, atr);
+  const internalPivots = detectPivots(candles.slice(-96), 2, 2).slice(-12);
+  addInternalSwingLevels(levels, internalPivots);
   addManualLevels(levels, config);
   return rankLiquidityLevels(dedupeLevels(levels.map((level) => liquidityZone(level, atr, config))), candles, now, atr);
 }
@@ -1379,6 +1383,7 @@ function detectSwingPoints(candles: Candle[], left: number, right: number, atr: 
     const prominence = Math.abs(pivot.price - reference);
     const prominenceAtr = atr > 0 ? prominence / atr : 0;
     if (prominenceAtr < config.minimumSwingProminenceATR) continue;
+    if (swings.some((swing) => Math.abs(swing.candleIndex - pivot.index) < config.minimumBarsBetweenSwings)) continue;
     const confirmedAt = candles[pivot.index + right]?.timestampUtc ?? pivot.time;
     swings.push({
       id: `${timeframe}-${pivot.kind}-${pivot.index}-${pivot.time}`,
@@ -1549,24 +1554,32 @@ function rankLiquidityLevels(levels: LiquidityLevel[], candles: Candle[], now: s
   const tolerance = Math.max(0.05, atr * 0.02);
   const ranked = levels.map((level) => {
     const reactions = countLevelReactions(candles, level, tolerance);
+    const overlaps = levels.some((other) => other !== level && other.side === level.side && Math.abs(other.price - level.price) <= tolerance * 2);
+    const nearestOpposite = levels
+      .filter((other) => other.side !== level.side)
+      .sort((left, right) => Math.abs(left.price - level.price) - Math.abs(right.price - level.price))[0];
     const untouched = !candles.some((candle) => {
       const candleDate = newYorkDateKey(candle.timestampUtc);
       if (candleDate >= currentDate) return false;
       return level.side === "BUY_SIDE" ? candle.high >= level.price : candle.low <= level.price;
     });
+    const overlapBonus = overlaps ? 10 : 0;
     const htfBonus = ["PREVIOUS_WEEK_HIGH", "PREVIOUS_WEEK_LOW", "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "LONDON_HIGH", "LONDON_LOW"].includes(level.type) ? 5 : 0;
     const clusterBonus = (level.clusterSize ?? 1) >= 3 ? 4 : 0;
     const acceptedPenalty = acceptedPastLevel(candles, level, atr) ? -10 : 0;
+    const opposingPenalty = nearestOpposite && atr > 0 && Math.abs(nearestOpposite.price - level.price) / atr < 0.75 ? -8 : 0;
     const oldPenalty = olderThanTradingDays(level, now, 5) ? -5 : 0;
     const lowLiquidityPenalty = ["ROUND_NUMBER", "SWING_HIGH", "SWING_LOW"].includes(level.type) && reactions < 2 ? -5 : 0;
     const reactionBonus = reactions >= 2 ? 6 : 0;
     const untouchedBonus = untouched ? 8 : 0;
     const score = (level.priorityScore ?? levelPriorityScore(level.type, level.priority))
+      + overlapBonus
       + reactionBonus
       + untouchedBonus
       + htfBonus
       + clusterBonus
       + acceptedPenalty
+      + opposingPenalty
       + oldPenalty
       + lowLiquidityPenalty;
     return { ...level, priorityScore: score, touchCount: Math.max(level.touchCount ?? 0, reactions), status: acceptedPenalty < 0 ? "BROKEN" as const : level.status ?? "ACTIVE" };
@@ -1637,7 +1650,7 @@ function addExternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       price: latestHigh.price,
       priority: "MEDIUM",
       priorityScore: levelPriorityScore("SWING_HIGH", "MEDIUM"),
-      source: "CONFIRMED_EXTERNAL_SWING_HIGH",
+      source: `CONFIRMED_EXTERNAL_SWING_HIGH:${newYorkDateKey(latestHigh.time)}`,
       touchCount: 1,
       clusterSize: 1,
       status: "ACTIVE"
@@ -1650,7 +1663,38 @@ function addExternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       price: latestLow.price,
       priority: "MEDIUM",
       priorityScore: levelPriorityScore("SWING_LOW", "MEDIUM"),
-      source: "CONFIRMED_EXTERNAL_SWING_LOW",
+      source: `CONFIRMED_EXTERNAL_SWING_LOW:${newYorkDateKey(latestLow.time)}`,
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+}
+
+function addInternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>) {
+  const latestHigh = [...pivots].reverse().find((pivot) => pivot.kind === "HIGH");
+  const latestLow = [...pivots].reverse().find((pivot) => pivot.kind === "LOW");
+  if (latestHigh) {
+    levels.push({
+      type: "SWING_HIGH",
+      side: "BUY_SIDE",
+      price: latestHigh.price,
+      priority: "LOW",
+      priorityScore: 45,
+      source: `CONFIRMED_INTERNAL_SWING_HIGH:${newYorkDateKey(latestHigh.time)}`,
+      touchCount: 1,
+      clusterSize: 1,
+      status: "ACTIVE"
+    });
+  }
+  if (latestLow) {
+    levels.push({
+      type: "SWING_LOW",
+      side: "SELL_SIDE",
+      price: latestLow.price,
+      priority: "LOW",
+      priorityScore: 45,
+      source: `CONFIRMED_INTERNAL_SWING_LOW:${newYorkDateKey(latestLow.time)}`,
       touchCount: 1,
       clusterSize: 1,
       status: "ACTIVE"
