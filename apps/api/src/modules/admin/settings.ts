@@ -140,8 +140,8 @@ export async function listTenantModuleSettings(tenantId: string, moduleCode: str
       {
         key: "liquiditySweep.strategy",
         value: { ...defaultLiquiditySweepConfiguration(), ...fallback },
-        category: "Liquidity Sweep + BOS",
-        description: "User-account Module 2 thresholds for XAUUSD New York liquidity sweep + BOS paper-trade automation.",
+        category: "Ultimate Liquidity Sweep",
+        description: "User-account Module 2 thresholds for XAUUSD Ultimate Liquidity Sweep + Structure Confirmation paper-trade automation.",
         updated_at: null,
         updated_by: null
       }
@@ -449,7 +449,7 @@ function mergeObjects(base: Record<string, unknown>, override: Record<string, un
 
 function moduleCategory(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "ORB MAX";
-  if (moduleCode === "high_probability_strategy_2") return "Liquidity Sweep + BOS";
+  if (moduleCode === "high_probability_strategy_2") return "Ultimate Liquidity Sweep";
   return "Strategy Module";
 }
 
@@ -458,7 +458,7 @@ function moduleSettingDescription(moduleCode: string, key: string) {
     return "User-account ORB MAX Options strategy thresholds and automatic paper-trade rules.";
   }
   if (moduleCode === "high_probability_strategy_2" && key === "liquiditySweep.strategy") {
-    return "User-account Module 2 thresholds for XAUUSD New York liquidity sweep + BOS paper-trade automation.";
+    return "User-account Module 2 thresholds for XAUUSD Ultimate Liquidity Sweep + Structure Confirmation paper-trade automation.";
   }
   return "User-account module configuration.";
 }

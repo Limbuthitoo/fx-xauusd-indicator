@@ -249,8 +249,9 @@ export async function setupRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/setups/current", async (request) => {
-    const search = request.query as { moduleCode?: string };
+    const search = request.query as { moduleCode?: string; evidence?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
+    const evidenceMode = search.evidence === "true" && moduleCode === "high_probability_strategy_2";
     const auth = await requireTenantModule(request, moduleCode);
     const setup = await query(
       `SELECT
@@ -275,10 +276,16 @@ export async function setupRoutes(app: FastifyInstance) {
          AND sc.scenario <> 'QA_TEST_SIGNAL'
          AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
-         AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
-       ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END, sc.detected_at DESC
+         AND ($3::boolean = true OR sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
+         AND ($3::boolean = false OR sc.scenario_flags IS NOT NULL)
+       ORDER BY
+         CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END,
+         CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'entryZone' THEN 0 ELSE 1 END,
+         CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'bos' THEN 0 ELSE 1 END,
+         CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'sweep' THEN 0 ELSE 1 END,
+         sc.detected_at DESC
        LIMIT 1`,
-      [auth.tenantId, moduleCode]
+      [auth.tenantId, moduleCode, evidenceMode]
     );
     if (!setup.rows[0]) return null;
     const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [setup.rows[0].id]);

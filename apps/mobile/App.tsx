@@ -2898,7 +2898,7 @@ function moduleIconLabel(moduleCode: string) {
 
 function moduleTimingLabel(module: ModuleRow) {
   if (module.code === "orb_max_options") return "All-session 15M OR / 5M trigger";
-  if (module.code === "high_probability_strategy_2") return "5M sweep / 15M bias";
+  if (module.code === "high_probability_strategy_2") return "5M sweep + structure / 15M bias";
   return `${module.timeframeMinutes}M execution`;
 }
 
@@ -3050,7 +3050,7 @@ function moduleCodeFromText(text: string) {
 
 function moduleDisplayName(moduleCode?: string | null) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
-  if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 Ultimate Sweep";
   return "Strategy module";
 }
 

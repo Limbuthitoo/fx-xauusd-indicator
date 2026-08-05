@@ -279,7 +279,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const flags: Record<string, unknown> = {};
 
   if (!current || setupCandles.length < 20) {
-    return waitDecision("WAITING_FOR_DATA", "Waiting for enough 5M candles to evaluate liquidity sweep + BOS.", evaluations, flags);
+    return waitDecision("WAITING_FOR_DATA", "Waiting for enough 5M candles to evaluate Ultimate Liquidity Sweep structure.", evaluations, flags);
   }
 
   const atr = averageTrueRange(setupCandles, 14);

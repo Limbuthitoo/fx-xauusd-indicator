@@ -454,7 +454,7 @@ async function modulePerformance(tenantId: string, moduleCode: string, period: "
 
 function moduleShortName(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
-  if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 Ultimate Sweep";
   return "Strategy Module";
 }
 

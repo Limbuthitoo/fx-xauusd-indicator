@@ -3254,7 +3254,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
         <em>{missing?.explanation ?? setup?.final_reason ?? signal.reason}</em>
       </div>
       <div className="module2-trade-plan">
-        <span>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for sweep + BOS setup"}</span>
+        <span>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for Ultimate Sweep setup"}</span>
         <strong>{setup?.direction ?? trade?.direction ?? "--"}</strong>
         <em>Entry {formatPriceValue(entry)} · SL {formatPriceValue(stop)} · TP {formatPriceValue(target)}</em>
       </div>
@@ -6356,7 +6356,7 @@ function ModuleStrategyPanel({ setup, moduleCode, moduleName }: { setup?: any; m
       <div className="tag-row">
         {(setup?.favorability_reasons ?? []).length > 0
           ? setup.favorability_reasons.map((reason: string) => <span key={reason}>{reason}</span>)
-          : <span>Waiting for Module 2 liquidity sweep + BOS evidence</span>}
+          : <span>Waiting for Module 2 Ultimate Sweep evidence</span>}
       </div>
     </Panel>
   );
@@ -6826,7 +6826,7 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
       <div className="setting-row strategy-setting-row">
         <div>
           <strong>liquiditySweep.strategy</strong>
-          <span>{setting?.description ?? "XAUUSD NY liquidity sweep + BOS thresholds."}</span>
+          <span>{setting?.description ?? "XAUUSD Ultimate Liquidity Sweep thresholds."}</span>
           <em>{setting?.updated_at ? `Updated ${formatNepalTime(setting.updated_at)}` : "Using Module 2 defaults"}</em>
           <p className="reason">Settings are locked during the live NY window. Any change requires a fresh launch rehearsal before trusting Module 2 signals.</p>
         </div>
@@ -7121,7 +7121,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
     return checklistSections(rows, [
       {
         title: "Engine State",
-        description: "Current Module 2 Liquidity Sweep + BOS sequence state.",
+        description: "Current Module 2 Ultimate Liquidity Sweep sequence state.",
         codes: ["MODULE2_STATE"]
       },
       {
@@ -8157,7 +8157,7 @@ function moduleTimeframe(moduleCode: string, fallback: number) {
 
 function moduleTimingLabel(moduleCode: string) {
   if (moduleCode === "orb_max_options") return "All-session 15M OR / 5M trigger";
-  if (moduleCode === "high_probability_strategy_2") return "5M sweep + BOS / 15M bias";
+  if (moduleCode === "high_probability_strategy_2") return "5M sweep + structure / 15M bias";
   return `${DEFAULT_TIMEFRAME_MINUTES}M execution`;
 }
 
@@ -8300,7 +8300,7 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
 
 function moduleShortName(moduleCode: string, name?: string) {
   if (moduleCode === "orb_max_options") return "Module 1 ORB";
-  if (moduleCode === "high_probability_strategy_2") return "Module 2 Sweep + BOS";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 Ultimate Sweep";
   return name ?? "Strategy Module";
 }
 

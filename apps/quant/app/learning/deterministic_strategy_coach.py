@@ -15,7 +15,7 @@ except ImportError as exc:  # pragma: no cover
 
 MODULE_NAMES = {
     "orb_max_options": "Module 1 ORB",
-    "high_probability_strategy_2": "Module 2 Sweep + BOS",
+    "high_probability_strategy_2": "Module 2 Ultimate Sweep",
 }
 
 MIN_RESULTS_FOR_TUNING = 20

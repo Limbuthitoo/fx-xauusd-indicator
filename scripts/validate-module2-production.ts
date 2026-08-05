@@ -148,7 +148,7 @@ async function validateCatalog(tenantId: string | null) {
 
   const setting = tenantId ? await one(
     `SELECT value
-     FROM tenant_settings
+     FROM tenant_module_settings
      WHERE tenant_id = $1
        AND module_code = $2
        AND key = 'liquiditySweep.strategy'

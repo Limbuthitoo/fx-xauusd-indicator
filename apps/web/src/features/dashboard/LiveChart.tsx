@@ -158,6 +158,8 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [socketStatus, setSocketStatus] = useState("CONNECTING");
   const [chartLoading, setChartLoading] = useState(true);
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
+  const [evidenceSetup, setEvidenceSetup] = useState<TwelveDataChartProps["setup"] | null>(null);
+  const activeEvidenceSetup = moduleCode === "high_probability_strategy_2" ? activeSetup ?? evidenceSetup : activeSetup;
   const orbRangeState = useMemo(
     () => moduleCode === "orb_max_options" ? module1OrbRangeState(openingRange, candles, session) : null,
     [moduleCode, openingRange, candles, session]
@@ -172,14 +174,18 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   );
 
   async function loadChartMetadata() {
-    const [nextIndicators, nextTradeMarkers, nextFeedStatus] = await Promise.all([
+    const [nextIndicators, nextTradeMarkers, nextFeedStatus, nextEvidenceSetup] = await Promise.all([
       api<IndicatorSnapshot>(`/api/indicators/live?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`).catch(() => null),
       api<TradeChartMarker[]>(`/api/trades/chart-markers?symbol=${symbol}&moduleCode=${moduleCode}&limit=100`).catch(() => []),
-      api<FeedStatus>(`/api/market-data/live/status?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`).catch(() => null)
+      api<FeedStatus>(`/api/market-data/live/status?symbol=${symbol}&timeframeMinutes=${timeframeMinutes}`).catch(() => null),
+      moduleCode === "high_probability_strategy_2"
+        ? api<TwelveDataChartProps["setup"]>(`/api/setups/current?moduleCode=${moduleCode}&evidence=true`).catch(() => null)
+        : Promise.resolve(null)
     ]);
     if (nextIndicators) setIndicators(nextIndicators);
     setTradeMarkers(nextTradeMarkers);
     if (nextFeedStatus) setFeedStatus(nextFeedStatus);
+    setEvidenceSetup(nextEvidenceSetup);
   }
 
   async function loadInitialChartData() {
@@ -411,7 +417,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     renderedCandlesRef.current = cleanCandles;
     renderedShowEmaRef.current = showEma;
     candleSeriesRef.current.setMarkers(
-      [...moduleEvidenceMarkers(activeSetup), ...validSetupMarker(activeSetup), ...paperTradeMarkers(tradeMarkers)]
+      [...moduleEvidenceMarkers(activeEvidenceSetup), ...validSetupMarker(activeSetup), ...paperTradeMarkers(tradeMarkers)]
         .sort((left, right) => Number(left.time) - Number(right.time))
     );
     if (cleanCandles.length > 0 && !didSetInitialRangeRef.current) {
@@ -419,11 +425,11 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       didSetInitialRangeRef.current = true;
     }
     window.requestAnimationFrame(() => refreshOverlays(cleanCandles));
-  }, [candles, setup, tradeMarkers, showEma]);
+  }, [candles, setup, evidenceSetup, tradeMarkers, showEma]);
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
-  }, [activeSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges]);
+  }, [activeEvidenceSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -431,9 +437,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     priceLinesRef.current = [];
     const defaultLines = [
       ...effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index)),
-      { title: "Entry", price: numberValue(activeSetup?.entry_price), color: "#16a46c" },
-      { title: "Stop", price: numberValue(activeSetup?.stop_price), color: "#e05252" },
-      { title: "Target", price: numberValue(activeSetup?.target_price), color: "#7c9cff" }
+      { title: "Entry", price: numberValue(activeEvidenceSetup?.entry_price), color: "#16a46c" },
+      { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
+      { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
     ];
     const lines = moduleCode === "orb_max_options"
       ? defaultLines
@@ -453,7 +459,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [effectiveOpeningRange, effectiveOrbRanges, activeSetup, priceLines, moduleCode]);
+  }, [effectiveOpeningRange, effectiveOrbRanges, activeEvidenceSetup, priceLines, moduleCode]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -507,7 +513,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       session,
       openingRange: effectiveOpeningRange,
       orbRanges: effectiveOrbRanges,
-      setup: activeSetup,
+      setup: activeEvidenceSetup,
       chart: chartRef.current,
       series: candleSeriesRef.current,
       container: containerRef.current

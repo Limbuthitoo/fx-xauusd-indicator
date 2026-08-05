@@ -14,7 +14,7 @@ The system does not execute broker orders. All broker/MT5 behavior has been remo
 - `apps/web`: React tenant dashboard and platform admin dashboard.
 - `apps/mobile`: Expo/React Native mobile app for tenant login, module views, chart, journal, notifications, push settings, app update flow.
 - `packages/strategy-engine`: Module 1 ORB MAX Options logic.
-- `packages/liquidity-sweep-engine`: Module 2 Liquidity Sweep + BOS logic.
+- `packages/liquidity-sweep-engine`: Module 2 Ultimate Liquidity Sweep + Structure Confirmation logic.
 - `packages/risk-engine`: Paper-trade risk and reward calculations.
 - `packages/rule-engine`: Rule evaluation helpers.
 - `scripts/quant`: Python strategy brains and learning automation used by the quant service.
@@ -72,7 +72,7 @@ Expected daily usage target:
 - Must show ORB High, ORB Mid, ORB Low on chart.
 - Paper trade opens only when module rules pass.
 
-### Module 2: NY Liquidity Sweep + BOS
+### Module 2: Ultimate Liquidity Sweep
 
 - Code: `high_probability_strategy_2`
 - Purpose: Ultimate Liquidity Sweep + Structure Confirmation strategy family for XAUUSD.

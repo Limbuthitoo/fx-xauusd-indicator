@@ -17,7 +17,7 @@ except ImportError as exc:  # pragma: no cover
 
 MODULES = {
     "orb_max_options": "Module 1 ORB",
-    "high_probability_strategy_2": "Module 2 Sweep + BOS",
+    "high_probability_strategy_2": "Module 2 Ultimate Sweep",
 }
 
 MODULE_BRAINS = {

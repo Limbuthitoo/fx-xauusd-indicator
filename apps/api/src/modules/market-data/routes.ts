@@ -2574,7 +2574,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   const signalEnd = new Date(session.signal_window_end_at);
   if (now > signalEnd && !["SESSION_EXPIRED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) {
     await query("UPDATE trading_sessions SET state = 'SESSION_EXPIRED' WHERE id = $1", [session.id]);
-    await notifyTenantOnce(session.tenant_id, `module2-session-expired-${session.id}`, "MODULE2_SESSION_EXPIRED", "Module 2 window expired", "No new liquidity sweep + BOS setups will be accepted for this session.");
+    await notifyTenantOnce(session.tenant_id, `module2-session-expired-${session.id}`, "MODULE2_SESSION_EXPIRED", "Module 2 window expired", "No new Ultimate Liquidity Sweep setups will be accepted for this session.");
     await runModule2CloseoutAfterSession({ ...session, state: "SESSION_EXPIRED" });
     return { sessionFound: true, state: "SESSION_EXPIRED" };
   }
@@ -3469,7 +3469,7 @@ async function buildModule2Operator(tenantId: string | null, runRehearsal: boole
     currentPhase: readiness.automation?.phase ?? checkReadinessValue(readiness, "NY_WINDOW") ?? "UNKNOWN",
     nextAction: health.summary?.actionNeeded && health.summary.actionNeeded !== "None"
       ? health.summary.actionNeeded
-      : readiness.automation?.reason ?? "Wait for a valid NY liquidity sweep + BOS setup.",
+      : readiness.automation?.reason ?? "Wait for a valid Ultimate Liquidity Sweep setup.",
     latestCandle: readiness.feed?.fiveMinute?.latest ?? null,
     latestSetupState: {
       status: readiness.latestSetup?.status ?? "WAITING",
@@ -4717,7 +4717,7 @@ function tenantStateKey(tenantId: string, moduleCode: string) {
 }
 
 function moduleDisplayName(moduleCode: string) {
-  if (moduleCode === "high_probability_strategy_2") return "Module 2 Liquidity Sweep + BOS";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 Ultimate Liquidity Sweep";
   return "Module 1 ORB MAX";
 }
 

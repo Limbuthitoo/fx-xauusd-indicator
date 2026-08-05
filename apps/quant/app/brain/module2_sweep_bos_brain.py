@@ -4,7 +4,7 @@ from typing import Any
 
 
 MODULE_CODE = "high_probability_strategy_2"
-MODULE_NAME = "Module 2 Sweep + BOS"
+MODULE_NAME = "Module 2 Ultimate Sweep"
 
 MANDATORY_RULES = [
     "NY_SESSION_ACTIVE",
@@ -71,10 +71,10 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
         return payload(decision_type if should_open else "SWEEP_BOS_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
-        return payload("SWEEP_BOS_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but mandatory Sweep + BOS checklist is not fully passed.", False)
+        return payload("SWEEP_BOS_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the mandatory Ultimate Sweep checklist is not fully passed.", False)
 
     blocker = first_blocker(checklist)
-    reason = setup.get("final_reason") or "Module 2 is waiting for mandatory Sweep + BOS rules."
+    reason = setup.get("final_reason") or "Module 2 is waiting for mandatory Ultimate Sweep rules."
     if blocker:
         reason = f"{reason} Current blocker: {blocker['ruleCode']}."
     return payload("SWEEP_BOS_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
@@ -186,7 +186,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
 
 def notification_body(setup_tier: Any, setup: dict[str, Any] | None, entry: float | None, stop: float | None, target: float | None) -> str:
     if not setup:
-        return "Waiting for valid Sweep + BOS setup."
+        return "Waiting for valid Ultimate Sweep setup."
     return " | ".join(
         str(item)
         for item in [

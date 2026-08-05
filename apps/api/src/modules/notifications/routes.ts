@@ -49,7 +49,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     );
     const modules = [
       { moduleCode: "orb_max_options", moduleName: "Module 1 ORB", prefixes: ["MODULE1", "ORB"] },
-      { moduleCode: "high_probability_strategy_2", moduleName: "Module 2 Sweep + BOS", prefixes: ["MODULE2"] }
+      { moduleCode: "high_probability_strategy_2", moduleName: "Module 2 Ultimate Sweep", prefixes: ["MODULE2"] }
     ];
     return modules.map((module) => {
       const items = rows.rows.filter((item: any) => notificationBelongsToModule(item, module.prefixes));
