@@ -6555,7 +6555,7 @@ function getSignal(setup?: any, trade?: any) {
   if (setup?.status === "BLOCKED" || setup?.status === "NO TRADE") {
     return { label: "NO TRADE", tone: "bad", reason: setup.final_reason ?? "Current conditions are blocked." };
   }
-  return { label: "WAIT", tone: "warn", reason: setup?.final_reason ?? "Waiting for a valid completed NY ORB signal." };
+  return { label: "WAIT", tone: "warn", reason: setup?.final_reason ?? "Waiting for a valid completed session ORB signal." };
 }
 
 function TimeBadge({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

@@ -16,7 +16,7 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
             return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 1 has an active legacy paper trade whose originating setup is not a valid opened ORB checklist. Do not use it as learning evidence.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 paper trade is active. Monitor TP/SL lifecycle.", False)
     if not setup:
-        return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed NY ORB signal candle.", False)
+        return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed session ORB signal candle.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"

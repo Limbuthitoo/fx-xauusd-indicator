@@ -59,7 +59,7 @@ export function evaluateMandatoryBreakoutRules(context: RuleContext, direction: 
       source: "AUTOMATIC",
       actualValue: context.now,
       requiredValue: `${context.session.openingRangeEndAt} to ${context.session.signalWindowEndAt}`,
-      explanation: "Signals are evaluated only after ORB lock and before the configured New York trade window ends."
+      explanation: "Signals are evaluated only after ORB lock and before the configured session trade window ends."
     },
     passFail(outsideClose, {
       ruleCode: direction === "LONG" ? "CLOSE_ABOVE_ORB_HIGH" : "CLOSE_BELOW_ORB_LOW",

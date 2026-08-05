@@ -616,7 +616,7 @@ export async function setupRoutes(app: FastifyInstance) {
       handoff: {
         expectedNextAction: finalStatus === "GO" ? "Module 1 ORB automation path is ready for live paper monitoring." : "Resolve NO GO checklist rows before trusting Module 1.",
         watchDuringSession: [
-          "ORB high/low must lock from the configured New York opening range.",
+          "ORB high/low must lock from the configured session opening range.",
           "Only valid breakout, retest, or sweep-reversal scenarios can open paper trades.",
           "Risk/TP/SL plan must exist before paper entry."
         ],
