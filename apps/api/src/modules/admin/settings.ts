@@ -42,7 +42,7 @@ const defaults: RuntimeSettings = {
   feed: {
     name: "TWELVE_DATA",
     providerSymbol: config.twelveDataSymbol,
-    pollSeconds: Math.max(config.twelveDataPollSeconds, 60),
+    pollSeconds: Math.max(config.twelveDataPollSeconds, 300),
     rawCandleStorage: true,
     cacheDays: 7,
     startupBackfillCount: SEVEN_DAY_FIVE_MINUTE_CANDLES,
@@ -71,7 +71,7 @@ export async function getRuntimeSettings(tenantId?: string | null): Promise<Runt
     feed: {
       name: "TWELVE_DATA",
       providerSymbol: stringValue(feedProvider.providerSymbol, config.twelveDataSymbol),
-      pollSeconds: Math.max(positiveInteger(feedProvider.pollSeconds, defaults.feed.pollSeconds, 3600), 60),
+      pollSeconds: Math.max(positiveInteger(feedProvider.pollSeconds, defaults.feed.pollSeconds, 3600), 300),
       rawCandleStorage: true,
       cacheDays: positiveInteger(feedProvider.cacheDays, defaults.feed.cacheDays, 30),
       startupBackfillCount: Math.max(
@@ -233,7 +233,7 @@ export function validateSetting(key: string, value: unknown) {
     return {
       name: "TWELVE_DATA",
       providerSymbol: stringValue(input.providerSymbol, config.twelveDataSymbol),
-      pollSeconds: Math.max(positiveInteger(input.pollSeconds, defaults.feed.pollSeconds, 3600), 60),
+      pollSeconds: Math.max(positiveInteger(input.pollSeconds, defaults.feed.pollSeconds, 3600), 300),
       rawCandleStorage: true,
       cacheDays: positiveInteger(input.cacheDays, defaults.feed.cacheDays, 30),
       startupBackfillCount: Math.max(

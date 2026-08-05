@@ -471,14 +471,14 @@ Twelve Data free-tier planning currently assumes:
 
 - 800 credits/day
 - 8 credits/minute
-- 1 shared XAUUSD poll/minute from 09:30 through 16:00 New York
-- 1 shared catch-up request every 30 minutes outside the New York window on weekdays
+- 1 shared XAUUSD 5-minute poll every 5 minutes across weekday sessions
+- 1 shared catch-up request every 5 minutes when the live worker is not inside an active strategy window
 - a one-credit startup request of up to 2,016 recent 5-minute candles (seven calendar days) after deployment or restart
 - no scheduled market-data requests on Saturday or Sunday New York dates
 
-The expected weekday baseline is about 390 live-window requests plus about 34 off-session catch-ups and, when needed after a restart, one startup recovery request: approximately 424-425 credits. Chart refreshes and tenant readiness checks read PostgreSQL and consume zero Twelve Data credits. Only the dedicated worker and an explicit platform super-admin force sync can call the provider.
+The expected full weekday baseline is about 288 shared 5-minute requests plus, when needed after a restart, one startup recovery request: approximately 289 credits. Chart refreshes and tenant readiness checks read PostgreSQL and consume zero Twelve Data credits. Only the dedicated worker and an explicit platform super-admin force sync can call the provider.
 
-The shared source interval is always 5 minutes. Module 1 builds its 15-minute opening range from the first three completed 5-minute New York candles. Module 2 executes on completed 5-minute candles and derives completed 15-minute context from the same stored source, so it does not consume separate Twelve Data calls. Module 1 remains restricted to its New York strategy window, and all live strategy entries remain disabled on Saturday and Sunday.
+The shared source interval is always 5 minutes. Module 1 builds each 15-minute session opening range from the first three completed 5-minute candles. Module 2 executes on completed 5-minute candles and derives completed 15-minute context from the same stored source, so it does not consume separate Twelve Data calls. Live strategy entries remain disabled on Saturday and Sunday.
 
 Module 2 follows `liquidity level -> NY sweep and close-back -> displacement -> candle-close BOS/CHoCH -> fresh FVG/order block -> retrace -> confirmation`. Mandatory-only setups remain small paper observations; no real broker orders are supported.
 

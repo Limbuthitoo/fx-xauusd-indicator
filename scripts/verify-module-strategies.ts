@@ -50,7 +50,7 @@ const module2OutsideNy = evaluateLiquiditySweepSetup({
 assert.notEqual(module2OutsideNy.status, "SHORT SETUP READY", "Module 2 must not promote a pre-NY sweep");
 
 assert.equal(calculateCatchupRequestCount({ latestAt: null, now: Date.now(), timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: true }), 2016);
-assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 30 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 8);
+assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 5 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 8);
 assert.equal(calculateCatchupRequestCount({ latestAt: 0, now: 10 * 60 * 60_000, timeframeMinutes: 5, startupBackfillCount: 2016, firstWorkerSync: false }), 122);
 assert.equal(isNewYorkWeekend("2026-08-08"), true, "Saturday must block shared polling and live strategy evaluation");
 assert.equal(isNewYorkWeekend("2026-08-09"), true, "Sunday must block shared polling and live strategy evaluation");
@@ -65,7 +65,7 @@ assert.equal(summerFeedWindow.endAt, "2026-08-10T20:00:00.000Z", "Shared live po
 console.log(JSON.stringify({
   status: "PASS",
   module2: { scenario: module2.scenario, direction: module2.direction, score: module2.favorabilityScore },
-  catchup: "startup=2016, 30-minute gap=8, 10-hour gap=122"
+  catchup: "startup=2016, 5-minute gap=8, 10-hour gap=122"
 }, null, 2));
 
 function candle(timestampUtc: string, open: number, high: number, low: number, close: number): Candle {

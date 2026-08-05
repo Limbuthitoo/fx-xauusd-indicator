@@ -143,7 +143,7 @@ const twelveDataState: TwelveDataWorkerState = {
   providerSymbol: config.twelveDataSymbol,
   timeframeMinutes: DEFAULT_TWELVE_DATA_TIMEFRAME,
   interval: timeframeToTwelveInterval(DEFAULT_TWELVE_DATA_TIMEFRAME),
-  pollSeconds: Math.max(config.twelveDataPollSeconds, 60),
+  pollSeconds: Math.max(config.twelveDataPollSeconds, 300),
   count: 200,
   startedAt: null,
   stoppedAt: null,
@@ -1247,7 +1247,6 @@ async function runAutoRunCycle() {
   }
 
   const first = monitoring[0];
-  const timeframe = first.settings.timeframeMinutes;
   autoRunState.phase = "MONITORING";
   autoRunState.running = true;
   autoRunState.reason = `Monitoring ${monitoring.length} active tenant(s). Twelve Data calls are grouped by symbol/timeframe.`;
@@ -1255,8 +1254,8 @@ async function runAutoRunCycle() {
     await startTwelveDataLive({
       symbol: first.settings.symbol,
       providerSymbol: first.settings.feed.providerSymbol,
-      timeframeMinutes: timeframe,
-      interval: timeframeToTwelveInterval(timeframe),
+      timeframeMinutes: SHARED_TWELVE_DATA_SOURCE_TIMEFRAME,
+      interval: timeframeToTwelveInterval(SHARED_TWELVE_DATA_SOURCE_TIMEFRAME),
       pollSeconds: first.settings.feed.pollSeconds,
       count: first.settings.feed.startupBackfillCount,
       notify: true
@@ -1314,7 +1313,7 @@ async function runOffSessionCatchup(tenantCycles: Array<{ tenant: any; settings:
     autoEvaluate: false,
     usageTenantIds: tenantIds,
     triggerSource: "MARKET_DATA_CATCH_UP",
-    usageReason: `Shared 30-minute off-session catch-up for ${tenantIds.length} subscriber(s)`
+    usageReason: `Shared 5-minute off-session catch-up for ${tenantIds.length} subscriber(s)`
   });
   const moduleTimeframes = tenantCycles.map((item) => moduleTimeframeMinutes(item.tenant.module_code, item.settings));
   await refreshDerivedCandles(settings.symbol, sourceTimeframe, [...moduleTimeframes, 15]);
@@ -1414,7 +1413,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   if (tenant.module_code === "orb_max_options" && now >= sessionStart && now <= sessionEnd && !insideSharedNyFeed) {
     state.phase = "CATCH_UP";
     state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
-    state.reason = `${state.moduleName} is tracking ${orbSessionLabel(session.session_preset)} with the shared 30-minute candle catch-up. New York keeps the 1-minute live feed.`;
+    state.reason = `${state.moduleName} is tracking ${orbSessionLabel(session.session_preset)} with the shared 5-minute XAUUSD candle feed.`;
     state.running = false;
     return state;
   }
@@ -1422,7 +1421,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   if (now < apiStart) {
     state.phase = "PRE_SESSION";
     state.nextActionAt = new Date(apiStart).toISOString();
-    state.reason = `Scheduled. The shared Twelve Data live feed starts at 09:30 New York; the 30-minute catch-up keeps other ORB sessions current.`;
+    state.reason = "Scheduled. The shared Twelve Data 5-minute feed keeps ORB sessions current on market weekdays.";
     state.running = false;
     const minutesUntilApiStart = Math.round((apiStart - now) / 60_000);
     if (minutesUntilApiStart <= settings.orb.apiStartLeadMinutes && minutesUntilApiStart >= 0) {
@@ -1443,7 +1442,7 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   if (now >= apiStop) {
     state.phase = "AFTER_WINDOW";
     state.nextActionAt = null;
-    state.reason = `${state.moduleName} monitoring window is complete. The shared feed returns to the 30-minute catch-up cadence.`;
+    state.reason = `${state.moduleName} monitoring window is complete. The shared feed continues on the 5-minute weekday cadence.`;
     state.running = false;
     if (tenant.module_code === "high_probability_strategy_2") {
       const closeout = await runModule2CloseoutAfterSession(session);
@@ -1572,7 +1571,7 @@ async function twelveDataCallPolicy(options: {
       allowed: true,
       reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "OFF_SESSION_CATCH_UP" : "NY_API_WINDOW_ACTIVE",
       message: options.triggerSource === "MARKET_DATA_CATCH_UP"
-        ? "Shared Twelve Data call is the scheduled 30-minute off-session catch-up."
+        ? "Shared Twelve Data call is the scheduled 5-minute off-session catch-up."
         : "Shared Twelve Data call is inside the active New York API window.",
       sessionDate,
       forced: false
@@ -1694,7 +1693,7 @@ async function startTwelveDataLive(options: {
   twelveDataState.providerSymbol = options.providerSymbol ?? settings.feed.providerSymbol;
   twelveDataState.timeframeMinutes = options.timeframeMinutes ?? settings.timeframeMinutes;
   twelveDataState.interval = options.interval ?? timeframeToTwelveInterval(twelveDataState.timeframeMinutes);
-  twelveDataState.pollSeconds = Math.max(options.pollSeconds ?? settings.feed.pollSeconds, 60);
+  twelveDataState.pollSeconds = Math.max(options.pollSeconds ?? settings.feed.pollSeconds, 300);
   twelveDataState.count = Math.min(Math.max(options.count ?? settings.feed.startupBackfillCount, 1), 5000);
   twelveDataState.startedAt = new Date().toISOString();
   twelveDataState.stoppedAt = null;

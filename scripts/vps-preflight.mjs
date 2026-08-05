@@ -20,6 +20,9 @@ if (!existsSync(envFile)) {
   }
   if (env.REDIS_REQUIRED !== "true") errors.push("REDIS_REQUIRED must be true.");
   if (env.EMBEDDED_MARKET_DATA_WORKER === "true") errors.push("EMBEDDED_MARKET_DATA_WORKER must be false.");
+  if ((env.TWELVE_DATA_INTERVAL ?? "5min") !== "5min") errors.push("TWELVE_DATA_INTERVAL must be 5min.");
+  if (!isAtLeast(env.TWELVE_DATA_POLL_SECONDS ?? "300", 300)) errors.push("TWELVE_DATA_POLL_SECONDS must be at least 300.");
+  if (!isAtLeast(env.TWELVE_DATA_CATCHUP_SECONDS ?? "300", 300)) errors.push("TWELVE_DATA_CATCHUP_SECONDS must be at least 300.");
   if ((env.PUSH_PROVIDER ?? "auto") === "firebase" && !hasFirebase(env)) {
     errors.push("PUSH_PROVIDER=firebase requires Firebase service account credentials.");
   }
@@ -65,6 +68,11 @@ function hasFirebase(env) {
 function isPlaceholder(value) {
   const text = String(value ?? "");
   return text.includes("change-this") || text.includes("CHANGE_ME") || text.includes("example.com");
+}
+
+function isAtLeast(value, minimum) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= minimum;
 }
 
 function checkCommand(command, args, error) {
