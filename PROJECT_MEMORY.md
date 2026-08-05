@@ -1,6 +1,6 @@
 # XAUUSD Signal Project Memory
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 ## Product Goal
 
@@ -75,19 +75,166 @@ Expected daily usage target:
 ### Module 2: NY Liquidity Sweep + BOS
 
 - Code: `high_probability_strategy_2`
-- Purpose: Liquidity sweep plus market-structure confirmation.
+- Purpose: Liquidity Sweep + Structure Confirmation strategy family for XAUUSD.
 - Execution: 5-minute candles.
 - Context/bias: 15-minute structure/bias.
-- Must detect and display:
-  - Liquidity levels such as London/Asian highs/lows, previous day levels, equal highs/lows.
-  - Sweep candle that breaks liquidity and closes back inside.
-  - Strong displacement.
-  - BOS/CHoCH.
-  - FVG/order-block entry zone.
-  - Retrace and confirmation candle.
-- Hard rules must pass before a valid setup.
-- Confirmation and quality filters score the setup.
-- Module 2 can continue evaluating outside Module 1 ORB rules where strategy rules allow.
+- Optional precision timeframe: 1-minute later, but MVP should stay 15m + 5m to reduce noise.
+- Research posture: conservative, explainable, versioned, and backtested. Do not claim a fixed 70-85% win rate until PostgreSQL backtests prove it.
+- Module 2 must not be a simple `sweep detected -> BUY/SELL` rule. Correct flow is:
+  - Potential liquidity level.
+  - Sweep candidate.
+  - Rejection or acceptance.
+  - Protected structure identification.
+  - BOS/MSS classification.
+  - Configurable confirmation plugins.
+  - Optional retest.
+  - Risk validation.
+  - Trade decision and automatic paper trade when setup-ready.
+- Terms must be explicit and versioned. Use `POTENTIAL_LIQUIDITY_LEVELS`, not confirmed institutional liquidity.
+- `CHoCH` is a UI alias for structure shift; internally classify reversal confirmation as `REVERSAL_MSS`.
+- Use only closed candles for confirmed signals. Never use future candles or unconfirmed pivots.
+- Liquidity level examples:
+  - Previous day/week high/low.
+  - Asian, London, New York premarket high/low.
+  - ORB high/low.
+  - Recent external/internal swing high/low.
+  - Equal highs/lows.
+  - Round numbers can be record-only initially.
+- Liquidity levels are zones, not single prices:
+  - `zoneHalfWidth = ATR * zoneToleranceAtr`.
+  - Store type, side, price, bounds, priority, touches, cluster size, status, source swings, formed/valid/expiry times.
+- Swing detection:
+  - Confirmed fractal swings use `leftBars=2`, `rightBars=2`.
+  - Swing is confirmed only after right-side candles close to avoid repainting.
+  - Minimum prominence baseline: `0.20 ATR`.
+  - Equal highs/lows use deterministic tolerance and cluster rules.
+- Structure:
+  - Maintain internal 5m structure and external 15m structure.
+  - Classify HH, HL, LH, LL, EQH, EQL with ATR tolerance.
+  - Structure states are `BULLISH`, `BEARISH`, `RANGING`, `TRANSITIONAL`, `UNKNOWN`.
+- Protected point logic:
+  - Protected low is the meaningful swing low before a bullish impulse that broke structure.
+  - Protected high mirrors this for bearish structure.
+  - Automatic MSS requires medium/high protected-point confidence.
+- Sweep logic:
+  - Buy-side candidate: candle high penetrates above a buy-side liquidity zone.
+  - Sell-side candidate: candle low penetrates below a sell-side liquidity zone.
+  - Baseline sweep penetration: minimum `0.02 ATR`, maximum `0.50 ATR`.
+  - Penetration below minimum is an insignificant touch.
+  - Penetration above maximum is a possible breakout/acceptance warning, not immediate reversal.
+  - Support wick sweep, delayed rejection, close-through-then-reclaim, and deep sweep types.
+  - Allow multi-candle resolution up to 3 candles.
+- Rejection/acceptance:
+  - Buy-side rejection needs penetration above and close back below level/zone.
+  - Sell-side rejection needs penetration below and close back above level/zone.
+  - Wick rejection and engulfing patterns must use formulas.
+  - Acceptance beyond the level invalidates reversal logic unless a reclaim variant explicitly permits it.
+- BOS/MSS:
+  - Bearish break confirms only on closed candle below protected low zone.
+  - Bullish break confirms only on closed candle above protected high zone.
+  - Break aligned with trend is `CONTINUATION_BOS`.
+  - Break opposite prior local structure after sweep is `REVERSAL_MSS`.
+  - Wick-only break is not a confirmed MSS/BOS.
+- Displacement:
+  - Baseline candidate: `rangeAtr >= 1.20`, `bodyRatio >= 0.60`, close distance beyond structure >= `0.05 ATR`.
+  - Store direction, candle IDs, body ratio, range ATR, and close distance.
+- Confirmation plugin engine:
+  - Plugins: structure break, MSS, BOS, engulfing, pin bar, EMA alignment, retest, volume expansion, displacement, session, news.
+  - Each plugin returns status `PASS`, `FAIL`, `WAITING`, or `NOT_APPLICABLE`, plus blocking flag, score, actual values, and explanation.
+  - Boolean combinations must support AND/OR nesting, e.g. `Sweep AND CloseBackInside AND (MSS OR Engulfing)`.
+- EMA filter:
+  - Modes: `OFF`, `RECORD_ONLY`, `REQUIRE_ALIGNMENT`, `REQUIRE_COUNTERTREND`, `WARN_ONLY`.
+  - Example long alignment: close > EMA200 and EMA20 > EMA50. Short mirrors it.
+  - Backtest independently before making it mandatory.
+- Volume:
+  - XAUUSD/CFD volume may be tick volume. Store volume type and keep volume expansion `RECORD_ONLY` initially.
+- Retest:
+  - MVP retest target is broken structure level.
+  - Later targets can include sweep level, displacement origin, FVG zone, EMA, manual zone.
+  - Retest expires by candle count, minutes, session expiry, opposite structure break, or sweep extreme invalidation.
+- Entry/stop/target:
+  - Entry models: break close, retest close, retest limit, displacement 50%, manual.
+  - Baseline stop: beyond sweep extreme plus ATR buffer.
+  - Baseline target: fixed 2R while also recording nearest opposing liquidity.
+  - Risk must block invalid stop, RR too low, spread too high, news block, stale data, daily risk, and active trade conflicts.
+- Module 2 state machine:
+  - `IDLE`
+  - `LEVEL_SELECTED`
+  - `SWEEP_CANDIDATE`
+  - `SWEEP_CONFIRMED`
+  - `WAITING_FOR_CONFIRMATION`
+  - `STRUCTURE_BREAK_CANDIDATE`
+  - `STRUCTURE_BREAK_CONFIRMED`
+  - `WAITING_FOR_RETEST`
+  - `RETEST_REACHED`
+  - `ENTRY_READY`
+  - `TRADE_ACTIVE`
+  - `TRADE_CLOSED`
+  - `INVALIDATED`
+  - `EXPIRED`
+- All state transitions and reasons must be journaled.
+- Main short flow:
+  - Validate data/session.
+  - Update ATR, swings, structure, liquidity levels.
+  - Rank active buy-side levels.
+  - Detect penetration above level.
+  - Validate penetration and rejection.
+  - Find protected low.
+  - Confirm candle close below protected low.
+  - Classify bearish MSS/BOS.
+  - Evaluate displacement/plugins.
+  - Enter at break close or wait for retest.
+  - Calculate entry, stop, TP, RR.
+  - Apply spread/news/session/risk checks.
+  - Output short setup ready, open paper trade, notify user.
+- Main long flow mirrors short using sell-side liquidity, reclaim, protected high, bullish MSS/BOS, long entry, SL, TP.
+- Recommended baseline config:
+  - Context `15min`, setup `5min`, entry `5min`.
+  - Swing left/right bars `2/2`, minimum prominence `0.20 ATR`.
+  - Liquidity zone tolerance `0.02 ATR`, equality tolerance `0.05 ATR`.
+  - Sweep min/max penetration `0.02/0.50 ATR`.
+  - Structure requires candle close, minimum break distance `0.03 ATR`, body ratio `0.50`.
+  - Displacement record-only initially with range `1.20 ATR`, body ratio `0.60`.
+  - Entry model `RETEST_CLOSE`, maximum retest candles `6`, retest tolerance `0.05 ATR`.
+  - Stop model `SWEEP_EXTREME`, buffer `0.03 ATR`.
+  - Target fixed `2R`.
+  - Risk baseline minimum RR `1.5`, maximum one trade per session/day depending final config.
+- Variant backtests must compare:
+  - Sweep + close back inside.
+  - Sweep + engulfing.
+  - Sweep + MSS.
+  - Sweep + MSS + retest.
+  - Sweep + BOS.
+  - Sweep + BOS + retest.
+  - Sweep + MSS + EMA.
+  - Sweep + MSS + volume.
+  - Sweep + MSS + displacement.
+  - Sweep + MSS + retest + displacement.
+- Backtest reports must include setup count, trade count, win rate, average win/loss R, expectancy, profit factor, drawdown, consecutive losses, holding time, liquidity-level performance, long/short performance, session performance, spread sensitivity, and parameter stability.
+- Required test cases include no MSS expiry, wick-only protected-point break, valid MSS close, no retest expiry, valid retest setup, acceptance invalidation, equal high/low clustering, stale data block, RR too low block, double-sweep warning/block, and low-confidence protected-point block.
+- UI must show every setup with:
+  - Liquidity type, price, zone, priority, age, cluster size.
+  - Sweep penetration, normalized penetration, sweep candle, rejection type.
+  - Structure trend, protected point, break close, break distance, BOS/MSS subtype.
+  - Plugin results with blocking status, actual values, and explanation.
+  - Risk entry, stop, target, RR, lot size/paper size, max loss.
+  - Decision: ready, waiting, blocked, invalidated, expired.
+- Module 2 implementation order:
+  - Phase 1: candles, ATR, pivots, structure, session levels.
+  - Phase 2: liquidity levels, equal highs/lows, sweep, rejection/acceptance.
+  - Phase 3: protected points, BOS/MSS, displacement.
+  - Phase 4: plugin engine, retest, EMA, candle patterns, volume.
+  - Phase 5: risk, notifications, journal.
+  - Phase 6: backtesting, variant comparison, analytics.
+- Module 2 notifications should describe the current state, not only final entries:
+  - Approaching liquidity.
+  - Penetration detected, waiting for rejection.
+  - Sweep confirmed, waiting for MSS.
+  - Protected point touched, waiting for candle close.
+  - MSS confirmed, waiting for retest.
+  - Retest zone reached.
+  - SHORT/LONG setup ready.
+  - Invalidated or expired with reason.
 
 ## Predictions
 
