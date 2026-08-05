@@ -13,10 +13,15 @@ type Module2ReplayCase =
   | "BUY"
   | "SELL"
   | "SWEEP_ONLY"
+  | "SWEEP_NO_CONFIRMATION"
+  | "SWEEP_ENGULFING"
   | "SWEEP_BOS"
   | "SWEEP_MSS"
+  | "SWEEP_VOLUME_EXPANSION"
   | "DISPLACEMENT_RETEST"
   | "BOS_RETEST"
+  | "MSS_RETEST"
+  | "MSS_DISPLACEMENT_RETEST"
   | "EMA_ALIGNED_SWEEP"
   | "SWEEP_NO_DISPLACEMENT"
   | "DISPLACEMENT_NO_BOS"
@@ -54,6 +59,17 @@ const MODULE2_QA_CASES: Array<{
 }> = [
   { code: "BUY", label: "Valid BUY", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
   { code: "SELL", label: "Valid SELL", expected: "NY_LIQUIDITY_SWEEP_BOS_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
+  { code: "SWEEP_ONLY", label: "Sweep close-back research", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
+  { code: "SWEEP_NO_CONFIRMATION", label: "Sweep no-confirmation control", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
+  { code: "SWEEP_ENGULFING", label: "Sweep + engulfing research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
+  { code: "SWEEP_BOS", label: "Sweep + BOS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
+  { code: "SWEEP_MSS", label: "Sweep + MSS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
+  { code: "SWEEP_VOLUME_EXPANSION", label: "Sweep + volume research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
+  { code: "DISPLACEMENT_RETEST", label: "Displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "BOS_RETEST", label: "BOS retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "MSS_RETEST", label: "MSS retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "MSS_DISPLACEMENT_RETEST", label: "MSS displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "EMA_ALIGNED_SWEEP", label: "EMA-aligned sweep entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
   { code: "SWEEP_NO_DISPLACEMENT", label: "Sweep but no displacement", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
   { code: "DISPLACEMENT_NO_BOS", label: "Displacement but no BOS", expected: "WAITING_FOR_BOS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "BOS_CHOCH_CONFIRMED" },
   { code: "BOS_NO_RETRACE", label: "BOS but no retrace", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRM_ENTRY_CANDLE" },
@@ -1726,15 +1742,20 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
   const at = (minutesAfterStart: number) => new Date(base + minutesAfterStart * 60_000).toISOString();
   const direction = replayCase === "SELL" ? "SHORT" : "LONG";
   const isShort = direction === "SHORT";
-  const entryVariantByCase: Partial<Record<Module2ReplayCase, { code: string; name: string; version: string; paperEligible: boolean }>> = {
-    BUY: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_V1", paperEligible: true },
-    SELL: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_V1", paperEligible: true },
-    DISPLACEMENT_RETEST: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_V1", paperEligible: true },
-    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_V1", paperEligible: true },
-    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "EMA Aligned Sweep", version: "ULTIMATE_V1", paperEligible: true },
-    SWEEP_ONLY: { code: "SWEEP_CLOSE_BACK_INSIDE", name: "Sweep Close Back Inside", version: "ULTIMATE_V1", paperEligible: false },
-    SWEEP_BOS: { code: "SWEEP_BOS", name: "Sweep + BOS Research", version: "ULTIMATE_V1", paperEligible: false },
-    SWEEP_MSS: { code: "SWEEP_MSS", name: "Sweep + MSS Research", version: "ULTIMATE_V1", paperEligible: false }
+  const entryVariantByCase: Partial<Record<Module2ReplayCase, { code: string; name: string; version: string; paperEligible: boolean; approvalStatus: string; category: string }>> = {
+    BUY: { code: "SWEEP_MSS_DISPLACEMENT_RETEST", name: "Sweep + MSS + Displacement + Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
+    SELL: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
+    DISPLACEMENT_RETEST: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
+    MSS_RETEST: { code: "SWEEP_MSS_RETEST", name: "Sweep + MSS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
+    MSS_DISPLACEMENT_RETEST: { code: "SWEEP_MSS_DISPLACEMENT_RETEST", name: "Sweep + MSS + Displacement + Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
+    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "Sweep + EMA Alignment", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    SWEEP_ONLY: { code: "SWEEP_CLOSE_BACK_INSIDE", name: "Sweep + Close Back Inside", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    SWEEP_NO_CONFIRMATION: { code: "SWEEP_NO_CONFIRMATION", name: "Sweep + No Confirmation", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    SWEEP_ENGULFING: { code: "SWEEP_ENGULFING", name: "Sweep + Engulfing", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    SWEEP_BOS: { code: "SWEEP_BOS", name: "Sweep + BOS Research", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    SWEEP_MSS: { code: "SWEEP_MSS", name: "Sweep + MSS Research", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    SWEEP_VOLUME_EXPANSION: { code: "SWEEP_VOLUME_EXPANSION", name: "Sweep + Volume Expansion", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" }
   };
   const liquidityPrice = isShort ? 4068.2 : 4048.4;
   const sweepPrice = isShort ? 4070.1 : 4046.7;
@@ -1748,10 +1769,15 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
     BUY: "SIGNAL_ACTIVE",
     SELL: "SIGNAL_ACTIVE",
     SWEEP_ONLY: "WAITING_FOR_DISPLACEMENT",
+    SWEEP_NO_CONFIRMATION: "WAITING_FOR_DISPLACEMENT",
+    SWEEP_ENGULFING: "WAITING_FOR_RETRACE",
     SWEEP_BOS: "WAITING_FOR_RETRACE",
     SWEEP_MSS: "WAITING_FOR_RETRACE",
+    SWEEP_VOLUME_EXPANSION: "WAITING_FOR_RETRACE",
     DISPLACEMENT_RETEST: "SIGNAL_ACTIVE",
     BOS_RETEST: "SIGNAL_ACTIVE",
+    MSS_RETEST: "SIGNAL_ACTIVE",
+    MSS_DISPLACEMENT_RETEST: "SIGNAL_ACTIVE",
     EMA_ALIGNED_SWEEP: "SIGNAL_ACTIVE",
     SWEEP_NO_DISPLACEMENT: "WAITING_FOR_DISPLACEMENT",
     DISPLACEMENT_NO_BOS: "WAITING_FOR_BOS",
@@ -1849,10 +1875,15 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     BUY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     SELL: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     SWEEP_ONLY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
+    SWEEP_NO_CONFIRMATION: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK"],
+    SWEEP_ENGULFING: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_ENGULFING"],
     SWEEP_BOS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
     SWEEP_MSS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    SWEEP_VOLUME_EXPANSION: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_VOLUME_EXPANSION"],
     DISPLACEMENT_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     BOS_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
+    MSS_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
+    MSS_DISPLACEMENT_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     EMA_ALIGNED_SWEEP: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     SWEEP_NO_DISPLACEMENT: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
     DISPLACEMENT_NO_BOS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED"],
@@ -1877,8 +1908,10 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["CONFIRM_VWAP", "Confirmation: VWAP alignment", "VWAP confirmation matched."],
     ["CONFIRM_FRESH_FVG", "Confirmation: fresh FVG", "Fresh FVG confirmation matched."],
     ["CONFIRM_ORDER_BLOCK_RETEST", "Confirmation: order-block retest", "Order-block retest confirmation matched."],
+    ["CONFIRM_ENGULFING", "Confirmation: engulfing candle", "Engulfing candle confirmation matched."],
+    ["CONFIRM_VOLUME_EXPANSION", "Confirmation: volume expansion", "Provider volume expansion was recorded."],
     ["CONFIRM_ENTRY_CANDLE", "Confirmation: entry candle", "Entry candle confirmation matched."],
-    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 of 5 confirmations matched."],
+    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 of 7 confirmations matched."],
     ["QUALITY_ATR_VOLATILITY", "Quality: ATR volatility", "ATR quality filter passed."],
     ["QUALITY_SPREAD", "Quality: spread", "Spread quality filter passed."],
     ["QUALITY_NEWS", "Quality: no high-impact news", "News quality filter passed."],
@@ -1907,10 +1940,15 @@ function module2ReplayReason(replayCase: Module2ReplayCase) {
     BUY: "BUY signal validated through hard rules, at least 3 confirmations, and at least 3 quality filters.",
     SELL: "SELL signal validated through hard rules, at least 3 confirmations, and at least 3 quality filters.",
     SWEEP_ONLY: "Liquidity swept and closed back inside, but this is research-only until displacement and structure confirmation appear.",
+    SWEEP_NO_CONFIRMATION: "Liquidity swept, but no confirmation appeared. This negative-control variant must never open a paper trade.",
+    SWEEP_ENGULFING: "Liquidity swept and an engulfing candle appeared, but structure, retest, and risk validation are still required before paper trading.",
     SWEEP_BOS: "Sweep and BOS are visible, but the setup is research-only until a clean retest and confirmation candle appear.",
     SWEEP_MSS: "Sweep and market-structure shift are visible, but the setup is research-only until a clean retest and confirmation candle appear.",
+    SWEEP_VOLUME_EXPANSION: "Sweep and provider volume expansion were recorded, but volume is record-only until backtesting proves it is reliable.",
     DISPLACEMENT_RETEST: "Sweep, displacement, retest, confirmation, and quality filters validate a paper-entry variant.",
     BOS_RETEST: "Sweep, BOS, retest, confirmation, and quality filters validate a paper-entry variant.",
+    MSS_RETEST: "Sweep, reversal MSS, retest, confirmation, and quality filters validate a paper-entry variant.",
+    MSS_DISPLACEMENT_RETEST: "Sweep, displacement, reversal MSS, retest, confirmation, and quality filters validate the highest-priority paper-entry variant.",
     EMA_ALIGNED_SWEEP: "Sweep is aligned with 15M bias and EMA/VWAP confirmation, validating the EMA-aligned paper-entry variant.",
     SWEEP_NO_DISPLACEMENT: "Liquidity was swept, but the required displacement candle did not appear.",
     DISPLACEMENT_NO_BOS: "Sweep and displacement appeared, but structure was not broken by candle close.",

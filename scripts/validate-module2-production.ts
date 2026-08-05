@@ -115,6 +115,31 @@ async function validateCatalog(tenantId: string | null) {
     evidence: module
   });
 
+  const hasVariantRegistry = await hasTable("module2_strategy_variants");
+  if (!hasVariantRegistry) {
+    checks.push({
+      name: "Module 2 variant registry",
+      status: "FAIL",
+      detail: "module2_strategy_variants table is missing. Run migrations before trusting Module 2 production signals."
+    });
+  } else {
+    const registry = await one(
+      `SELECT
+         count(*)::int AS total,
+         count(*) FILTER (WHERE approval_status = 'PRODUCTION_APPROVED')::int AS production_approved,
+         count(*) FILTER (WHERE paper_eligible = true)::int AS paper_eligible
+       FROM module2_strategy_variants
+       WHERE module_code = $1`,
+      [MODULE_CODE]
+    );
+    checks.push({
+      name: "Module 2 variant registry",
+      status: Number(registry?.total ?? 0) >= 10 && Number(registry?.production_approved ?? 0) >= 3 ? "PASS" : "FAIL",
+      detail: `${registry?.total ?? 0} variant(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible.`,
+      evidence: registry
+    });
+  }
+
   if (!tenantId) return;
   const assignment = await one(
     `SELECT tm.status, m.name
@@ -205,6 +230,7 @@ async function validateLatestBacktest(tenantId: string | null) {
 }
 
 async function validateSetupChain(tenantId: string | null) {
+  const registryCreatedAt = await module2VariantRegistryCreatedAt();
   const params: unknown[] = [MODULE_CODE, VALIDATION_SINCE_HOURS];
   const tenantFilter = tenantId ? `AND sc.tenant_id = $${params.push(tenantId)}` : "";
   const rows = (await client.query(
@@ -250,13 +276,14 @@ async function validateSetupChain(tenantId: string | null) {
     params
   )).rows;
 
+  const highProbabilityRows = rows.filter((row) => Number(row.favorability_score ?? 0) >= MIN_PROBABILITY);
   checks.push({
     name: "80%+ Module 2 predictions",
-    status: rows.length > 0 ? "PASS" : "WARN",
-    detail: rows.length > 0
-      ? `${rows.length} high-probability setup candidate(s) found.`
+    status: highProbabilityRows.length > 0 ? "PASS" : "WARN",
+    detail: highProbabilityRows.length > 0
+      ? `${highProbabilityRows.length} high-probability setup candidate(s) found.`
       : "No 80%+ Module 2 candidate exists yet. That is acceptable if no valid setup occurred.",
-    evidence: rows.slice(0, 5).map(setupEvidence)
+    evidence: highProbabilityRows.slice(0, 5).map(setupEvidence)
   });
 
   const entryReady = rows.filter((row) => isEntryReady(row));
@@ -269,15 +296,49 @@ async function validateSetupChain(tenantId: string | null) {
   });
 
   if (entryReady.length === 0) return;
-  assertComplete("Trade plan generated", entryReady, (row) => Boolean(row.trade_plan_id), "entry-ready setup(s) have no trade plan.");
-  assertComplete("Paper trade generated", entryReady, (row) => Boolean(row.trade_id), "entry-ready setup(s) have no paper trade.");
-  assertComplete("Push/web notification generated", entryReady, (row) => Boolean(row.notification_id), "entry-ready setup(s) have no Module 2 notification near detected time.");
-  assertComplete("Journal row generated", entryReady, (row) => Boolean(row.journal_id), "entry-ready setup(s) have no journal row.");
-  assertComplete("Entry / SL / TP complete", entryReady, (row) => row.entry_price != null && row.stop_price != null && row.target_price != null, "entry-ready setup(s) are missing entry, SL, or TP.");
-  assertComplete("Notification payload detail", entryReady, (row) => {
+
+  const legacyEntryReady = entryReady.filter((row) => !setupHasVariant(row) && isBeforeRegistry(row, registryCreatedAt));
+  const postUpgradeMissingVariant = entryReady.filter((row) => !setupHasVariant(row) && !isBeforeRegistry(row, registryCreatedAt));
+  const productionEntryReady = entryReady.filter((row) => setupHasVariant(row));
+
+  if (legacyEntryReady.length > 0) {
+    checks.push({
+      name: "Legacy pre-variant setup rows",
+      status: "WARN",
+      detail: `${legacyEntryReady.length} entry-ready setup(s) were created before Module 2 variant registry metadata existed. They are historical repair evidence, not current production-chain failures.`,
+      evidence: legacyEntryReady.slice(0, 5).map(setupEvidence)
+    });
+  }
+
+  checks.push({
+    name: "Entry-ready variant metadata",
+    status: postUpgradeMissingVariant.length === 0 ? "PASS" : "FAIL",
+    detail: postUpgradeMissingVariant.length === 0
+      ? "Every post-upgrade entry-ready setup has Module 2 variant metadata."
+      : `${postUpgradeMissingVariant.length} post-upgrade entry-ready setup(s) are missing Module 2 variant metadata.`,
+    evidence: postUpgradeMissingVariant.slice(0, 5).map(setupEvidence)
+  });
+
+  if (productionEntryReady.length === 0) {
+    checks.push({
+      name: "Production paper-trade chain",
+      status: legacyEntryReady.length > 0 ? "WARN" : "WARN",
+      detail: legacyEntryReady.length > 0
+        ? "Only legacy entry-ready rows were found. The next live Module 2 setup will validate the new paper-trade, notification, and journal chain."
+        : "No post-upgrade entry-ready Module 2 setup has occurred yet."
+    });
+    return;
+  }
+
+  assertComplete("Trade plan generated", productionEntryReady, (row) => Boolean(row.trade_plan_id), "post-upgrade entry-ready setup(s) have no trade plan.");
+  assertComplete("Paper trade generated", productionEntryReady, (row) => Boolean(row.trade_id), "post-upgrade entry-ready setup(s) have no paper trade.");
+  assertComplete("Push/web notification generated", productionEntryReady, (row) => Boolean(row.notification_id), "post-upgrade entry-ready setup(s) have no Module 2 notification near detected time.");
+  assertComplete("Journal row generated", productionEntryReady, (row) => Boolean(row.journal_id), "post-upgrade entry-ready setup(s) have no journal row.");
+  assertComplete("Entry / SL / TP complete", productionEntryReady, (row) => row.entry_price != null && row.stop_price != null && row.target_price != null, "post-upgrade entry-ready setup(s) are missing entry, SL, or TP.");
+  assertComplete("Notification payload detail", productionEntryReady, (row) => {
     const data = row.notification_data ?? {};
     return data.entry != null || data.entryRange != null || data.stopLoss != null || data.target != null || data.trade != null;
-  }, "entry-ready setup notification(s) are missing trade detail payload.");
+  }, "post-upgrade entry-ready setup notification(s) are missing trade detail payload.");
 }
 
 async function validateLearningReviews(tenantId: string | null) {
@@ -324,6 +385,16 @@ function isEntryReady(row: any) {
   return ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(row.status) || row.trade_outcome === "ACTIVE";
 }
 
+function setupHasVariant(row: any) {
+  return Boolean(row.scenario_flags?.module2Variant?.code ?? row.scenario_flags?.variantCode);
+}
+
+function isBeforeRegistry(row: any, registryCreatedAt: Date | null) {
+  if (!registryCreatedAt) return false;
+  const detectedAt = row.detected_at ? new Date(row.detected_at).getTime() : Number.NaN;
+  return Number.isFinite(detectedAt) && detectedAt < registryCreatedAt.getTime();
+}
+
 function setupEvidence(row: any) {
   return {
     id: row.id,
@@ -360,6 +431,29 @@ async function hasColumn(tableName: string, columnName: string) {
     [tableName, columnName]
   );
   return Boolean(row);
+}
+
+async function hasTable(tableName: string) {
+  const row = await one(
+    `SELECT 1
+     FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_name = $1
+     LIMIT 1`,
+    [tableName]
+  );
+  return Boolean(row);
+}
+
+async function module2VariantRegistryCreatedAt() {
+  if (!(await hasTable("module2_strategy_variants"))) return null;
+  const row = await one(
+    `SELECT min(created_at) AS created_at
+     FROM module2_strategy_variants
+     WHERE module_code = $1`,
+    [MODULE_CODE]
+  );
+  return row?.created_at ? new Date(row.created_at) : null;
 }
 
 function summarize(items: Check[]) {

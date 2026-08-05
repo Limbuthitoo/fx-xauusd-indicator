@@ -3272,6 +3272,7 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   const confirmationLayer = flags.confirmationLayer ?? {};
   const qualityLayer = flags.qualityLayer ?? {};
   const variant = flags.module2Variant ?? {};
+  const variants = Array.isArray(flags.module2Variants) ? flags.module2Variants : [];
   const steps = [
     {
       label: "Liquidity",
@@ -3316,6 +3317,19 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
         <Metric label="Setup tier" value={flags.setupTier ?? "--"} />
         <Metric label="Score" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
       </div>
+      {variants.length > 0 ? (
+        <div className="module2-variant-matrix">
+          {variants.map((item: any) => (
+            <div className={`module2-variant-row ${item.paperEligible ? "paper" : "research"} ${item.status === "PASS" ? "pass" : item.status === "RESEARCH_ONLY" ? "research-pass" : "wait"}`} key={item.code}>
+              <div>
+                <strong>{item.name ?? formatScenario(item.code)}</strong>
+                <span>{item.category ?? (item.paperEligible ? "ENTRY" : "RESEARCH")} · {item.approvalStatus ?? (item.paperEligible ? "PAPER" : "RESEARCH")}</span>
+              </div>
+              <em>{item.status === "WAIT" && item.missingRules?.length ? item.missingRules.slice(0, 2).map(formatScenario).join(", ") : formatScenario(item.status ?? "--")}</em>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </Panel>
   );
 }

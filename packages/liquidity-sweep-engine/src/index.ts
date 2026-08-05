@@ -147,17 +147,23 @@ export type LiquiditySweepDecision = {
 
 type Module2VariantCode =
   | "SWEEP_CLOSE_BACK_INSIDE"
+  | "SWEEP_NO_CONFIRMATION"
+  | "SWEEP_ENGULFING"
   | "SWEEP_BOS"
   | "SWEEP_MSS"
+  | "SWEEP_VOLUME_EXPANSION"
   | "SWEEP_BOS_RETEST"
   | "SWEEP_MSS_RETEST"
   | "SWEEP_EMA_ALIGNMENT"
-  | "SWEEP_DISPLACEMENT_RETEST";
+  | "SWEEP_DISPLACEMENT_RETEST"
+  | "SWEEP_MSS_DISPLACEMENT_RETEST";
 
 type Module2Variant = {
   code: Module2VariantCode;
   version: string;
   name: string;
+  category: "RESEARCH" | "ENTRY_GRADE" | "PRODUCTION";
+  approvalStatus: "RESEARCH_ONLY" | "PAPER_APPROVED" | "PRODUCTION_APPROVED";
   status: "PASS" | "WAIT" | "RESEARCH_ONLY";
   paperEligible: boolean;
   score: number;
@@ -336,6 +342,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
 
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
+  const engulfingOk = confirmsEngulfingReversal(setupCandles, currentIndex, direction);
+  const volumeExpansionOk = confirmsVolumeExpansion(setupCandles, currentIndex);
   const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
     && (!config.requireHtfBias || htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH"));
   const sessionCandles = setupCandles.filter((candle) =>
@@ -353,6 +361,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     { code: "CONFIRM_VWAP", name: "Session VWAP alignment", passed: vwapOk, points: 10, actual: `${current.close.toFixed(2)} / ${Math.round(vwapVolumeCoverage * 100)}% volume`, required: direction === "LONG" ? `>= ${vwap.toFixed(2)} with >=80% volume` : `<= ${vwap.toFixed(2)} with >=80% volume`, explanation: vwapOk ? "Price is aligned with a volume-backed session VWAP." : "Price is misaligned or provider volume is insufficient for true VWAP confirmation." },
     { code: "CONFIRM_FRESH_FVG", name: "Fresh Fair Value Gap", passed: fvgOk, points: 15, actual: fvg?.kind ?? null, required: "fresh FVG", explanation: fvgOk ? "A fresh FVG is available after displacement." : "No fresh FVG is available." },
     { code: "CONFIRM_ORDER_BLOCK_RETEST", name: "Order block retest", passed: orderBlockRetestOk, points: 10, actual: orderBlock ? `${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}` : null, required: "retest", explanation: orderBlockRetestOk ? "Price retested the detected order block." : "No order-block retest is confirmed." },
+    { code: "CONFIRM_ENGULFING", name: "Engulfing rejection candle", passed: engulfingOk, points: 10, actual: candleShape(current), required: `${direction.toLowerCase()} engulfing after sweep`, explanation: engulfingOk ? "The latest completed candle engulfed the prior candle in the setup direction." : "No directional engulfing confirmation is present." },
+    { code: "CONFIRM_VOLUME_EXPANSION", name: "Volume expansion record", passed: volumeExpansionOk, points: 5, actual: current.volume ?? "unavailable", required: ">= 1.25x recent average volume", explanation: volumeExpansionOk ? "Provider volume expanded versus the recent average." : "Provider volume is unavailable or has not expanded enough; this remains record-only." },
     { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm entry." }
   ];
   for (const item of confirmations) {
@@ -393,6 +403,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     ema200Ok,
     vwapOk,
     fvgOk,
+    engulfingOk,
+    volumeExpansionOk,
     orderBlockRetestOk,
     spreadOk,
     newsOk,
@@ -436,7 +448,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
         direction,
         status: "WAIT",
         state: "ENTRY_CONFIRMATION",
-        finalReason: `Entry zone was reached after sweep, displacement, and BOS/CHoCH. Waiting for a valid ${direction} confirmation candle before any paper entry. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`,
+        finalReason: `Entry zone was reached after sweep, displacement, and BOS/CHoCH. Waiting for a valid ${direction} confirmation candle before any paper entry. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6.`,
         evaluations,
         scenarioFlags: flags,
         favorabilityScore: score,
@@ -447,7 +459,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
         ]
       };
     }
-    return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: mandatory entry rules are not fully matched yet. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
+    return blockedDecision("LAYERED_RULE_FAILED", `NO TRADE: mandatory entry rules are not fully matched yet. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6.`, evaluations, flags, direction, score);
   }
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
@@ -459,7 +471,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
       entryPrice: plan.entry,
       stopPrice: plan.stop,
       targetPrice: plan.target,
-      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "variant"} checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6, confidence ${score}%.`,
+      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "variant"} checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6, confidence ${score}%.`,
       evaluations,
       scenarioFlags: flags,
       favorabilityScore: score,
@@ -476,7 +488,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     entryPrice: plan.entry,
     stopPrice: plan.stop,
     targetPrice: plan.target,
-    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} ${selectedVariant?.name ?? "Module 2 variant"} passed hard rules, ${confirmationCount}/5 confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
+    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} ${selectedVariant?.name ?? "Module 2 variant"} passed hard rules, ${confirmationCount}/${confirmations.length} confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
     evaluations,
     scenarioFlags: flags,
     favorabilityScore: score,
@@ -522,7 +534,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "CONFIRM_ENTRY_CANDLE",
     "VARIANT_SELECTED"
   ]);
-  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
+  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (ruleCode === "PROTECTED_POINT_CONFIDENCE") return { ruleLayer: "MANDATORY", requiredForEntry: true };
@@ -908,6 +920,38 @@ function confirmsDirectionalEntry(candle: Candle, direction: Direction) {
     : candle.close < candle.open && bodyRatio >= 0.45 && closeLocation <= 0.35;
 }
 
+function confirmsEngulfingReversal(candles: Candle[], index: number, direction: Direction) {
+  const current = candles[index];
+  const previous = candles[index - 1];
+  if (!current || !previous) return false;
+  const currentBody = Math.abs(current.close - current.open);
+  const previousBody = Math.abs(previous.close - previous.open);
+  if (currentBody <= 0 || previousBody <= 0) return false;
+  const currentBodyLow = Math.min(current.open, current.close);
+  const currentBodyHigh = Math.max(current.open, current.close);
+  const previousBodyLow = Math.min(previous.open, previous.close);
+  const previousBodyHigh = Math.max(previous.open, previous.close);
+  if (direction === "LONG") {
+    return current.close > current.open
+      && previous.close < previous.open
+      && currentBodyLow <= previousBodyLow
+      && currentBodyHigh >= previousBodyHigh;
+  }
+  return current.close < current.open
+    && previous.close > previous.open
+    && currentBodyLow <= previousBodyLow
+    && currentBodyHigh >= previousBodyHigh;
+}
+
+function confirmsVolumeExpansion(candles: Candle[], index: number) {
+  const currentVolume = Number(candles[index]?.volume ?? 0);
+  if (!Number.isFinite(currentVolume) || currentVolume <= 0) return false;
+  const lookback = candles.slice(Math.max(0, index - 20), index).map((candle) => Number(candle.volume ?? 0)).filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (lookback.length < 10) return false;
+  const average = lookback.reduce((sum, volume) => sum + volume, 0) / lookback.length;
+  return average > 0 && currentVolume >= average * 1.25;
+}
+
 function ema200Aligned(candles: Candle[], direction: Direction) {
   if (candles.length < 20) return false;
   const period = Math.min(200, candles.length);
@@ -1125,6 +1169,8 @@ function module2VariantCandidates(input: {
   ema200Ok: boolean;
   vwapOk: boolean;
   fvgOk: boolean;
+  engulfingOk: boolean;
+  volumeExpansionOk: boolean;
   orderBlockRetestOk: boolean;
   spreadOk: boolean;
   newsOk: boolean;
@@ -1137,33 +1183,45 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", false, 10, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "RESEARCH", "RESEARCH_ONLY", false, 10, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
     ], "Research-only sweep evidence. It records stop-run behavior but does not open paper trades without structure and entry evidence.", base),
-    variant("SWEEP_BOS", "Sweep + BOS", false, 20, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED"], [
+    variant("SWEEP_NO_CONFIRMATION", "Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
+    ], "Research-only negative-control variant. It proves that sweep alone is not enough for paper trading.", base),
+    variant("SWEEP_ENGULFING", "Sweep + engulfing", "RESEARCH", "RESEARCH_ONLY", false, 18, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_ENGULFING", input.engulfingOk]
+    ], "Research-only candle-pattern variant. It needs structure, entry-zone retest, and risk validation before paper trading.", base),
+    variant("SWEEP_BOS", "Sweep + BOS", "RESEARCH", "RESEARCH_ONLY", false, 20, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)]
     ], "Research-only structure-break variant. It helps backtests compare BOS without retest entry.", base),
-    variant("SWEEP_MSS", "Sweep + MSS", false, 25, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS"], [
+    variant("SWEEP_MSS", "Sweep + MSS", "RESEARCH", "RESEARCH_ONLY", false, 25, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)]
     ], "Research-only market-structure-shift variant. It must still prove entry before paper trading.", base),
-    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "RESEARCH", "RESEARCH_ONLY", false, 28, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
+    ], "Record-only volume variant. Volume quality is tracked for backtesting, but it does not authorize paper entry by itself.", base),
+    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "ENTRY_GRADE", "PAPER_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
       ["RISK_OK", base.qualityOk]
     ], "Entry-grade displacement variant passed with retest, confirmation candle, and risk safety.", base),
-    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", true, 72, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 72, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_EMA_200", input.ema200Ok],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
       ["RISK_OK", base.qualityOk]
     ], "Entry-grade EMA alignment variant passed with retest, confirmation candle, and risk safety.", base),
-    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)],
       ["ENTRY_ZONE_READY", Boolean(input.zone)],
@@ -1171,14 +1229,23 @@ function module2VariantCandidates(input: {
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
       ["RISK_OK", base.qualityOk]
     ], "Entry-grade BOS retest variant passed with defined zone, confirmation candle, and risk safety.", base),
-    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["ENTRY_ZONE_READY", Boolean(input.zone)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
       ["RISK_OK", base.qualityOk]
-    ], "Highest-priority reversal variant passed: sweep, MSS, retest, confirmation candle, and risk safety.", base)
+    ], "Production reversal variant passed: sweep, MSS, retest, confirmation candle, and risk safety.", base),
+    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
+      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
+      ["ENTRY_ZONE_READY", Boolean(input.zone)],
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["RISK_OK", base.qualityOk]
+    ], "Highest-priority production variant passed: sweep, displacement, MSS, retest, confirmation candle, and risk safety.", base)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
@@ -1186,6 +1253,8 @@ function module2VariantCandidates(input: {
 function variant(
   code: Module2VariantCode,
   name: string,
+  category: Module2Variant["category"],
+  approvalStatus: Module2Variant["approvalStatus"],
   paperVariant: boolean,
   score: number,
   requiredRules: string[],
@@ -1199,6 +1268,8 @@ function variant(
     code,
     version: base.version,
     name,
+    category,
+    approvalStatus,
     status: passed ? paperVariant ? "PASS" : "RESEARCH_ONLY" : "WAIT",
     paperEligible: paperVariant && passed,
     score,
@@ -1251,7 +1322,7 @@ function reasonList(score: number, level: LiquidityLevel, htfBias: string, fvg: 
   return [
     `${level.type} ${level.side === "BUY_SIDE" ? "buy-side" : "sell-side"} liquidity swept`,
     `HTF bias: ${htfBias}`,
-    `${confirmationCount}/5 confirmations matched`,
+    `${confirmationCount}/7 confirmations matched`,
     `${qualityCount}/6 quality filters matched`,
     fvg ? "Fresh FVG found" : "Order-block fallback used",
     orderBlock ? "Order-block confluence available" : "No order-block confluence",

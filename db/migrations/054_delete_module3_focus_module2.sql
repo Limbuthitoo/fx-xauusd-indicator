@@ -9,6 +9,37 @@ WHERE module_code = 'strategy_lab_3'
         OR src.metadata->>'moduleCode' = 'strategy_lab_3'
    );
 
+DELETE FROM trades t
+USING trade_plans tp, setup_candidates sc
+WHERE t.trade_plan_id = tp.id
+  AND tp.setup_candidate_id = sc.id
+  AND (
+    sc.module_code = 'strategy_lab_3'
+    OR sc.strategy_version_id IN (
+      SELECT sv.id
+      FROM strategy_versions sv
+      JOIN strategies s ON s.id = sv.strategy_id
+      JOIN strategy_sources src ON src.id = s.source_id
+      WHERE sv.configuration_json->>'moduleCode' = 'strategy_lab_3'
+         OR src.metadata->>'moduleCode' = 'strategy_lab_3'
+    )
+  );
+
+DELETE FROM trade_plans tp
+USING setup_candidates sc
+WHERE tp.setup_candidate_id = sc.id
+  AND (
+    sc.module_code = 'strategy_lab_3'
+    OR sc.strategy_version_id IN (
+      SELECT sv.id
+      FROM strategy_versions sv
+      JOIN strategies s ON s.id = sv.strategy_id
+      JOIN strategy_sources src ON src.id = s.source_id
+      WHERE sv.configuration_json->>'moduleCode' = 'strategy_lab_3'
+         OR src.metadata->>'moduleCode' = 'strategy_lab_3'
+    )
+  );
+
 DELETE FROM trading_sessions
 WHERE module_code = 'strategy_lab_3'
    OR strategy_version_id IN (

@@ -637,6 +637,61 @@ h2 {
   white-space: nowrap;
 }
 
+.module2-variant-matrix {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.module2-variant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.module2-variant-row.pass {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.module2-variant-row.research-pass {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.module2-variant-row strong,
+.module2-variant-row span,
+.module2-variant-row em {
+  display: block;
+  min-width: 0;
+}
+
+.module2-variant-row strong {
+  color: #edf4ef;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.module2-variant-row span,
+.module2-variant-row em {
+  color: #9ba8a0;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.module2-variant-row em {
+  max-width: 160px;
+  text-align: right;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
 .status-strip div {
   padding: 9px 14px;
   background: #111612;
