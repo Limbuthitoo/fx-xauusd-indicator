@@ -25,6 +25,7 @@ try {
   await client.connect();
   const tenant = await resolveTenant();
   await validateCatalog(tenant?.id ?? null);
+  await validatePlatformCoreEngines();
   await validateCandles();
   await validateLatestBacktest(tenant?.id ?? null);
   await validateSetupChain(tenant?.id ?? null);
@@ -220,7 +221,13 @@ async function validateCatalog(tenantId: string | null) {
       maximumActivePositions: value.maximumActivePositions ?? null,
       minimumSwingProminenceATR: value.minimumSwingProminenceATR ?? null,
       minimumBarsBetweenSwings: value.minimumBarsBetweenSwings ?? null,
-      structureToleranceATR: value.structureToleranceATR ?? null
+      structureToleranceATR: value.structureToleranceATR ?? null,
+      liquidityReusePolicy: value.liquidityReusePolicy ?? null,
+      liquidityMergeToleranceATR: value.liquidityMergeToleranceATR ?? null,
+      maximumSwingLevelAgeDays: value.maximumSwingLevelAgeDays ?? null,
+      countertrendResolutionMode: value.countertrendResolutionMode ?? null,
+      positionManagementMode: value.positionManagementMode ?? null,
+      minimumTradesForInsight: value.minimumTradesForInsight ?? null
     }
   });
 
@@ -238,6 +245,60 @@ async function validateCatalog(tenantId: string | null) {
     detail: assignment ? `Tenant assignment is ${assignment.status}.` : "Tenant does not have Module 2 assigned.",
     evidence: assignment
   });
+}
+
+async function validatePlatformCoreEngines() {
+  const requiredTables = [
+    "liquidity_levels",
+    "liquidity_level_events",
+    "structure_points",
+    "structure_break_events",
+    "market_regimes",
+    "domain_events",
+    "event_processing_log",
+    "strategy_plugins",
+    "parameter_versions",
+    "positions",
+    "position_events",
+    "manual_execution_reconciliations",
+    "journal_insights",
+    "analytics_snapshots",
+    "replay_runs",
+    "replay_events",
+    "backtest_events",
+    "parameter_experiments",
+    "strategy_approvals",
+    "system_checkpoints"
+  ];
+  const present = [];
+  const missing = [];
+  for (const table of requiredTables) {
+    if (await hasTable(table)) present.push(table);
+    else missing.push(table);
+  }
+  checks.push({
+    name: "Module 2 platform core tables",
+    status: missing.length === 0 ? "PASS" : "FAIL",
+    detail: missing.length === 0
+      ? "All platform-core tables for liquidity lifecycle, structure, events, positions, replay, analytics, approvals, and checkpoints exist."
+      : `Missing platform-core table(s): ${missing.join(", ")}.`,
+    evidence: { present, missing }
+  });
+
+  if (await hasTable("strategy_plugins")) {
+    const plugin = await one(
+      `SELECT plugin_code, name, version, status
+       FROM strategy_plugins
+       WHERE plugin_code = 'liquidity-sweep-mss-retest'
+       LIMIT 1`
+    );
+    checks.push({
+      name: "Module 2 strategy plugin contract",
+      status: plugin?.status === "ACTIVE" ? "PASS" : "FAIL",
+      detail: plugin ? `${plugin.name} ${plugin.version} is ${plugin.status}.` : "Liquidity Sweep MSS Retest plugin contract is missing.",
+      evidence: plugin
+    });
+  }
 }
 
 async function validateCandles() {
@@ -494,7 +555,13 @@ function hasUltimateConfigurationFields(value: any) {
     "maximumConsecutiveLosses",
     "minimumSwingProminenceATR",
     "minimumBarsBetweenSwings",
-    "structureToleranceATR"
+    "structureToleranceATR",
+    "liquidityReusePolicy",
+    "liquidityMergeToleranceATR",
+    "maximumSwingLevelAgeDays",
+    "countertrendResolutionMode",
+    "positionManagementMode",
+    "minimumTradesForInsight"
   ].every((key) => Object.prototype.hasOwnProperty.call(value ?? {}, key));
 }
 

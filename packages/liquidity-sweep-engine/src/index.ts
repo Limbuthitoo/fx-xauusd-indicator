@@ -39,28 +39,62 @@ export type LiquidityLevelType =
   | "EQUAL_LOW"
   | "ROUND_NUMBER"
   | "MANUAL_LEVEL"
+  | "COMPOSITE"
   | "SWING_HIGH"
   | "SWING_LOW";
 
+export type LiquidityLevelState =
+  | "DETECTED"
+  | "ACTIVE"
+  | "APPROACHING"
+  | "TOUCHED"
+  | "PARTIALLY_SWEPT"
+  | "SWEPT"
+  | "RECLAIMED"
+  | "ACCEPTED_BEYOND"
+  | "CONSUMED"
+  | "BROKEN"
+  | "EXPIRED"
+  | "MERGED"
+  | "RETIRED";
+
 export type LiquidityLevel = {
+  id?: string;
+  symbol?: string;
   type: LiquidityLevelType;
   side: "BUY_SIDE" | "SELL_SIDE";
+  timeframe?: string;
   price: number;
   lowerBound?: number;
   upperBound?: number;
+  formedAt?: string;
+  confirmedAt?: string;
+  lastTouchedAt?: string;
+  expiresAt?: string;
   priority: "HIGH" | "MEDIUM" | "LOW";
   priorityScore?: number;
+  freshnessScore?: number;
+  reactionScore?: number;
+  overlapScore?: number;
+  qualityScore?: number;
   source: string;
+  sourceIds?: string[];
   zoneHalfWidth?: number;
   touchCount?: number;
+  sweepCount?: number;
+  closeCountBeyond?: number;
   clusterSize?: number;
   status?: "ACTIVE" | "TOUCHED" | "SWEPT" | "BROKEN" | "EXPIRED";
+  state?: LiquidityLevelState;
 };
 
 export type SwingPoint = {
   id: string;
   type: "HIGH" | "LOW";
+  hierarchy?: "MICRO" | "INTERNAL" | "EXTERNAL";
   price: number;
+  lowerBound?: number;
+  upperBound?: number;
   candleIndex: number;
   formedAt: string;
   confirmedAt: string;
@@ -68,13 +102,20 @@ export type SwingPoint = {
   prominence: number;
   prominenceAtr: number;
   strengthScore: number;
+  confidence?: number;
   classification?: "HH" | "HL" | "LH" | "LL" | "EQH" | "EQL";
   status: "ACTIVE" | "BROKEN" | "SWEPT" | "EXPIRED";
+  state?: "CANDIDATE" | "CONFIRMED" | "PROTECTED" | "TESTED" | "BROKEN_BY_WICK" | "BROKEN_BY_CLOSE" | "INVALIDATED" | "EXPIRED";
+  parentId?: string;
+  previousSameTypeId?: string;
+  previousOppositeTypeId?: string;
 };
 
 export type StructureState = "BULLISH" | "BEARISH" | "RANGING" | "TRANSITIONAL" | "UNKNOWN";
 export type DataHealthState = "HEALTHY" | "DELAYED" | "STALE" | "DISCONNECTED" | "INCONSISTENT" | "RATE_LIMITED";
-export type MarketRegime = "TRENDING_UP" | "TRENDING_DOWN" | "RANGING" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "TRANSITIONAL" | "UNKNOWN";
+export type MarketRegime = "TRENDING_UP" | "TRENDING_DOWN" | "RANGING" | "COMPRESSED" | "EXPANDING" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "TRANSITIONAL" | "NEWS_DRIVEN" | "UNKNOWN";
+export type StructureAlignmentState = "ALIGNED" | "COUNTERTREND" | "NEUTRAL" | "CONFLICTING" | "UNKNOWN";
+export type LiquidityReusePolicy = "NEVER_REUSE" | "REUSE_AFTER_RECLAIM" | "REUSE_ON_NEW_SESSION" | "MANUAL_REACTIVATION";
 type ContextMode = "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRED";
 
 export type StructureSummary = {
@@ -101,6 +142,12 @@ export type LiquiditySweepConfig = {
   roundNumberStep: number;
   roundNumberWindowSteps: number;
   manualLevels?: Array<{ price: number; side?: "BUY_SIDE" | "SELL_SIDE"; label?: string; priority?: "HIGH" | "MEDIUM" | "LOW" }>;
+  liquidityReusePolicy: LiquidityReusePolicy;
+  liquidityMergeToleranceATR: number;
+  maximumSwingLevelAgeDays: number;
+  countertrendResolutionMode: "RECORD_ONLY" | "WARN" | "BLOCK";
+  positionManagementMode: "FIXED_STOP_FIXED_TARGET";
+  minimumTradesForInsight: number;
   emaFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_ALIGNMENT" | "REQUIRE_COUNTERTREND";
   volumeFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_EXPANSION";
   displacementFilterMode: ContextMode;
@@ -252,6 +299,12 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   roundNumberStep: 10,
   roundNumberWindowSteps: 4,
   manualLevels: [],
+  liquidityReusePolicy: "NEVER_REUSE",
+  liquidityMergeToleranceATR: 0.05,
+  maximumSwingLevelAgeDays: 5,
+  countertrendResolutionMode: "WARN",
+  positionManagementMode: "FIXED_STOP_FIXED_TARGET",
+  minimumTradesForInsight: 30,
   emaFilterMode: "RECORD_ONLY",
   volumeFilterMode: "RECORD_ONLY",
   displacementFilterMode: "WARN_ONLY",
@@ -329,8 +382,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const externalStructure = classifyStructure(externalSwings, averageTrueRange(biasCandles, 14), config, "15min");
   const htfBias = detectBias(biasCandles);
   const levels = detectLiquidityLevels(setupCandles, current.timestampUtc, atr, config);
+  const structureGraph = buildStructureGraph(internalSwings, externalSwings, internalStructure, externalStructure, atr, config);
+  const sessionContext = buildSessionContext(setupCandles, current, atr, config);
   const marketContext = buildMarketContext(setupCandles, biasCandles, levels, current, atr, htfBias, internalStructure, externalStructure, context);
-  const marketRegime = detectMarketRegime(setupCandles, biasCandles, internalStructure, externalStructure, atr, rollingAtrMedian);
+  const marketRegime = detectMarketRegime(setupCandles, biasCandles, internalStructure, externalStructure, atr, rollingAtrMedian, context.newsStatus);
   const pivots = detectPivots(setupCandles, config.pivotLeftBars, config.pivotRightBars);
   const sessionActive = isInsideNewYorkWindow(current.timestampUtc, config.newYorkStartTime, config.newYorkEndTime);
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
@@ -348,16 +403,21 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.precisionCandlesAvailable = precisionCandles.length;
   flags.marketContext = marketContext;
   flags.marketRegime = marketRegime;
+  flags.sessionContext = sessionContext;
   flags.internalStructure = internalStructure;
   flags.externalStructure = externalStructure;
+  flags.structureGraph = structureGraph;
   flags.recentSwings = internalSwings.slice(-12);
+  flags.platformEngines = platformEngineContract(current, config);
   flags.stateMachine = {
     current: "IDLE",
     transitions: [{ from: null, to: "IDLE", at: current.timestampUtc, reason: "Processing latest closed 5M candle." }]
   };
 
   push(evaluations, "MARKET_CONTEXT_READY", "Market context engine ready", config.marketContextMode !== "REQUIRED" || marketContext.ready, config.marketContextMode === "REQUIRED", "AUTOMATIC", marketContext.summary, config.marketContextMode, marketContext.ready ? "15M/5M context, daily/session position, EMA, spread, news, and opposing liquidity context were prepared." : "Market context is incomplete.");
-  push(evaluations, "MARKET_REGIME_CLASSIFIED", "Market regime classified", marketRegime.regime !== "UNKNOWN" || config.marketContextMode !== "REQUIRED", config.marketContextMode === "REQUIRED", "AUTOMATIC", marketRegime.regime, "known regime or non-required mode", marketRegime.reason);
+  push(evaluations, "MARKET_REGIME_CLASSIFIED", "Market regime classified", marketRegime.primary !== "UNKNOWN" || config.marketContextMode !== "REQUIRED", config.marketContextMode === "REQUIRED", "AUTOMATIC", marketRegime.primary, "known regime or non-required mode", marketRegime.explanation.join(" "));
+  push(evaluations, "STRUCTURE_ALIGNMENT_CONTEXT", "Internal/external structure alignment resolved", config.countertrendResolutionMode !== "BLOCK" || structureGraph.alignmentState !== "COUNTERTREND", config.countertrendResolutionMode === "BLOCK", "AUTOMATIC", structureGraph.alignmentState, config.countertrendResolutionMode, structureGraph.conflictReason);
+  push(evaluations, "SESSION_CONTEXT_READY", "Session context engine ready", Boolean(sessionContext.current), false, "AUTOMATIC", sessionContext.current?.name ?? "UNKNOWN", "active or completed context", sessionContext.current ? `${sessionContext.current.name} session context is ${sessionContext.current.state}.` : "No current session context could be classified.");
   push(evaluations, "NY_SESSION_ACTIVE", "New York session active", sessionActive, true, "AUTOMATIC", timeOnly(current.timestampUtc), `${config.newYorkStartTime}-${config.newYorkEndTime}`, sessionActive ? "Current candle is inside the configured New York sweep window." : "No Module 2 signal is allowed outside the configured New York window.");
   push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
   push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", activeSetupOk, true, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No active same-symbol setup conflict is present." : "Another active same-symbol setup already exists.");
@@ -408,6 +468,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     doubleSweepWarning: sweepAnalysis.doubleSweepWarning,
     latestInvalidation: latestSweepInvalidation
   };
+  flags.liquidityLifecycle = summarizeLiquidityLifecycle(levels);
   if (!sweep) return waitDecision("WAITING_FOR_SWEEP", "Waiting for a valid liquidity sweep and close-back.", evaluations, flags, levels, htfBias);
   if (!sweepAcceptanceOk) return blockedDecision("SWEEP_ACCEPTANCE_INVALIDATION", "Price accepted beyond the liquidity level instead of rejecting it.", evaluations, flags);
   flags.stateMachine = appendStateTransition(flags.stateMachine, "LEVEL_SELECTED", sweep.closedBackAt, `${sweep.level.type} ${sweep.level.side} zone selected at ${sweep.level.price.toFixed(2)}.`);
@@ -808,20 +869,271 @@ function buildMarketContext(
   };
 }
 
-function detectMarketRegime(setupCandles: Candle[], biasCandles: Candle[], internalStructure: StructureSummary, externalStructure: StructureSummary, atr: number, rollingAtrMedian: number) {
+function buildStructureGraph(
+  internalSwings: SwingPoint[],
+  externalSwings: SwingPoint[],
+  internalStructure: StructureSummary,
+  externalStructure: StructureSummary,
+  atr: number,
+  config: LiquiditySweepConfig
+) {
+  const internalDirection = structureDirection(internalStructure.state);
+  const externalDirection = structureDirection(externalStructure.state);
+  const alignmentState: StructureAlignmentState = !internalDirection || !externalDirection
+    ? "UNKNOWN"
+    : internalDirection === "NEUTRAL" || externalDirection === "NEUTRAL"
+      ? "NEUTRAL"
+      : internalDirection === externalDirection ? "ALIGNED" : "COUNTERTREND";
+  const points = internalSwings.slice(-20).map((point, index, rows) => {
+    const previousSame = [...rows.slice(0, index)].reverse().find((item) => item.type === point.type);
+    const previousOpposite = [...rows.slice(0, index)].reverse().find((item) => item.type !== point.type);
+    const parent = nearestExternalParent(point, externalSwings, atr);
+    return {
+      ...point,
+      hierarchy: "INTERNAL" as const,
+      lowerBound: point.price - Math.max(0.01, atr * config.structureToleranceATR),
+      upperBound: point.price + Math.max(0.01, atr * config.structureToleranceATR),
+      confidence: point.confidence ?? point.strengthScore,
+      state: point.state ?? "CONFIRMED",
+      parentId: parent?.id,
+      previousSameTypeId: previousSame?.id,
+      previousOppositeTypeId: previousOpposite?.id
+    };
+  });
+  const breakEvents = points
+    .filter((point) => ["HH", "LL", "LH", "HL"].includes(point.classification ?? ""))
+    .slice(-6)
+    .map((point) => ({
+      id: `structure-break-${point.id}`,
+      direction: point.classification === "HH" || point.classification === "HL" ? "BULLISH" : "BEARISH",
+      type: point.classification === "HH" || point.classification === "LL" ? "CONTINUATION_BOS" : "REVERSAL_MSS",
+      structurePointId: point.id,
+      breakCandleId: point.id,
+      wickBreak: false,
+      closeConfirmed: true,
+      breakDistanceAtr: Number(point.prominenceAtr.toFixed(4)),
+      bodyRatio: null,
+      displacementPassed: point.prominenceAtr >= config.minimumDisplacementRangeATR,
+      occurredAt: point.confirmedAt
+    }));
+  return {
+    internalDirection,
+    externalDirection,
+    alignmentState,
+    conflictMode: config.countertrendResolutionMode,
+    conflictReason: alignmentState === "COUNTERTREND"
+      ? `5M ${internalStructure.state} structure is counter to 15M ${externalStructure.state}; confidence is reduced unless policy blocks.`
+      : `5M ${internalStructure.state} and 15M ${externalStructure.state} structure are ${alignmentState.toLowerCase()}.`,
+    points,
+    breakEvents
+  };
+}
+
+function buildSessionContext(setupCandles: Candle[], current: Candle, atr: number, config: LiquiditySweepConfig) {
+  const currentDate = newYorkDateKey(current.timestampUtc);
+  const sessions = [
+    { name: "ASIAN", start: config.asianStartTime, end: config.asianEndTime },
+    { name: "LONDON", start: config.londonStartTime, end: config.londonEndTime },
+    { name: "NEW_YORK_PREMARKET", start: config.nyPremarketStartTime, end: config.newYorkStartTime },
+    { name: "NEW_YORK_CASH_OPEN", start: config.newYorkStartTime, end: "12:00" },
+    { name: "NEW_YORK_LATE", start: "12:00", end: config.newYorkEndTime }
+  ];
+  const minute = newYorkMinutes(current.timestampUtc);
+  const rows = sessions.map((session) => {
+    const start = parseTime(session.start);
+    const end = parseTime(session.end);
+    const candles = setupCandles.filter((candle) => {
+      const candleDate = newYorkDateKey(candle.timestampUtc);
+      const candleMinute = newYorkMinutes(candle.timestampUtc);
+      if (start <= end) return candleDate === currentDate && candleMinute >= start && candleMinute < end;
+      return (candleDate < currentDate && candleMinute >= start) || (candleDate === currentDate && candleMinute < end);
+    });
+    const high = candles.length ? Math.max(...candles.map((candle) => candle.high)) : null;
+    const low = candles.length ? Math.min(...candles.map((candle) => candle.low)) : null;
+    const state = minute >= start && minute < end ? "ACTIVE" : minute >= end || start > end ? "COMPLETED" : "UPCOMING";
+    return {
+      id: `${currentDate}-${session.name}`,
+      name: session.name,
+      symbol: "XAUUSD",
+      tradingDate: currentDate,
+      timezone: config.timezone,
+      startAt: session.start,
+      endAt: session.end,
+      state,
+      high,
+      low,
+      midpoint: high != null && low != null ? (high + low) / 2 : null,
+      range: high != null && low != null ? high - low : null,
+      atrProfile: atr,
+      candleCount: candles.length
+    };
+  });
+  return {
+    current: rows.find((session) => session.state === "ACTIVE") ?? rows.find((session) => session.name === "NEW_YORK_LATE" && minute > parseTime(config.newYorkEndTime)) ?? null,
+    completed: rows.filter((session) => session.state === "COMPLETED"),
+    upcoming: rows.filter((session) => session.state === "UPCOMING"),
+    rules: {
+      entryWindow: `${config.newYorkStartTime}-${config.newYorkEndTime}`,
+      allowedPriorLevels: ["ASIAN", "LONDON", "PREVIOUS_DAY", "NEW_YORK_PREMARKET"],
+      blockLateSessionEntries: true
+    }
+  };
+}
+
+function platformEngineContract(current: Candle, config: LiquiditySweepConfig) {
+  const candleCloseKey = `XAUUSD:5M:${current.timestampUtc}`;
+  return {
+    architectureVersion: "LIQUIDITY_SWEEP_PLATFORM_CORE_V1.0",
+    eventMode: "CLOSED_CANDLE_DETERMINISTIC",
+    eventOrder: [
+      "VALIDATE_CANDLE",
+      "PERSIST_CANDLE",
+      "UPDATE_ATR_INDICATORS",
+      "UPDATE_SESSION",
+      "CONFIRM_SWINGS",
+      "UPDATE_STRUCTURE",
+      "UPDATE_LIQUIDITY",
+      "UPDATE_ACTIVE_SETUP",
+      "EVALUATE_SWEEP",
+      "EVALUATE_CONFIRMATIONS",
+      "EVALUATE_RISK",
+      "PRODUCE_DECISION",
+      "EMIT_NOTIFICATIONS",
+      "PERSIST_AUDIT_TRACE"
+    ],
+    idempotencyKey: candleCloseKey,
+    transactionBoundary: "CANDLE_CLOSE_ATOMIC",
+    strategyPlugin: {
+      id: "liquidity-sweep-mss-retest",
+      name: "Liquidity Sweep MSS Retest Plugin",
+      version: MODULE2_VARIANT_VERSION,
+      sharedEngines: ["session", "swing", "structure", "liquidity", "risk", "notifications", "journal", "backtesting"]
+    },
+    ruleDsl: {
+      operator: "AND",
+      children: [
+        "DATA_HEALTHY",
+        "SESSION_ACTIVE",
+        "SWEEP_CONFIRMED",
+        "CLOSE_BACK_INSIDE",
+        "MSS_CONFIRMED",
+        "RETEST_CONFIRMED",
+        "RISK_PERMITTED"
+      ]
+    },
+    parameterVersioning: {
+      activeVersion: MODULE2_VARIANT_VERSION,
+      neverEditActiveVersion: true,
+      groups: ["Swing", "Liquidity", "Sweep", "Structure", "MSS", "Retest", "Risk", "Session", "News", "Spread", "Confidence", "Position Management"]
+    },
+    positionManagement: {
+      mode: config.positionManagementMode,
+      automaticBreakEven: false,
+      automaticPartials: false,
+      automaticTrailing: false,
+      futureModels: ["BREAK_EVEN_AT_R", "PARTIAL_AT_R", "TRAIL_BY_SWING", "TRAIL_BY_ATR", "TIME_EXIT", "OPPOSING_LIQUIDITY_EXIT"]
+    },
+    replay: {
+      deterministic: true,
+      noFutureData: true,
+      pivotConfirmationUsesRightBars: true,
+      strategyVersionFrozen: true,
+      fillModel: "LOWER_TIMEFRAME_OR_CONSERVATIVE"
+    },
+    journalIntelligence: {
+      storeSetupStates: ["TAKEN", "SKIPPED", "MISSED", "BLOCKED", "INVALIDATED", "EXPIRED", "NO_TRADE"],
+      processGrades: ["A", "B", "C", "D"],
+      minimumTradesForInsight: config.minimumTradesForInsight
+    },
+    notificationOrchestration: {
+      priorities: ["INFO", "NOTICE", "ACTION_REQUIRED", "WARNING", "CRITICAL"],
+      dedupeKeyTemplate: "eventType + setupId + candleCloseTime",
+      readySignalRequiresAcknowledgement: true
+    },
+    recovery: {
+      restartSteps: ["LOAD_CANDLES", "LOAD_SESSION", "LOAD_STRATEGY_VERSION", "LOAD_ACTIVE_SETUP", "REPLAY_FROM_CHECKPOINT", "COMPARE_STATE", "RESUME_IF_CONSISTENT"],
+      blockOnStateMismatch: true,
+      checkpoints: ["RANGE_LOCK", "SWEEP_CONFIRMED", "MSS_CONFIRMED", "RETEST_CONFIRMED", "TRADE_READY", "TRADE_OPENED", "TRADE_CLOSED"]
+    }
+  };
+}
+
+function structureDirection(state: StructureState) {
+  if (state === "BULLISH") return "BULLISH";
+  if (state === "BEARISH") return "BEARISH";
+  if (state === "RANGING" || state === "TRANSITIONAL") return "NEUTRAL";
+  return null;
+}
+
+function nearestExternalParent(point: SwingPoint, externalSwings: SwingPoint[], atr: number) {
+  const tolerance = Math.max(0.05, atr * 2);
+  return externalSwings
+    .filter((external) => external.type === point.type && Math.abs(external.price - point.price) <= tolerance)
+    .sort((left, right) => Math.abs(left.price - point.price) - Math.abs(right.price - point.price))[0] ?? null;
+}
+
+function directionalEfficiency(candles: Candle[]) {
+  if (candles.length < 2) return 0;
+  const netMove = Math.abs((candles.at(-1)?.close ?? 0) - candles[0].close);
+  const path = candles.slice(1).reduce((sum, candle, index) => sum + Math.abs(candle.close - candles[index].close), 0);
+  return path > 0 ? netMove / path : 0;
+}
+
+function detectMarketRegime(setupCandles: Candle[], biasCandles: Candle[], internalStructure: StructureSummary, externalStructure: StructureSummary, atr: number, rollingAtrMedian: number, newsStatus?: string) {
   const rows = biasCandles.length > 0 ? biasCandles : setupCandles;
   const closes = rows.map((candle) => candle.close);
   const ema20 = exponentialMovingAverage(closes, Math.min(20, closes.length));
   const ema50 = exponentialMovingAverage(closes, Math.min(50, closes.length));
   const ema200 = exponentialMovingAverage(closes, Math.min(200, Math.max(20, closes.length)));
   const latest = closes.at(-1) ?? 0;
-  if (rollingAtrMedian > 0 && atr > rollingAtrMedian * 1.5) return { regime: "HIGH_VOLATILITY" as MarketRegime, reason: "Current ATR is above 1.5x rolling median ATR." };
-  if (rollingAtrMedian > 0 && atr < rollingAtrMedian * 0.7) return { regime: "LOW_VOLATILITY" as MarketRegime, reason: "Current ATR is below 0.7x rolling median ATR." };
-  if (externalStructure.state === "BULLISH" && ema20 > ema50 && latest > ema200) return { regime: "TRENDING_UP" as MarketRegime, reason: "15M structure is bullish, EMA20 > EMA50, and price is above EMA200." };
-  if (externalStructure.state === "BEARISH" && ema20 < ema50 && latest < ema200) return { regime: "TRENDING_DOWN" as MarketRegime, reason: "15M structure is bearish, EMA20 < EMA50, and price is below EMA200." };
-  if (internalStructure.state === "RANGING" || externalStructure.state === "RANGING") return { regime: "RANGING" as MarketRegime, reason: "Recent swings are overlapping or equal, so sweep reversals receive context support." };
-  if (internalStructure.state === "TRANSITIONAL" || externalStructure.state === "TRANSITIONAL") return { regime: "TRANSITIONAL" as MarketRegime, reason: "Structure is changing but not cleanly trending." };
-  return { regime: "UNKNOWN" as MarketRegime, reason: "Not enough aligned structure to classify a clean regime." };
+  const efficiency = directionalEfficiency(rows.slice(-24));
+  const atrRatio = rollingAtrMedian > 0 ? atr / rollingAtrMedian : 1;
+  const secondary: MarketRegime[] = [];
+  const explanation: string[] = [];
+  if (String(newsStatus ?? "CLEAR").includes("BLOCKED")) secondary.push("NEWS_DRIVEN");
+  if (atrRatio <= 0.7) secondary.push("COMPRESSED", "LOW_VOLATILITY");
+  if (atrRatio >= 1.3) secondary.push("EXPANDING");
+  if (atrRatio >= 1.5) secondary.push("HIGH_VOLATILITY");
+  let primary: MarketRegime = "UNKNOWN";
+  if (secondary.includes("NEWS_DRIVEN")) {
+    primary = "NEWS_DRIVEN";
+    explanation.push("News context is blocking or dominating the current setup.");
+  } else if (externalStructure.state === "BULLISH" && ema20 > ema50 && latest > ema200 && efficiency >= 0.45) {
+    primary = "TRENDING_UP";
+    explanation.push("15M structure, EMA stack, price location, and directional efficiency support an upward regime.");
+  } else if (externalStructure.state === "BEARISH" && ema20 < ema50 && latest < ema200 && efficiency >= 0.45) {
+    primary = "TRENDING_DOWN";
+    explanation.push("15M structure, EMA stack, price location, and directional efficiency support a downward regime.");
+  } else if (efficiency <= 0.3 || internalStructure.state === "RANGING" || externalStructure.state === "RANGING") {
+    primary = "RANGING";
+    explanation.push("Directional efficiency or equal/overlapping structure points to range/chop.");
+  } else if (atrRatio <= 0.7) {
+    primary = "COMPRESSED";
+    explanation.push("Current ATR is compressed versus the rolling median.");
+  } else if (atrRatio >= 1.3) {
+    primary = "EXPANDING";
+    explanation.push("Current ATR is expanding versus the rolling median.");
+  } else if (internalStructure.state === "TRANSITIONAL" || externalStructure.state === "TRANSITIONAL") {
+    primary = "TRANSITIONAL";
+    explanation.push("Internal/external structure is changing but not cleanly trending.");
+  } else {
+    explanation.push("Not enough aligned structure to classify a clean regime.");
+  }
+  const confidence = primary === "UNKNOWN" ? 20 : Math.min(95, Math.round(40 + Math.abs(efficiency - 0.5) * 60 + Math.abs(atrRatio - 1) * 20));
+  return {
+    primary,
+    secondary: [...new Set(secondary.filter((item) => item !== primary))],
+    confidence,
+    actualValues: {
+      directionalEfficiency: Number(efficiency.toFixed(4)),
+      atrRatio: Number(atrRatio.toFixed(4)),
+      ema20: Number(ema20.toFixed(4)),
+      ema50: Number(ema50.toFixed(4)),
+      ema200: Number(ema200.toFixed(4)),
+      latest: Number(latest.toFixed(4))
+    },
+    explanation
+  };
 }
 
 function detectLiquidityLevels(candles: Candle[], now: string, atr: number, config: LiquiditySweepConfig): LiquidityLevel[] {
@@ -865,23 +1177,40 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   const internalPivots = detectPivots(candles.slice(-96), 2, 2).slice(-12);
   addInternalSwingLevels(levels, internalPivots);
   addManualLevels(levels, config);
-  return rankLiquidityLevels(dedupeLevels(levels.map((level) => liquidityZone(level, atr, config))), candles, now, atr);
+  addRoundNumberLevels(levels, candles, config);
+  return rankLiquidityLevels(dedupeLevels(levels.map((level) => liquidityZone(level, atr, config, now))), candles, now, atr, config);
 }
 
 function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: LiquidityLevelType, lowType: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
   if (candles.length === 0) return;
-  levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), priority, priorityScore: levelPriorityScore(highType, priority), source: highType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
-  levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, priorityScore: levelPriorityScore(lowType, priority), source: lowType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
+  const formedAt = candles[0].timestampUtc;
+  const confirmedAt = candles.at(-1)?.timestampUtc ?? formedAt;
+  levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), timeframe: "SESSION", formedAt, confirmedAt, priority, priorityScore: levelPriorityScore(highType, priority), source: highType, sourceIds: [highType], touchCount: 0, clusterSize: 1, status: "ACTIVE", state: "ACTIVE" });
+  levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), timeframe: "SESSION", formedAt, confirmedAt, priority, priorityScore: levelPriorityScore(lowType, priority), source: lowType, sourceIds: [lowType], touchCount: 0, clusterSize: 1, status: "ACTIVE", state: "ACTIVE" });
 }
 
-function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySweepConfig): LiquidityLevel {
+function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySweepConfig, now: string): LiquidityLevel {
   const zoneHalfWidth = Math.max(0.01, atr * config.zoneToleranceATR);
   return {
     ...level,
+    id: level.id ?? `${level.type}:${level.side}:${level.price.toFixed(2)}:${newYorkDateKey(level.confirmedAt ?? level.formedAt ?? now)}`,
+    symbol: level.symbol ?? "XAUUSD",
+    timeframe: level.timeframe ?? (["SWING_HIGH", "SWING_LOW", "EQUAL_HIGH", "EQUAL_LOW"].includes(level.type) ? "5min" : "SESSION"),
     lowerBound: level.price - zoneHalfWidth,
     upperBound: level.price + zoneHalfWidth,
+    formedAt: level.formedAt ?? now,
+    confirmedAt: level.confirmedAt ?? level.formedAt ?? now,
+    expiresAt: level.expiresAt ?? liquidityExpiry(level, now, config),
+    sourceIds: level.sourceIds ?? [level.source],
     zoneHalfWidth,
     priorityScore: level.priorityScore ?? levelPriorityScore(level.type, level.priority),
+    freshnessScore: level.freshnessScore ?? 100,
+    reactionScore: level.reactionScore ?? 0,
+    overlapScore: level.overlapScore ?? 0,
+    qualityScore: level.qualityScore ?? level.priorityScore ?? levelPriorityScore(level.type, level.priority),
+    sweepCount: level.sweepCount ?? 0,
+    closeCountBeyond: level.closeCountBeyond ?? 0,
+    state: level.state ?? "ACTIVE",
     status: level.status ?? "ACTIVE"
   };
 }
@@ -902,10 +1231,26 @@ function levelPriorityScore(type: LiquidityLevelType, priority: LiquidityLevel["
     EQUAL_LOW: 70,
     SWING_HIGH: 75,
     SWING_LOW: 75,
+    COMPOSITE: 105,
     MANUAL_LEVEL: priorityScore(priority) * 20,
     ROUND_NUMBER: 35
   };
   return typeScores[type] ?? priorityScore(priority) * 10;
+}
+
+function liquidityExpiry(level: LiquidityLevel, now: string, config: LiquiditySweepConfig) {
+  const dateKey = newYorkDateKey(level.confirmedAt ?? level.formedAt ?? now);
+  if (["ASIAN_HIGH", "ASIAN_LOW", "LONDON_HIGH", "LONDON_LOW", "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "PREVIOUS_WEEK_HIGH", "PREVIOUS_WEEK_LOW"].includes(level.type)) {
+    return new Date(`${dateKey}T23:59:59.000Z`).toISOString();
+  }
+  if (["ORB_HIGH", "ORB_LOW"].includes(level.type)) {
+    return new Date(`${dateKey}T${config.newYorkEndTime}:00.000Z`).toISOString();
+  }
+  if (["SWING_HIGH", "SWING_LOW", "EQUAL_HIGH", "EQUAL_LOW"].includes(level.type)) {
+    const formed = new Date(level.confirmedAt ?? level.formedAt ?? now).getTime();
+    return new Date(formed + config.maximumSwingLevelAgeDays * 24 * 60 * 60 * 1000).toISOString();
+  }
+  return new Date(new Date(now).getTime() + 24 * 60 * 60 * 1000).toISOString();
 }
 
 function detectBestLiquiditySequence(candles: Candle[], sweeps: SweepCandidate[], pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
@@ -1385,10 +1730,15 @@ function detectSwingPoints(candles: Candle[], left: number, right: number, atr: 
     if (prominenceAtr < config.minimumSwingProminenceATR) continue;
     if (swings.some((swing) => Math.abs(swing.candleIndex - pivot.index) < config.minimumBarsBetweenSwings)) continue;
     const confirmedAt = candles[pivot.index + right]?.timestampUtc ?? pivot.time;
+    const zone = Math.max(0.01, atr * config.structureToleranceATR);
+    const hierarchy = timeframe === "1min" ? "MICRO" : timeframe === "5min" ? "INTERNAL" : "EXTERNAL";
     swings.push({
       id: `${timeframe}-${pivot.kind}-${pivot.index}-${pivot.time}`,
       type: pivot.kind,
+      hierarchy,
       price: pivot.price,
+      lowerBound: pivot.price - zone,
+      upperBound: pivot.price + zone,
       candleIndex: pivot.index,
       formedAt: pivot.time,
       confirmedAt,
@@ -1396,6 +1746,8 @@ function detectSwingPoints(candles: Candle[], left: number, right: number, atr: 
       prominence,
       prominenceAtr,
       strengthScore: Math.min(100, Math.round(40 + prominenceAtr * 60)),
+      confidence: Math.min(100, Math.round(40 + prominenceAtr * 60)),
+      state: "CONFIRMED",
       status: "ACTIVE"
     });
   }
@@ -1549,10 +1901,98 @@ function dedupeLevels(levels: LiquidityLevel[]) {
   return out;
 }
 
-function rankLiquidityLevels(levels: LiquidityLevel[], candles: Candle[], now: string, atr: number) {
+function evaluateLiquidityLifecycle(level: LiquidityLevel, candles: Candle[], now: string, atr: number, config: LiquiditySweepConfig) {
+  const lowerBound = level.lowerBound ?? level.price;
+  const upperBound = level.upperBound ?? level.price;
+  const formedAtMs = new Date(level.formedAt ?? level.confirmedAt ?? now).getTime();
+  const expiresAtMs = level.expiresAt ? new Date(level.expiresAt).getTime() : Number.POSITIVE_INFINITY;
+  let touchCount = 0;
+  let sweepCount = 0;
+  let closeCountBeyond = 0;
+  let lastTouchedAt: string | undefined;
+  let state: LiquidityLevelState = level.state ?? "ACTIVE";
+  for (const candle of candles) {
+    const candleMs = new Date(candle.timestampUtc).getTime();
+    if (Number.isFinite(formedAtMs) && candleMs < formedAtMs) continue;
+    const touched = level.side === "BUY_SIDE" ? candle.high >= lowerBound : candle.low <= upperBound;
+    const penetration = level.side === "BUY_SIDE" ? candle.high - upperBound : lowerBound - candle.low;
+    const penetrationAtr = atr > 0 ? penetration / atr : 0;
+    const closeBeyond = candleCloseBeyondLevel(candle, level);
+    if (touched) {
+      touchCount += 1;
+      lastTouchedAt = candle.timestampUtc;
+      if (state === "ACTIVE") state = "TOUCHED";
+    }
+    if (touched && penetration > 0 && penetrationAtr < config.minimumSweepDistanceATR) {
+      state = "PARTIALLY_SWEPT";
+    }
+    if (penetrationAtr >= config.minimumSweepDistanceATR && penetrationAtr <= config.maximumSweepDistanceATR) {
+      sweepCount += 1;
+      state = "SWEPT";
+    }
+    if (closeBeyond) {
+      closeCountBeyond += 1;
+      if (closeCountBeyond >= config.acceptanceCloseCount) state = "ACCEPTED_BEYOND";
+    } else if (closeCountBeyond > 0 && touched) {
+      state = "RECLAIMED";
+    }
+  }
+  const nowMs = new Date(now).getTime();
+  if (Number.isFinite(nowMs) && nowMs > expiresAtMs) state = "EXPIRED";
+  if (state === "ACCEPTED_BEYOND" && config.liquidityReusePolicy === "NEVER_REUSE") state = "CONSUMED";
+  const freshnessScore = state === "CONSUMED" || state === "EXPIRED" || state === "ACCEPTED_BEYOND"
+    ? 0
+    : closeCountBeyond > 0
+      ? 30
+      : state === "PARTIALLY_SWEPT"
+        ? 60
+        : touchCount > 0
+          ? 80
+          : 100;
+  const status = state === "EXPIRED" ? "EXPIRED" : state === "CONSUMED" || state === "ACCEPTED_BEYOND" ? "BROKEN" : state === "SWEPT" ? "SWEPT" : touchCount > 0 ? "TOUCHED" : "ACTIVE";
+  return {
+    state,
+    status: status as LiquidityLevel["status"],
+    touchCount,
+    sweepCount,
+    closeCountBeyond,
+    lastTouchedAt,
+    freshnessScore
+  };
+}
+
+function summarizeLiquidityLifecycle(levels: LiquidityLevel[]) {
+  const byState = levels.reduce<Record<string, number>>((accumulator, level) => {
+    const state = level.state ?? "ACTIVE";
+    accumulator[state] = (accumulator[state] ?? 0) + 1;
+    return accumulator;
+  }, {});
+  return {
+    total: levels.length,
+    byState,
+    activeLevels: levels
+      .filter((level) => !["CONSUMED", "EXPIRED", "RETIRED"].includes(level.state ?? "ACTIVE"))
+      .slice(0, 12)
+      .map((level) => ({
+        id: level.id,
+        type: level.type,
+        side: level.side,
+        price: level.price,
+        state: level.state,
+        freshnessScore: level.freshnessScore,
+        qualityScore: level.qualityScore,
+        touchCount: level.touchCount,
+        sweepCount: level.sweepCount,
+        sourceIds: level.sourceIds
+      }))
+  };
+}
+
+function rankLiquidityLevels(levels: LiquidityLevel[], candles: Candle[], now: string, atr: number, config: LiquiditySweepConfig) {
   const currentDate = newYorkDateKey(now);
-  const tolerance = Math.max(0.05, atr * 0.02);
+  const tolerance = Math.max(0.05, atr * config.liquidityMergeToleranceATR);
   const ranked = levels.map((level) => {
+    const lifecycle = evaluateLiquidityLifecycle(level, candles, now, atr, config);
     const reactions = countLevelReactions(candles, level, tolerance);
     const overlaps = levels.some((other) => other !== level && other.side === level.side && Math.abs(other.price - level.price) <= tolerance * 2);
     const nearestOpposite = levels
@@ -1572,17 +2012,25 @@ function rankLiquidityLevels(levels: LiquidityLevel[], candles: Candle[], now: s
     const lowLiquidityPenalty = ["ROUND_NUMBER", "SWING_HIGH", "SWING_LOW"].includes(level.type) && reactions < 2 ? -5 : 0;
     const reactionBonus = reactions >= 2 ? 6 : 0;
     const untouchedBonus = untouched ? 8 : 0;
+    const reactionScore = reactionBonus + untouchedBonus;
+    const overlapScore = overlapBonus + htfBonus + clusterBonus + opposingPenalty;
     const score = (level.priorityScore ?? levelPriorityScore(level.type, level.priority))
-      + overlapBonus
-      + reactionBonus
-      + untouchedBonus
-      + htfBonus
-      + clusterBonus
+      + reactionScore
+      + overlapScore
       + acceptedPenalty
-      + opposingPenalty
       + oldPenalty
       + lowLiquidityPenalty;
-    return { ...level, priorityScore: score, touchCount: Math.max(level.touchCount ?? 0, reactions), status: acceptedPenalty < 0 ? "BROKEN" as const : level.status ?? "ACTIVE" };
+    const qualityScore = Math.max(0, Math.min(100, score + lifecycle.freshnessScore * 0.25));
+    return {
+      ...level,
+      ...lifecycle,
+      priorityScore: score,
+      reactionScore,
+      overlapScore,
+      qualityScore: Number(qualityScore.toFixed(2)),
+      touchCount: Math.max(level.touchCount ?? 0, reactions, lifecycle.touchCount),
+      status: acceptedPenalty < 0 && lifecycle.state !== "SWEPT" ? "BROKEN" as const : lifecycle.status
+    };
   });
   const latestClose = candles.at(-1)?.close ?? 0;
   return mergeNearbyLevels(ranked, tolerance)
@@ -1598,12 +2046,17 @@ function mergeNearbyLevels(levels: LiquidityLevel[], tolerance: number) {
       continue;
     }
     existing.price = level.side === "BUY_SIDE" ? Math.max(existing.price, level.price) : Math.min(existing.price, level.price);
+    existing.type = "COMPOSITE";
     existing.lowerBound = Math.min(existing.lowerBound ?? existing.price, level.lowerBound ?? level.price);
     existing.upperBound = Math.max(existing.upperBound ?? existing.price, level.upperBound ?? level.price);
     existing.priorityScore = Math.max(existing.priorityScore ?? 0, level.priorityScore ?? 0) + 10;
     existing.touchCount = (existing.touchCount ?? 0) + (level.touchCount ?? 0);
+    existing.sweepCount = (existing.sweepCount ?? 0) + (level.sweepCount ?? 0);
+    existing.closeCountBeyond = (existing.closeCountBeyond ?? 0) + (level.closeCountBeyond ?? 0);
     existing.clusterSize = (existing.clusterSize ?? 1) + (level.clusterSize ?? 1);
+    existing.sourceIds = [...new Set([...(existing.sourceIds ?? [existing.source]), ...(level.sourceIds ?? [level.source])])];
     existing.source = `${existing.source} + ${level.source}`;
+    existing.state = existing.state === "ACTIVE" ? level.state ?? existing.state : existing.state;
   }
   return merged;
 }
@@ -1648,6 +2101,9 @@ function addExternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       type: "SWING_HIGH",
       side: "BUY_SIDE",
       price: latestHigh.price,
+      timeframe: "15min",
+      formedAt: latestHigh.time,
+      confirmedAt: latestHigh.time,
       priority: "MEDIUM",
       priorityScore: levelPriorityScore("SWING_HIGH", "MEDIUM"),
       source: `CONFIRMED_EXTERNAL_SWING_HIGH:${newYorkDateKey(latestHigh.time)}`,
@@ -1661,6 +2117,9 @@ function addExternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       type: "SWING_LOW",
       side: "SELL_SIDE",
       price: latestLow.price,
+      timeframe: "15min",
+      formedAt: latestLow.time,
+      confirmedAt: latestLow.time,
       priority: "MEDIUM",
       priorityScore: levelPriorityScore("SWING_LOW", "MEDIUM"),
       source: `CONFIRMED_EXTERNAL_SWING_LOW:${newYorkDateKey(latestLow.time)}`,
@@ -1679,6 +2138,9 @@ function addInternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       type: "SWING_HIGH",
       side: "BUY_SIDE",
       price: latestHigh.price,
+      timeframe: "5min",
+      formedAt: latestHigh.time,
+      confirmedAt: latestHigh.time,
       priority: "LOW",
       priorityScore: 45,
       source: `CONFIRMED_INTERNAL_SWING_HIGH:${newYorkDateKey(latestHigh.time)}`,
@@ -1692,6 +2154,9 @@ function addInternalSwingLevels(levels: LiquidityLevel[], pivots: ReturnType<typ
       type: "SWING_LOW",
       side: "SELL_SIDE",
       price: latestLow.price,
+      timeframe: "5min",
+      formedAt: latestLow.time,
+      confirmedAt: latestLow.time,
       priority: "LOW",
       priorityScore: 45,
       source: `CONFIRMED_INTERNAL_SWING_LOW:${newYorkDateKey(latestLow.time)}`,
@@ -1719,15 +2184,46 @@ function addManualLevels(levels: LiquidityLevel[], config: LiquiditySweepConfig)
   }
 }
 
+function addRoundNumberLevels(levels: LiquidityLevel[], candles: Candle[], config: LiquiditySweepConfig) {
+  const latest = candles.at(-1);
+  if (!latest || config.roundNumberStep <= 0) return;
+  const center = Math.round(latest.close / config.roundNumberStep) * config.roundNumberStep;
+  const formedAt = latest.timestampUtc;
+  for (let offset = -config.roundNumberWindowSteps; offset <= config.roundNumberWindowSteps; offset += 1) {
+    const price = center + offset * config.roundNumberStep;
+    if (price <= 0) continue;
+    levels.push({
+      type: "ROUND_NUMBER",
+      side: price >= latest.close ? "BUY_SIDE" : "SELL_SIDE",
+      price,
+      timeframe: "CONTEXT",
+      formedAt,
+      confirmedAt: formedAt,
+      priority: "LOW",
+      priorityScore: levelPriorityScore("ROUND_NUMBER", "LOW"),
+      source: `ROUND_NUMBER:${price.toFixed(2)}`,
+      sourceIds: [`ROUND_NUMBER:${price.toFixed(2)}`],
+      touchCount: 0,
+      clusterSize: 1,
+      status: "ACTIVE",
+      state: "ACTIVE"
+    });
+  }
+}
+
 function addEqualLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, type: LiquidityLevelType, side: LiquidityLevel["side"], tolerance: number) {
   for (let index = 0; index < pivots.length; index += 1) {
     const cluster = pivots.filter((pivot, otherIndex) => otherIndex !== index && Math.abs(pivot.price - pivots[index].price) <= tolerance);
     if (cluster.length === 0) continue;
     const prices = [pivots[index], ...cluster].map((pivot) => pivot.price);
+    const times = [pivots[index], ...cluster].map((pivot) => pivot.time).sort();
     levels.push({
       type,
       side,
       price: side === "BUY_SIDE" ? Math.max(...prices) : Math.min(...prices),
+      timeframe: "5min",
+      formedAt: times[0],
+      confirmedAt: times.at(-1) ?? times[0],
       priority: "MEDIUM",
       priorityScore: levelPriorityScore(type, "MEDIUM"),
       source: `${type} cluster`,

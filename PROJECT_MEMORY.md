@@ -509,6 +509,14 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 conflict resolution blocks simultaneous unresolved buy/sell setups; a confirmed MSS retest with entry confirmation can override weaker opposite sweep evidence.
 - Module 2 final profile on VPS must be backed by migration `063_module2_complete_entry_contract.sql`. The validator fails if `SWEEP_MSS_RETEST` is missing any production gate.
 - Migration `064_module2_swing_contract_backfill.sql` backfills the final swing contract fields for databases that already applied migration `063`.
+- Module 2 platform-core engine contract is implemented from `TRADING PLATFORM CORE ENGINES NEXT UPDATE FOR THE LIQUIDITY SWEEP EXECUTION MODULE`.
+- Module 2 now emits `scenarioFlags.platformEngines`, `sessionContext`, `structureGraph`, `liquidityLifecycle`, and richer `marketRegime` evidence from the strategy brain.
+- Module 2 liquidity lifecycle states are `DETECTED`, `ACTIVE`, `APPROACHING`, `TOUCHED`, `PARTIALLY_SWEPT`, `SWEPT`, `RECLAIMED`, `ACCEPTED_BEYOND`, `CONSUMED`, `BROKEN`, `EXPIRED`, `MERGED`, and `RETIRED`.
+- Module 2 structure graph evidence includes internal/external direction, alignment state, conflict mode, recent structure points with parent/previous references, and recent break events.
+- Module 2 regime output is descriptive only, not predictive: primary regime, secondary regimes, confidence, actual values, and explanations. It must not create trades by itself.
+- Module 2 platform-core persistence is backed by migration `065_module2_platform_core_engines.sql`, which adds liquidity lifecycle, structure, market regime, domain event, replay, analytics, checkpoint, plugin, parameter-version, manual-position, manual-execution reconciliation, journal-insight, experiment, and approval tables.
+- Module 2 APIs now include tenant-scoped core-engine endpoints for liquidity active/history/detail/retire, structure current/history/breaks, market-regime current/history, manual positions current/history/open/update/close, replay shells, and parameter experiments.
+- Broker execution remains out of scope. Manual execution reconciliation is allowed only to compare a tenant's manual trade with the generated plan.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 
 ## Operating Principles
