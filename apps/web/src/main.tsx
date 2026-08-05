@@ -8306,9 +8306,33 @@ function moduleShortName(moduleCode: string, name?: string) {
 
 function module2RuleLayer(code?: string) {
   if (!code) return "other";
+  if (code === "CONFIRM_ENTRY_CANDLE") return "hard";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
-  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK", "SIGNAL_SCORE"].includes(code)) return "hard";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
+  if ([
+    "STRATEGY_CYCLE_ACTIVE",
+    "DATA_HEALTHY",
+    "MARKET_CONTEXT_READY",
+    "MARKET_REGIME_CLASSIFIED",
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
+    "PROTECTED_POINT_CONFIDENCE",
+    "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
+    "RISK_OK",
+    "SIGNAL_SCORE"
+  ].includes(code)) return "hard";
   if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }

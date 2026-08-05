@@ -73,6 +73,9 @@ export type SwingPoint = {
 };
 
 export type StructureState = "BULLISH" | "BEARISH" | "RANGING" | "TRANSITIONAL" | "UNKNOWN";
+export type DataHealthState = "HEALTHY" | "DELAYED" | "STALE" | "DISCONNECTED" | "INCONSISTENT" | "RATE_LIMITED";
+export type MarketRegime = "TRENDING_UP" | "TRENDING_DOWN" | "RANGING" | "HIGH_VOLATILITY" | "LOW_VOLATILITY" | "TRANSITIONAL" | "UNKNOWN";
+type ContextMode = "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRED";
 
 export type StructureSummary = {
   timeframe: string;
@@ -100,7 +103,16 @@ export type LiquiditySweepConfig = {
   manualLevels?: Array<{ price: number; side?: "BUY_SIDE" | "SELL_SIDE"; label?: string; priority?: "HIGH" | "MEDIUM" | "LOW" }>;
   emaFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_ALIGNMENT" | "REQUIRE_COUNTERTREND";
   volumeFilterMode: "OFF" | "RECORD_ONLY" | "WARN_ONLY" | "REQUIRE_EXPANSION";
+  displacementFilterMode: ContextMode;
+  marketContextMode: ContextMode;
+  manualConfirmationRequired: boolean;
   maximumTradesPerSession: number;
+  maximumActiveSetupsPerSymbol: number;
+  maximumActivePositions: number;
+  riskPerTradePercent: number;
+  maximumDailyLossPercent: number;
+  maximumWeeklyLossPercent: number;
+  maximumConsecutiveLosses: number;
   zoneToleranceATR: number;
   equalityToleranceATR: number;
   minimumSwingProminenceATR: number;
@@ -138,9 +150,18 @@ export type LiquiditySweepContext = {
   symbol: string;
   setupCandles: Candle[];
   biasCandles: Candle[];
+  precisionCandles?: Candle[];
   spread?: number | null;
   newsStatus?: string;
+  dataHealthStatus?: DataHealthState;
+  rateLimited?: boolean;
   tradesTakenThisSession?: number;
+  activeSetupsForSymbol?: number;
+  currentOpenPositions?: number;
+  dailyLossPercent?: number;
+  weeklyLossPercent?: number;
+  consecutiveLosses?: number;
+  manualConfirmationCompleted?: boolean;
   configuration?: Partial<LiquiditySweepConfig>;
 };
 
@@ -232,7 +253,16 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   manualLevels: [],
   emaFilterMode: "RECORD_ONLY",
   volumeFilterMode: "RECORD_ONLY",
+  displacementFilterMode: "WARN_ONLY",
+  marketContextMode: "RECORD_ONLY",
+  manualConfirmationRequired: false,
   maximumTradesPerSession: 1,
+  maximumActiveSetupsPerSymbol: 1,
+  maximumActivePositions: 0,
+  riskPerTradePercent: 0.25,
+  maximumDailyLossPercent: 0.75,
+  maximumWeeklyLossPercent: 2.0,
+  maximumConsecutiveLosses: 3,
   zoneToleranceATR: 0.02,
   equalityToleranceATR: 0.05,
   minimumSwingProminenceATR: 0.2,
@@ -281,20 +311,41 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     return waitDecision("WAITING_FOR_DATA", "Waiting for enough 5M candles to evaluate Ultimate Liquidity Sweep structure.", evaluations, flags);
   }
 
+  const precisionCandles = normalizeCandles(context.precisionCandles ?? []);
+  const dataHealth = inferDataHealth(context, setupCandles, biasCandles, precisionCandles);
+  flags.dataHealth = dataHealth;
+  push(evaluations, "DATA_HEALTHY", "Data health engine is healthy", dataHealth.status === "HEALTHY", true, "AUTOMATIC", dataHealth.status, "HEALTHY", dataHealth.reason);
+  if (dataHealth.status !== "HEALTHY") {
+    return blockedDecision("DATA_UNHEALTHY", `Data health engine blocked Module 2: ${dataHealth.reason}`, evaluations, flags);
+  }
+
   const atr = averageTrueRange(setupCandles, 14);
+  const rollingAtrMedian = medianTrueRange(setupCandles, 50);
   const internalSwings = detectSwingPoints(setupCandles, config.pivotLeftBars, config.pivotRightBars, atr, "5min", config);
   const externalSwings = detectSwingPoints(biasCandles, config.pivotLeftBars, config.pivotRightBars, averageTrueRange(biasCandles, 14), "15min", config);
   const internalStructure = classifyStructure(internalSwings, atr, config, "5min");
   const externalStructure = classifyStructure(externalSwings, averageTrueRange(biasCandles, 14), config, "15min");
   const htfBias = detectBias(biasCandles);
   const levels = detectLiquidityLevels(setupCandles, current.timestampUtc, atr, config);
+  const marketContext = buildMarketContext(setupCandles, biasCandles, levels, current, atr, htfBias, internalStructure, externalStructure, context);
+  const marketRegime = detectMarketRegime(setupCandles, biasCandles, internalStructure, externalStructure, atr, rollingAtrMedian);
   const pivots = detectPivots(setupCandles, config.pivotLeftBars, config.pivotRightBars);
   const sessionActive = isInsideNewYorkWindow(current.timestampUtc, config.newYorkStartTime, config.newYorkEndTime);
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(context.newsStatus ?? "CLEAR").includes("BLOCKED");
   const tradeLimitOk = (context.tradesTakenThisSession ?? 0) < config.maximumTradesPerSession;
+  const activeSetupOk = (context.activeSetupsForSymbol ?? 0) < config.maximumActiveSetupsPerSymbol;
+  const activePositionOk = (context.currentOpenPositions ?? 0) <= config.maximumActivePositions;
+  const dailyLossOk = (context.dailyLossPercent ?? 0) < config.maximumDailyLossPercent;
+  const weeklyLossOk = (context.weeklyLossPercent ?? 0) < config.maximumWeeklyLossPercent;
+  const consecutiveLossOk = (context.consecutiveLosses ?? 0) < config.maximumConsecutiveLosses;
+  const manualConfirmationOk = !config.manualConfirmationRequired || context.manualConfirmationCompleted === true;
+  const riskLimitsOk = activeSetupOk && activePositionOk && dailyLossOk && weeklyLossOk && consecutiveLossOk;
   flags.terminologyVersion = "ULTIMATE_LIQUIDITY_SWEEP_STRUCTURE_CONFIRMATION_V1";
   flags.atr14 = Number(atr.toFixed(5));
+  flags.precisionCandlesAvailable = precisionCandles.length;
+  flags.marketContext = marketContext;
+  flags.marketRegime = marketRegime;
   flags.internalStructure = internalStructure;
   flags.externalStructure = externalStructure;
   flags.recentSwings = internalSwings.slice(-12);
@@ -303,8 +354,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     transitions: [{ from: null, to: "IDLE", at: current.timestampUtc, reason: "Processing latest closed 5M candle." }]
   };
 
+  push(evaluations, "MARKET_CONTEXT_READY", "Market context engine ready", config.marketContextMode !== "REQUIRED" || marketContext.ready, config.marketContextMode === "REQUIRED", "AUTOMATIC", marketContext.summary, config.marketContextMode, marketContext.ready ? "15M/5M context, daily/session position, EMA, spread, news, and opposing liquidity context were prepared." : "Market context is incomplete.");
+  push(evaluations, "MARKET_REGIME_CLASSIFIED", "Market regime classified", marketRegime.regime !== "UNKNOWN" || config.marketContextMode !== "REQUIRED", config.marketContextMode === "REQUIRED", "AUTOMATIC", marketRegime.regime, "known regime or non-required mode", marketRegime.reason);
   push(evaluations, "NY_SESSION_ACTIVE", "New York session active", sessionActive, true, "AUTOMATIC", timeOnly(current.timestampUtc), `${config.newYorkStartTime}-${config.newYorkEndTime}`, sessionActive ? "Current candle is inside the configured New York sweep window." : "No Module 2 signal is allowed outside the configured New York window.");
   push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
+  push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", activeSetupOk, true, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No active same-symbol setup conflict is present." : "Another active same-symbol setup already exists.");
+  push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "No active paper trade conflict", activePositionOk, true, "AUTOMATIC", context.currentOpenPositions ?? 0, `<= ${config.maximumActivePositions}`, activePositionOk ? "No active paper position blocks a new Module 2 setup." : "An active position blocks new Module 2 entry.");
+  push(evaluations, "RISK_LIMITS_CLEAR", "Daily, weekly, and consecutive-loss risk limits clear", riskLimitsOk, true, "AUTOMATIC", `D ${context.dailyLossPercent ?? 0}% / W ${context.weeklyLossPercent ?? 0}% / L ${context.consecutiveLosses ?? 0}`, `D < ${config.maximumDailyLossPercent}%, W < ${config.maximumWeeklyLossPercent}%, losses < ${config.maximumConsecutiveLosses}`, riskLimitsOk ? "Account/session risk limits allow a new paper setup." : "Risk limits block a new paper setup.");
+  push(evaluations, "MANUAL_CONFIRMATION_COMPLETED", "Manual confirmation completed when required", manualConfirmationOk, config.manualConfirmationRequired, "AUTOMATIC", config.manualConfirmationRequired ? context.manualConfirmationCompleted === true : "AUTO_PAPER_MODE", config.manualConfirmationRequired ? "true" : "not required", manualConfirmationOk ? "Manual confirmation gate is satisfied for the configured mode." : "Manual confirmation is required before Module 2 can emit BUY_READY/SELL_READY.");
 
   if (!sessionActive) {
     const nowMinutes = newYorkMinutes(current.timestampUtc);
@@ -320,6 +377,12 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
   if (!tradeLimitOk) {
     return blockedDecision("TRADE_LIMIT_BLOCK", "Module 2 session trade limit has already been reached.", evaluations, flags);
+  }
+  if (!activeSetupOk || !activePositionOk || !riskLimitsOk) {
+    return blockedDecision("RISK_LIMIT_BLOCK", "Module 2 risk/conflict limits blocked the setup before liquidity evaluation.", evaluations, flags);
+  }
+  if (!manualConfirmationOk) {
+    return blockedDecision("MANUAL_CONFIRMATION_REQUIRED", "Manual confirmation is required before Module 2 can produce a live paper-entry signal.", evaluations, flags);
   }
 
   const sweepAnalysis = analyzeSweepCandidates(setupCandles, levels, atr, config);
@@ -351,7 +414,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   const direction: Direction = sequence?.direction ?? (sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT");
   const displacement = sequence?.displacement ?? null;
-  push(evaluations, "DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, Boolean(displacement), true, "AUTOMATIC", displacement?.rangeAtr == null ? null : Number(displacement.rangeAtr.toFixed(2)), `>= ${config.minimumDisplacementRangeATR} ATR`, displacement ? "A strong directional candle appeared after the sweep." : "No strong displacement candle appeared after the sweep.");
+  const displacementModeOk = config.displacementFilterMode !== "REQUIRED" || Boolean(displacement);
+  push(evaluations, "DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, Boolean(displacement), config.displacementFilterMode === "REQUIRED", "AUTOMATIC", displacement?.rangeAtr == null ? null : Number(displacement.rangeAtr.toFixed(2)), `${config.displacementFilterMode}; >= ${config.minimumDisplacementRangeATR} ATR when required`, displacement ? "A strong directional candle appeared after the sweep." : "No strong displacement candle appeared after the sweep; default mode records this as context, not a live-entry blocker.");
+  push(evaluations, "DISPLACEMENT_FILTER_MODE", "Displacement filter mode respected", displacementModeOk, config.displacementFilterMode === "REQUIRED", "AUTOMATIC", config.displacementFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRED", displacementModeOk ? "Displacement mode does not block this setup." : "Displacement is required by configuration and has not confirmed.");
   if (displacement) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_CONFIRMATION", displacement.candle.timestampUtc, "Displacement confirmed; waiting for protected-structure break.");
   }
@@ -433,6 +498,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "CONFIRMATION_COUNT", "Minimum confirmation rules matched", confirmationCount >= 3, true, "AUTOMATIC", confirmationCount, `>= 3 of ${confirmations.length}`, confirmationCount >= 3 ? "Minimum confirmation layer passed." : "Fewer than 3 confirmation rules matched.");
 
   const plan = buildLayeredTradePlan(setupCandles, levels, direction, sweep, zone, current, atr, config);
+  const directionalConflictClear = resolveDirectionalConflict(direction, sequence, sweepAnalysis.candidates, config);
+  push(evaluations, "DIRECTIONAL_CONFLICT_CLEAR", "Directional conflict resolution clear", directionalConflictClear.clear, true, "AUTOMATIC", directionalConflictClear.actual, "one confirmed direction per symbol", directionalConflictClear.reason);
   const atrVolatilityOk = current.close > 0 && atr / current.close >= 0.00015;
   const rrOk = plan.rr >= 2 && plan.availableRewardRisk >= config.minimumRiskReward;
   const spreadRatio = context.spread == null ? 0 : context.spread / Math.max(0.01, Math.abs(plan.entry - plan.stop));
@@ -452,7 +519,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
   push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
   push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
-  const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk;
+  const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk && displacementModeOk && directionalConflictClear.clear;
   push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop <= ${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
@@ -477,7 +544,16 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     newsOk,
     rrOk,
     stopValid: plan.stopValid,
-    score
+    score,
+    dataHealthOk: dataHealth.status === "HEALTHY",
+    sessionActive,
+    tradeLimitOk,
+    activeSetupOk,
+    activePositionOk,
+    riskLimitsOk,
+    manualConfirmationOk,
+    directionalConflictClear: directionalConflictClear.clear,
+    riskOk
   });
   const selectedVariant = selectModule2Variant(variants);
   push(evaluations, "VARIANT_SELECTED", "Strict MSS retest profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "SWEEP_MSS_RETEST mandatory rules pass", selectedVariant ? selectedVariant.reason : "The only live paper profile is Sweep + MSS + Retest; sweep-only, pattern-only, EMA-only, or volume-only evidence is not enough.");
@@ -515,7 +591,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
       sessionActive,
       healthyData: setupCandles.length >= 20,
       validLiquidityLevel: Boolean(sweep?.level),
-      sweepDetected: Boolean(sweep)
+      sweepDetected: Boolean(sweep),
+      conflictClear: directionalConflictClear.clear,
+      riskLimitsOk,
+      manualConfirmationOk
     },
     finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk && scoreOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
     selectedProfile: selectedVariant?.code ?? null,
@@ -593,19 +672,26 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
 function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
   const required = new Set([
+    "DATA_HEALTHY",
+    "MARKET_CONTEXT_READY",
+    "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
     "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
     "MSS_STRENGTH",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
@@ -617,30 +703,37 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
 
 function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | "requiredForEntry"> {
   const mandatory = new Set([
+    "DATA_HEALTHY",
+    "MARKET_CONTEXT_READY",
+    "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
     "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
     "MSS_STRENGTH",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
     "CONFIRM_ENTRY_CANDLE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
-  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
-  const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
+  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
+  const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (ruleCode === "PROTECTED_POINT_CONFIDENCE") return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
-  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: ruleCode === "VARIANT_SELECTED" };
+  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 
@@ -648,6 +741,85 @@ function normalizeCandles(candles: Candle[]) {
   return candles
     .filter((candle) => [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite))
     .sort((left, right) => new Date(left.timestampUtc).getTime() - new Date(right.timestampUtc).getTime());
+}
+
+function inferDataHealth(context: LiquiditySweepContext, setupCandles: Candle[], biasCandles: Candle[], precisionCandles: Candle[]) {
+  const explicit = context.dataHealthStatus;
+  if (explicit) return { status: explicit, reason: `External feed health reported ${explicit}.` };
+  if (context.rateLimited) return { status: "RATE_LIMITED" as DataHealthState, reason: "Twelve Data/feed guardrail reports rate limiting." };
+  if (setupCandles.length < 20) return { status: "DISCONNECTED" as DataHealthState, reason: "Not enough closed 5M candles are available." };
+  if (biasCandles.length > 0 && biasCandles.length < 5) return { status: "INCONSISTENT" as DataHealthState, reason: "15M context candles are incomplete." };
+  const duplicated = new Set(setupCandles.map((candle) => candle.timestampUtc)).size !== setupCandles.length;
+  if (duplicated) return { status: "INCONSISTENT" as DataHealthState, reason: "Duplicate 5M candle timestamps detected." };
+  const ordered = setupCandles.every((candle, index) => index === 0 || new Date(candle.timestampUtc).getTime() > new Date(setupCandles[index - 1].timestampUtc).getTime());
+  if (!ordered) return { status: "INCONSISTENT" as DataHealthState, reason: "5M candles are not strictly ascending." };
+  const nowMs = new Date(context.now).getTime();
+  const latestMs = new Date(setupCandles.at(-1)?.timestampUtc ?? context.now).getTime();
+  const ageSeconds = Number.isFinite(nowMs) && Number.isFinite(latestMs) ? Math.max(0, Math.round((nowMs - latestMs) / 1000)) : 0;
+  if (precisionCandles.length > 0 && precisionCandles.length < 3) return { status: "DELAYED" as DataHealthState, reason: "1M precision context is present but shallow; 5M engine remains authoritative." };
+  return { status: "HEALTHY" as DataHealthState, reason: `Closed 5M candle stream is usable. Latest setup candle age ${ageSeconds}s relative to evaluation clock.`, ageSeconds };
+}
+
+function buildMarketContext(
+  setupCandles: Candle[],
+  biasCandles: Candle[],
+  levels: LiquidityLevel[],
+  current: Candle,
+  atr: number,
+  htfBias: string,
+  internalStructure: StructureSummary,
+  externalStructure: StructureSummary,
+  context: LiquiditySweepContext
+) {
+  const currentDate = newYorkDateKey(current.timestampUtc);
+  const dayCandles = setupCandles.filter((candle) => newYorkDateKey(candle.timestampUtc) === currentDate);
+  const sessionCandles = dayCandles.filter((candle) => newYorkMinutes(candle.timestampUtc) >= parseTime(DEFAULT_CONFIG.newYorkStartTime));
+  const dailyOpen = dayCandles[0]?.open ?? current.open;
+  const ema20 = exponentialMovingAverage(setupCandles.map((candle) => candle.close), Math.min(20, setupCandles.length));
+  const ema50 = exponentialMovingAverage(setupCandles.map((candle) => candle.close), Math.min(50, setupCandles.length));
+  const ema200 = exponentialMovingAverage((biasCandles.length > 0 ? biasCandles : setupCandles).map((candle) => candle.close), Math.min(200, Math.max(20, biasCandles.length || setupCandles.length)));
+  const previousDayRows = previousTradingDayCandles(setupCandles, current.timestampUtc);
+  const previousHigh = previousDayRows.length ? Math.max(...previousDayRows.map((candle) => candle.high)) : null;
+  const previousLow = previousDayRows.length ? Math.min(...previousDayRows.map((candle) => candle.low)) : null;
+  const previousRangePosition = previousHigh != null && previousLow != null && previousHigh > previousLow ? (current.close - previousLow) / (previousHigh - previousLow) : null;
+  const sessionHigh = sessionCandles.length ? Math.max(...sessionCandles.map((candle) => candle.high)) : current.high;
+  const sessionLow = sessionCandles.length ? Math.min(...sessionCandles.map((candle) => candle.low)) : current.low;
+  const sessionRangePosition = sessionHigh > sessionLow ? (current.close - sessionLow) / (sessionHigh - sessionLow) : 0.5;
+  const opposing = nearestOpposingLevel(levels, current.close, current.close >= dailyOpen ? "LONG" : "SHORT");
+  return {
+    ready: Number.isFinite(ema20) && Number.isFinite(ema50) && Number.isFinite(ema200),
+    summary: `${htfBias} / ${internalStructure.state} 5M / ${externalStructure.state} 15M`,
+    htfBias,
+    localTrend: internalStructure.state,
+    externalTrend: externalStructure.state,
+    dailyOpen,
+    priceRelativeToDailyOpen: current.close >= dailyOpen ? "ABOVE" : "BELOW",
+    ema20,
+    ema50,
+    ema200,
+    priceRelativeToEma200: current.close >= ema200 ? "ABOVE" : "BELOW",
+    previousDayRangePosition: previousRangePosition,
+    sessionRangePosition,
+    opposingLiquidityDistanceAtr: opposing && atr > 0 ? Math.abs(opposing.price - current.close) / atr : null,
+    spreadState: context.spread == null ? "UNKNOWN" : context.spread <= DEFAULT_CONFIG.maximumSpread ? "OK" : "WIDE",
+    newsState: context.newsStatus ?? "CLEAR"
+  };
+}
+
+function detectMarketRegime(setupCandles: Candle[], biasCandles: Candle[], internalStructure: StructureSummary, externalStructure: StructureSummary, atr: number, rollingAtrMedian: number) {
+  const rows = biasCandles.length > 0 ? biasCandles : setupCandles;
+  const closes = rows.map((candle) => candle.close);
+  const ema20 = exponentialMovingAverage(closes, Math.min(20, closes.length));
+  const ema50 = exponentialMovingAverage(closes, Math.min(50, closes.length));
+  const ema200 = exponentialMovingAverage(closes, Math.min(200, Math.max(20, closes.length)));
+  const latest = closes.at(-1) ?? 0;
+  if (rollingAtrMedian > 0 && atr > rollingAtrMedian * 1.5) return { regime: "HIGH_VOLATILITY" as MarketRegime, reason: "Current ATR is above 1.5x rolling median ATR." };
+  if (rollingAtrMedian > 0 && atr < rollingAtrMedian * 0.7) return { regime: "LOW_VOLATILITY" as MarketRegime, reason: "Current ATR is below 0.7x rolling median ATR." };
+  if (externalStructure.state === "BULLISH" && ema20 > ema50 && latest > ema200) return { regime: "TRENDING_UP" as MarketRegime, reason: "15M structure is bullish, EMA20 > EMA50, and price is above EMA200." };
+  if (externalStructure.state === "BEARISH" && ema20 < ema50 && latest < ema200) return { regime: "TRENDING_DOWN" as MarketRegime, reason: "15M structure is bearish, EMA20 < EMA50, and price is below EMA200." };
+  if (internalStructure.state === "RANGING" || externalStructure.state === "RANGING") return { regime: "RANGING" as MarketRegime, reason: "Recent swings are overlapping or equal, so sweep reversals receive context support." };
+  if (internalStructure.state === "TRANSITIONAL" || externalStructure.state === "TRANSITIONAL") return { regime: "TRANSITIONAL" as MarketRegime, reason: "Structure is changing but not cleanly trending." };
+  return { regime: "UNKNOWN" as MarketRegime, reason: "Not enough aligned structure to classify a clean regime." };
 }
 
 function detectLiquidityLevels(candles: Candle[], now: string, atr: number, config: LiquiditySweepConfig): LiquidityLevel[] {
@@ -689,7 +861,7 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   addExternalSwingLevels(levels, pivots);
   addEqualHighLowLevels(levels, pivots, atr);
   addManualLevels(levels, config);
-  return dedupeLevels(levels.map((level) => liquidityZone(level, atr, config)));
+  return rankLiquidityLevels(dedupeLevels(levels.map((level) => liquidityZone(level, atr, config))), candles, now, atr);
 }
 
 function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: LiquidityLevelType, lowType: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
@@ -1037,6 +1209,38 @@ function opposingLiquidityRewardRisk(levels: LiquidityLevel[], direction: Direct
   return Math.abs(opposing.price - entry) / risk;
 }
 
+function nearestOpposingLevel(levels: LiquidityLevel[], entry: number, direction: Direction) {
+  return levels
+    .filter((level) => direction === "LONG" ? level.side === "BUY_SIDE" && level.price > entry : level.side === "SELL_SIDE" && level.price < entry)
+    .sort((left, right) => direction === "LONG" ? left.price - right.price : right.price - left.price)[0] ?? null;
+}
+
+function resolveDirectionalConflict(
+  direction: Direction,
+  sequence: ReturnType<typeof detectBestLiquiditySequence>,
+  candidates: SweepCandidate[],
+  config: LiquiditySweepConfig
+) {
+  if (!sequence) {
+    return { clear: true, actual: "NO_SEQUENCE", reason: "No confirmed sequence exists, so no directional trade conflict can be active." };
+  }
+  const currentIndex = sequence.bos?.index ?? sequence.sweep.index;
+  const recent = candidates.filter((candidate) => currentIndex - candidate.index >= 0 && currentIndex - candidate.index <= config.doubleSweepLookbackBars);
+  const oppositeSide = direction === "LONG" ? "BUY_SIDE" : "SELL_SIDE";
+  const opposite = recent.filter((candidate) => candidate.level.side === oppositeSide);
+  if (opposite.length === 0) {
+    return { clear: true, actual: direction, reason: "Only one actionable direction is present inside the recent sweep window." };
+  }
+  if (sequence.bos && sequence.zone && sequence.confirmation) {
+    return { clear: true, actual: `${direction}_MSS_RETEST_CONFIRMED`, reason: "The selected direction has MSS, retest, and entry confirmation, so it overrides weaker opposite sweep evidence." };
+  }
+  return {
+    clear: false,
+    actual: `${direction}_WITH_${opposite.length}_OPPOSITE_SWEEP`,
+    reason: "Both buy-side and sell-side liquidity were swept recently without a completed MSS retest confirmation, so Module 2 blocks the trade."
+  };
+}
+
 function confirmsEntry(candle: Candle, direction: Direction, zone: { low: number; high: number; midpoint: number }) {
   const range = candle.high - candle.low;
   if (range <= 0) return false;
@@ -1275,6 +1479,17 @@ function averageTrueRange(candles: Candle[], period: number) {
   return ranges.reduce((sum, value) => sum + value, 0) / ranges.length;
 }
 
+function medianTrueRange(candles: Candle[], period: number) {
+  const rows = candles.slice(-period - 1);
+  if (rows.length < 2) return averageTrueRange(candles, Math.min(14, candles.length));
+  const ranges = rows.slice(1).map((candle, index) => {
+    const previous = rows[index];
+    return Math.max(candle.high - candle.low, Math.abs(candle.high - previous.close), Math.abs(candle.low - previous.close));
+  }).sort((left, right) => left - right);
+  const middle = Math.floor(ranges.length / 2);
+  return ranges.length % 2 === 0 ? (ranges[middle - 1] + ranges[middle]) / 2 : ranges[middle];
+}
+
 function exponentialMovingAverage(values: number[], period: number) {
   const multiplier = 2 / (period + 1);
   return values.reduce((ema, value, index) => index === 0 ? value : value * multiplier + ema * (1 - multiplier), values[0] ?? 0);
@@ -1303,6 +1518,15 @@ function newYorkDateKey(timestamp: string) {
   return `${year}-${month}-${day}`;
 }
 
+function previousTradingDayCandles(candles: Candle[], timestamp: string) {
+  const currentDate = newYorkDateKey(timestamp);
+  const previousDate = [...new Set(candles.map((candle) => newYorkDateKey(candle.timestampUtc)))]
+    .filter((date) => date < currentDate && !isWeekendDateKey(date))
+    .sort()
+    .at(-1);
+  return previousDate ? candles.filter((candle) => newYorkDateKey(candle.timestampUtc) === previousDate) : [];
+}
+
 function isWeekendDateKey(date: string) {
   const day = new Date(`${date}T12:00:00Z`).getUTCDay();
   return day === 0 || day === 6;
@@ -1318,6 +1542,83 @@ function dedupeLevels(levels: LiquidityLevel[]) {
     if (!out.some((existing) => Math.abs(existing.price - level.price) < 0.05 && existing.side === level.side)) out.push(level);
   }
   return out;
+}
+
+function rankLiquidityLevels(levels: LiquidityLevel[], candles: Candle[], now: string, atr: number) {
+  const currentDate = newYorkDateKey(now);
+  const tolerance = Math.max(0.05, atr * 0.02);
+  const ranked = levels.map((level) => {
+    const reactions = countLevelReactions(candles, level, tolerance);
+    const untouched = !candles.some((candle) => {
+      const candleDate = newYorkDateKey(candle.timestampUtc);
+      if (candleDate >= currentDate) return false;
+      return level.side === "BUY_SIDE" ? candle.high >= level.price : candle.low <= level.price;
+    });
+    const htfBonus = ["PREVIOUS_WEEK_HIGH", "PREVIOUS_WEEK_LOW", "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "LONDON_HIGH", "LONDON_LOW"].includes(level.type) ? 5 : 0;
+    const clusterBonus = (level.clusterSize ?? 1) >= 3 ? 4 : 0;
+    const acceptedPenalty = acceptedPastLevel(candles, level, atr) ? -10 : 0;
+    const oldPenalty = olderThanTradingDays(level, now, 5) ? -5 : 0;
+    const lowLiquidityPenalty = ["ROUND_NUMBER", "SWING_HIGH", "SWING_LOW"].includes(level.type) && reactions < 2 ? -5 : 0;
+    const reactionBonus = reactions >= 2 ? 6 : 0;
+    const untouchedBonus = untouched ? 8 : 0;
+    const score = (level.priorityScore ?? levelPriorityScore(level.type, level.priority))
+      + reactionBonus
+      + untouchedBonus
+      + htfBonus
+      + clusterBonus
+      + acceptedPenalty
+      + oldPenalty
+      + lowLiquidityPenalty;
+    return { ...level, priorityScore: score, touchCount: Math.max(level.touchCount ?? 0, reactions), status: acceptedPenalty < 0 ? "BROKEN" as const : level.status ?? "ACTIVE" };
+  });
+  const latestClose = candles.at(-1)?.close ?? 0;
+  return mergeNearbyLevels(ranked, tolerance)
+    .sort((left, right) => (right.priorityScore ?? 0) - (left.priorityScore ?? 0) || Math.abs(left.price - latestClose) - Math.abs(right.price - latestClose));
+}
+
+function mergeNearbyLevels(levels: LiquidityLevel[], tolerance: number) {
+  const merged: LiquidityLevel[] = [];
+  for (const level of levels.sort((left, right) => (right.priorityScore ?? 0) - (left.priorityScore ?? 0))) {
+    const existing = merged.find((item) => item.side === level.side && Math.abs(item.price - level.price) <= tolerance && Math.abs((item.priorityScore ?? 0) - (level.priorityScore ?? 0)) <= 5);
+    if (!existing) {
+      merged.push(level);
+      continue;
+    }
+    existing.price = level.side === "BUY_SIDE" ? Math.max(existing.price, level.price) : Math.min(existing.price, level.price);
+    existing.lowerBound = Math.min(existing.lowerBound ?? existing.price, level.lowerBound ?? level.price);
+    existing.upperBound = Math.max(existing.upperBound ?? existing.price, level.upperBound ?? level.price);
+    existing.priorityScore = Math.max(existing.priorityScore ?? 0, level.priorityScore ?? 0) + 10;
+    existing.touchCount = (existing.touchCount ?? 0) + (level.touchCount ?? 0);
+    existing.clusterSize = (existing.clusterSize ?? 1) + (level.clusterSize ?? 1);
+    existing.source = `${existing.source} + ${level.source}`;
+  }
+  return merged;
+}
+
+function countLevelReactions(candles: Candle[], level: LiquidityLevel, tolerance: number) {
+  return candles.reduce((count, candle) => {
+    const touched = level.side === "BUY_SIDE"
+      ? Math.abs(candle.high - level.price) <= tolerance
+      : Math.abs(candle.low - level.price) <= tolerance;
+    const rejected = level.side === "BUY_SIDE" ? candle.close < level.price : candle.close > level.price;
+    return touched && rejected ? count + 1 : count;
+  }, 0);
+}
+
+function acceptedPastLevel(candles: Candle[], level: LiquidityLevel, atr: number) {
+  const threshold = Math.max(0.05, atr * 0.15);
+  return candles.slice(-80).some((candle) => level.side === "BUY_SIDE"
+    ? candle.close > level.price + threshold
+    : candle.close < level.price - threshold);
+}
+
+function olderThanTradingDays(level: LiquidityLevel, now: string, days: number) {
+  if (!["SWING_HIGH", "SWING_LOW", "EQUAL_HIGH", "EQUAL_LOW"].includes(level.type)) return false;
+  const currentDate = new Date(`${newYorkDateKey(now)}T12:00:00Z`).getTime();
+  const match = level.source.match(/\d{4}-\d{2}-\d{2}/);
+  if (!match) return false;
+  const levelDate = new Date(`${match[0]}T12:00:00Z`).getTime();
+  return Number.isFinite(currentDate) && Number.isFinite(levelDate) && currentDate - levelDate > days * 24 * 60 * 60 * 1000;
 }
 
 function addEqualHighLowLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, atr: number) {
@@ -1418,6 +1719,15 @@ function module2VariantCandidates(input: {
   rrOk: boolean;
   stopValid: boolean;
   score: number;
+  dataHealthOk: boolean;
+  sessionActive: boolean;
+  tradeLimitOk: boolean;
+  activeSetupOk: boolean;
+  activePositionOk: boolean;
+  riskLimitsOk: boolean;
+  manualConfirmationOk: boolean;
+  directionalConflictClear: boolean;
+  riskOk: boolean;
 }): Module2Variant[] {
   const base = {
     version: MODULE2_VARIANT_VERSION,
@@ -1464,12 +1774,44 @@ function module2VariantCandidates(input: {
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
       ["ENTRY_ZONE_RETRACE", input.retrace]
     ], "Research evidence only: continuation BOS retest is tracked, but live Module 2 requires reversal MSS retest.", base, input.direction),
-    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"], [
+    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
+      "DATA_HEALTHY",
+      "NY_SESSION_ACTIVE",
+      "DAILY_TRADE_LIMIT",
+      "ACTIVE_SETUP_CONFLICT_CLEAR",
+      "NO_ACTIVE_TRADE_CONFLICT",
+      "RISK_LIMITS_CLEAR",
+      "MANUAL_CONFIRMATION_COMPLETED",
+      "LIQUIDITY_LEVEL_IDENTIFIED",
+      "LIQUIDITY_SWEEP_CONFIRMED",
+      "SWEEP_REJECTION_CONFIRMED",
+      "SWEEP_ACCEPTANCE_BLOCK",
+      "REVERSAL_MSS",
+      "MSS_STRENGTH",
+      "ENTRY_ZONE_READY",
+      "ENTRY_ZONE_RETRACE",
+      "CONFIRM_ENTRY_CANDLE",
+      "DIRECTIONAL_CONFLICT_CLEAR",
+      "RISK_OK",
+      "SIGNAL_SCORE"
+    ], [
+      ["DATA_HEALTHY", input.dataHealthOk],
+      ["NY_SESSION_ACTIVE", input.sessionActive],
+      ["DAILY_TRADE_LIMIT", input.tradeLimitOk],
+      ["ACTIVE_SETUP_CONFLICT_CLEAR", input.activeSetupOk],
+      ["NO_ACTIVE_TRADE_CONFLICT", input.activePositionOk],
+      ["RISK_LIMITS_CLEAR", input.riskLimitsOk],
+      ["MANUAL_CONFIRMATION_COMPLETED", input.manualConfirmationOk],
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
+      ["MSS_STRENGTH", Boolean(input.bos?.breakDistanceAtr != null && input.bos.breakDistanceAtr >= DEFAULT_CONFIG.minimumBosCloseDistanceATR && input.bos.bodyRatio >= 0.5)],
+      ["ENTRY_ZONE_READY", Boolean(input.zone)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation]
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["DIRECTIONAL_CONFLICT_CLEAR", input.directionalConflictClear],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.score >= DEFAULT_CONFIG.minimumSignalScore]
     ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
     variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "RESEARCH", "RESEARCH_ONLY", false, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],

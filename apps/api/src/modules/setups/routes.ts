@@ -1150,9 +1150,33 @@ function signalRuleSummary(rows: any[]) {
 function module2SignalLayer(moduleCode: string, ruleCode?: string) {
   const code = String(ruleCode ?? "");
   if (moduleCode !== "high_probability_strategy_2") return "other";
+  if (code === "CONFIRM_ENTRY_CANDLE") return "mandatory";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
-  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE") return "quality";
-  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"].includes(code)) return "mandatory";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
+  if ([
+    "DATA_HEALTHY",
+    "MARKET_CONTEXT_READY",
+    "MARKET_REGIME_CLASSIFIED",
+    "NY_SESSION_ACTIVE",
+    "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
+    "PROTECTED_POINT_CONFIDENCE",
+    "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
+    "RISK_OK",
+    "SIGNAL_SCORE",
+    "VARIANT_SELECTED"
+  ].includes(code)) return "mandatory";
   return "other";
 }
 

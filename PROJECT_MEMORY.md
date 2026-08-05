@@ -498,6 +498,15 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 variant metrics table now includes live paper trades, win rate, average R, profit factor, max drawdown R, top blocker, blocker count, and recommendation.
 - Module 2 backtests should create missed-trade learning review items. Reviews must preserve variant, blocker, missing rules, projected entry/SL/TP, projected TP/SL outcome, classification, guardrails, and proposed QA-only/observe-only next action.
 - Module 2 production validation command is `npm run validate:module2-production -- .env.production`. It checks PostgreSQL 5M candles, Module 2 catalog/tenant assignment, latest cache backtest, 80%+ predictions, entry-ready setup chain, paper trade, notification payload, journal, and learning review evidence.
+- Latest Module 2 final contract implemented from `LIQUIDITY SWEEP + MSS + RETEST COMPLETE VALID TRADE ENTRY ENGINE FOR SOFTWARE`.
+- Module 2 engine path is now: market data -> data health -> session -> market context -> market regime -> swing detection -> liquidity detection/ranking -> sweep -> rejection/acceptance -> protected structure -> reversal MSS -> retest -> context filters -> conflict resolution -> risk -> confidence -> BUY_READY/SELL_READY/WAIT/BLOCK/INVALIDATE/EXPIRE.
+- Module 2 data health states are `HEALTHY`, `DELAYED`, `STALE`, `DISCONNECTED`, `INCONSISTENT`, and `RATE_LIMITED`. Non-healthy data blocks live paper-entry decisions.
+- Module 2 strict profile required rules now include data health, market context, market regime, NY session, daily trade limit, active setup conflict, active paper trade conflict, daily/weekly/consecutive-loss risk limits, manual-confirmation mode, ranked liquidity level, sweep, close-back rejection, no acceptance, protected point, reversal MSS, MSS strength, retest zone, retest, entry candle, directional conflict clear, risk engine, signal score, and selected variant.
+- Module 2 displacement is context by default (`WARN_ONLY`), not mandatory unless `displacementFilterMode` is set to `REQUIRED`.
+- Module 2 EMA defaults to `WARN_ONLY`; volume defaults to `RECORD_ONLY`; market context defaults to `RECORD_ONLY`; manual confirmation defaults to `false` for automatic paper trading.
+- Module 2 ranked liquidity now scores previous week/day, London, Asian, ORB, equal highs/lows, external swings, and manual levels using base priority plus untouched/reaction/HTF/cluster bonuses and accepted/old/low-liquidity penalties. Nearby levels with similar scores are merged into one zone.
+- Module 2 conflict resolution blocks simultaneous unresolved buy/sell setups; a confirmed MSS retest with entry confirmation can override weaker opposite sweep evidence.
+- Module 2 final profile on VPS must be backed by migration `063_module2_complete_entry_contract.sql`. The validator fails if `SWEEP_MSS_RETEST` is missing any production gate.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 
 ## Operating Principles

@@ -139,6 +139,49 @@ async function validateCatalog(tenantId: string | null) {
       detail: `${registry?.total ?? 0} evidence profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. Strict MSS retest must be the only paper-eligible live entry profile.`,
       evidence: registry
     });
+    const strict = await one(
+      `SELECT code, required_rules
+       FROM module2_strategy_variants
+       WHERE module_code = $1
+         AND code = 'SWEEP_MSS_RETEST'
+       LIMIT 1`,
+      [MODULE_CODE]
+    );
+    const requiredRules = Array.isArray(strict?.required_rules) ? strict.required_rules : [];
+    const expectedRules = [
+      "DATA_HEALTHY",
+      "MARKET_CONTEXT_READY",
+      "MARKET_REGIME_CLASSIFIED",
+      "NY_SESSION_ACTIVE",
+      "DAILY_TRADE_LIMIT",
+      "ACTIVE_SETUP_CONFLICT_CLEAR",
+      "NO_ACTIVE_TRADE_CONFLICT",
+      "RISK_LIMITS_CLEAR",
+      "MANUAL_CONFIRMATION_COMPLETED",
+      "LIQUIDITY_LEVEL_IDENTIFIED",
+      "LIQUIDITY_SWEEP_CONFIRMED",
+      "SWEEP_REJECTION_CONFIRMED",
+      "SWEEP_ACCEPTANCE_BLOCK",
+      "PROTECTED_POINT_CONFIDENCE",
+      "BOS_CHOCH_CONFIRMED",
+      "MSS_STRENGTH",
+      "ENTRY_ZONE_READY",
+      "ENTRY_ZONE_RETRACE",
+      "CONFIRM_ENTRY_CANDLE",
+      "DIRECTIONAL_CONFLICT_CLEAR",
+      "RISK_OK",
+      "SIGNAL_SCORE",
+      "VARIANT_SELECTED"
+    ];
+    const missingRules = expectedRules.filter((rule) => !requiredRules.includes(rule));
+    checks.push({
+      name: "Module 2 complete entry contract",
+      status: missingRules.length === 0 ? "PASS" : "FAIL",
+      detail: missingRules.length === 0
+        ? "Strict MSS retest profile includes every production architecture gate."
+        : `Strict MSS retest profile is missing ${missingRules.join(", ")}.`,
+      evidence: { expectedRules, requiredRules, missingRules }
+    });
   }
 
   checks.push({
@@ -169,7 +212,12 @@ async function validateCatalog(tenantId: string | null) {
       roundNumberStep: value.roundNumberStep ?? null,
       manualLevels: Array.isArray(value.manualLevels) ? value.manualLevels.length : 0,
       emaFilterMode: value.emaFilterMode ?? null,
-      volumeFilterMode: value.volumeFilterMode ?? null
+      volumeFilterMode: value.volumeFilterMode ?? null,
+      displacementFilterMode: value.displacementFilterMode ?? null,
+      marketContextMode: value.marketContextMode ?? null,
+      manualConfirmationRequired: value.manualConfirmationRequired ?? null,
+      maximumActiveSetupsPerSymbol: value.maximumActiveSetupsPerSymbol ?? null,
+      maximumActivePositions: value.maximumActivePositions ?? null
     }
   });
 
@@ -431,7 +479,16 @@ function hasUltimateConfigurationFields(value: any) {
     "roundNumberWindowSteps",
     "manualLevels",
     "emaFilterMode",
-    "volumeFilterMode"
+    "volumeFilterMode",
+    "displacementFilterMode",
+    "marketContextMode",
+    "manualConfirmationRequired",
+    "maximumActiveSetupsPerSymbol",
+    "maximumActivePositions",
+    "riskPerTradePercent",
+    "maximumDailyLossPercent",
+    "maximumWeeklyLossPercent",
+    "maximumConsecutiveLosses"
   ].every((key) => Object.prototype.hasOwnProperty.call(value ?? {}, key));
 }
 
