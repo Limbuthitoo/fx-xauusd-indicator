@@ -3096,6 +3096,7 @@ function LiveStrategyCenterPanel({
   const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
   const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
   const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  const missing = firstMissingRule(rows);
   return (
     <Panel icon={<ShieldCheck />} title="Strategy Center">
       <div className={`live-signal-summary ${signal.tone}`}>
@@ -3112,6 +3113,13 @@ function LiveStrategyCenterPanel({
         <Metric label="Target" value={formatPriceValue(target)} />
       </div>
       <LiveModuleEvidence moduleCode={moduleCode} setup={setup} openingRange={openingRange} />
+      {moduleCode === "high_probability_strategy_2" ? (
+        <div className="live-missing-rule">
+          <span>{missing ? "Next Missing Rule" : "Entry Gate"}</span>
+          <strong>{missing ? missing.name ?? formatScenario(missing.rule_code ?? missing.ruleCode) : "Ready when checklist remains valid"}</strong>
+          <em>{missing?.explanation ?? setup?.final_reason ?? "Waiting for a valid Module 2 evidence chain."}</em>
+        </div>
+      ) : null}
       <div className="live-check-summary">
         {sections.map((section) => (
           <div key={section.title}>
@@ -3141,6 +3149,9 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
     const bos = flags.bos ?? {};
     const zone = flags.entryZone ?? {};
     const variant = flags.module2Variant ?? {};
+    const missingVariant = Array.isArray(flags.module2Variants)
+      ? flags.module2Variants.find((item: any) => Array.isArray(item.missingRules) && item.missingRules.length > 0)
+      : null;
     return (
       <div className="live-evidence-list">
         <div><span>Variant</span><strong>{variant?.name ?? flags.variantCode ?? "--"}</strong></div>
@@ -3149,6 +3160,7 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
         <div><span>Displacement</span><strong>{displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`}</strong></div>
         <div><span>BOS / CHoCH</span><strong>{bos?.level == null ? "--" : Number(bos.level).toFixed(2)}</strong></div>
         <div><span>Entry zone</span><strong>{zone?.low == null ? "--" : `${Number(zone.low).toFixed(2)}-${Number(zone.high).toFixed(2)}`}</strong></div>
+        <div><span>Missing</span><strong>{missingVariant?.missingRules?.length ? missingVariant.missingRules.slice(0, 2).map(formatScenario).join(", ") : "--"}</strong></div>
       </div>
     );
   }
@@ -3166,6 +3178,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
   const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
   const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
   const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  const missing = firstMissingRule(rows);
   return (
     <Panel icon={<ShieldCheck />} title="Module 2 Live Control">
       <div className={`module2-live-hero ${signal.tone}`}>
@@ -3186,6 +3199,11 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
         <Metric label="Quality" value={`${passed(quality)}/${quality.length}`} />
         <Metric label="Paper" value={trade?.id ? `${trade.direction ?? "--"} ${trade.outcome ?? "ACTIVE"}` : "READY"} />
       </div>
+      <div className="module2-live-missing">
+        <span>{missing ? "Waiting on" : "Evidence status"}</span>
+        <strong>{missing ? missing.name ?? formatScenario(missing.rule_code ?? missing.ruleCode) : "Checklist ready"}</strong>
+        <em>{missing?.explanation ?? setup?.final_reason ?? signal.reason}</em>
+      </div>
       <div className="module2-trade-plan">
         <span>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for sweep + BOS setup"}</span>
         <strong>{setup?.direction ?? trade?.direction ?? "--"}</strong>
@@ -3194,6 +3212,10 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
       <p className="reason">{setup?.final_reason ?? signal.reason}</p>
     </Panel>
   );
+}
+
+function firstMissingRule(rows: any[]) {
+  return rows.find((row: any) => row.status !== "PASS" && (row.blocking || row.requiredForEntry || row.required_for_entry)) ?? null;
 }
 
 function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
@@ -5753,6 +5775,8 @@ function NotificationDetails({ item }: { item: any }) {
   const scenario = data.scenario ?? extractNotificationScenario(item.body);
   const grade = data.grade ?? extractNotificationField(item.body, "grade");
   const confidence = data.confidence ?? extractNotificationField(item.body, "confidence");
+  const variantName = data.variantName ?? data.variant_name ?? data.variantCode ?? data.variant_code;
+  const missingRules = Array.isArray(data.missingRules) ? data.missingRules : Array.isArray(data.missing_rules) ? data.missing_rules : [];
   const category = notificationCategory(item, data);
   const issueCode = data.issueCode ?? data.issue_code ?? item.event_type;
   const status = data.status ?? notificationStatusFromPriority(item.priority);
@@ -5775,6 +5799,7 @@ function NotificationDetails({ item }: { item: any }) {
             <Metric label="TP" value={formatNotificationValue(target, "price")} />
             <Metric label="RR" value={formatNotificationValue(rewardToRisk)} />
             <Metric label="Direction" value={direction ?? "--"} />
+            <Metric label="Variant" value={variantName ?? "--"} />
             <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
             <Metric label="Grade" value={grade ?? "--"} />
             <Metric label="Confidence" value={confidence == null ? "--" : `${confidence}%`} />
@@ -5810,15 +5835,34 @@ function NotificationDetails({ item }: { item: any }) {
             <Metric label="Mandatory" value={formatNotificationValue(data.mandatoryPassed ?? data.mandatory_passed)} />
             <Metric label="Confirmations" value={formatNotificationValue(data.confirmationPassed ?? data.confirmation_passed)} />
             <Metric label="Quality" value={formatNotificationValue(data.qualityPassed ?? data.quality_passed)} />
+            <Metric label="Missing" value={missingRules.length ? missingRules.slice(0, 2).map(formatScenario).join(", ") : "--"} />
             <Metric label="Setup ID" value={formatNotificationValue(data.setupCandidateId ?? data.setup_candidate_id)} />
             <Metric label="Trade ID" value={formatNotificationValue(data.tradeId ?? data.trade_id)} />
             <Metric label="Event Key" value={formatNotificationValue(data.eventKey ?? data.event_key ?? item.event_key)} />
             <Metric label="Source" value="Dashboard" />
           </div>
+          {data.entryZone || data.entry_zone || data.liquidity || data.bos ? (
+            <div className="notification-evidence-row">
+              <span>Liquidity {notificationEvidenceValue(data.liquidity?.type, data.liquidity?.price)}</span>
+              <span>BOS {notificationEvidenceValue(null, data.bos?.level)}</span>
+              <span>Zone {notificationZoneValue(data.entryZone ?? data.entry_zone)}</span>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </>
   );
+}
+
+function notificationEvidenceValue(label: unknown, price: unknown) {
+  const number = Number(price);
+  const prefix = label ? `${formatScenario(String(label))} ` : "";
+  return Number.isFinite(number) ? `${prefix}${number.toFixed(2)}` : "--";
+}
+
+function notificationZoneValue(zone: any) {
+  if (!zone || zone.low == null || zone.high == null) return "--";
+  return `${formatPriceValue(zone.low)}-${formatPriceValue(zone.high)}`;
 }
 
 function notificationPayload(item: any) {
@@ -7128,10 +7172,14 @@ function TradeSignalsWorkspace({
           <aside className="signal-trade-facts">
             <h3><Target size={18} />Trade details</h3>
             <Metric label="Direction" value={selected.direction} />
+            <Metric label="Variant" value={selected.variantName ?? selected.variantCode ?? "--"} />
             <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
             <Metric label="Chance" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
+            <Metric label="Mandatory" value={signalChecklistSummaryLabel(selected, "mandatory")} />
+            <Metric label="Confirmations" value={signalChecklistSummaryLabel(selected, "confirmations")} />
+            <Metric label="Quality" value={signalChecklistSummaryLabel(selected, "quality")} />
             <Metric label="Grade" value={selected.grade ?? "--"} />
             <Metric label="Entry type" value={formatEntryKind(selected.entryRange?.kind)} />
             <Metric label="Trade horizon" value={longMode ? "Long · one TP" : tradeHorizonLabel(selected.tradeHorizon)} />
@@ -7139,6 +7187,7 @@ function TradeSignalsWorkspace({
             <Metric label="Paper status" value={selected.trade?.status ?? "Awaiting paper entry"} />
           </aside>
         </div>
+        <SignalMissingRulesPanel signal={selected} />
       </section>
     );
   }
@@ -7221,6 +7270,17 @@ function TradeSignalsWorkspace({
               <span>Entry range</span>
               <strong>{formatSignalRange(signal.entryRange)}</strong>
             </div>
+            {signal.variantName || signal.variantCode ? (
+              <div className="trade-signal-entry compact">
+                <span>Variant</span>
+                <strong>{signal.variantName ?? formatScenario(signal.variantCode)}</strong>
+              </div>
+            ) : null}
+            <div className="trade-signal-checks">
+              <span>M {signalChecklistSummaryLabel(signal, "mandatory")}</span>
+              <span>C {signalChecklistSummaryLabel(signal, "confirmations")}</span>
+              <span>Q {signalChecklistSummaryLabel(signal, "quality")}</span>
+            </div>
             <div className="trade-signal-chance">
               <span>Chance</span>
               <strong className={chanceTone(signal)}>{chanceLabel(signal)}</strong>
@@ -7248,6 +7308,39 @@ function TradeSignalsWorkspace({
       {visibleSignals.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No valid {horizonFilter === "LONG" ? "long" : "short"} setups</strong><span>{horizonFilter === "LONG" ? "Long cards appear after a module has one full-checklist setup." : "Cards appear automatically after an assigned module validates a BUY or SELL entry."}</span></div> : null}
     </section>
   );
+}
+
+function SignalMissingRulesPanel({ signal }: { signal: any }) {
+  const rows = signal.checklistSummary?.missingRules ?? [];
+  return (
+    <section className="signal-evidence-panel">
+      <div className="signal-section-heading">
+        <div>
+          <h3><ShieldCheck size={18} />Module Evidence Gate</h3>
+          <p>{rows.length ? "These rules are still blocking a stronger setup." : "No blocking rules are attached to this live signal."}</p>
+        </div>
+        <span className="signal-check-count">{rows.length ? `${rows.length} blockers` : "CLEAR"}</span>
+      </div>
+      <div className="signal-checklist-detail">
+        {rows.slice(0, 6).map((row: any) => (
+          <div key={row.code ?? row.name} className="signal-check-row fail">
+            <XCircle size={17} />
+            <div>
+              <strong>{row.name ?? formatScenario(row.code)}</strong>
+              <span>{row.explanation ?? "Rule has not passed yet."}</span>
+            </div>
+            <b>{row.status ?? "WAIT"}</b>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function signalChecklistSummaryLabel(signal: any, key: "mandatory" | "confirmations" | "quality") {
+  const row = signal.checklistSummary?.[key];
+  if (!row) return "--";
+  return `${row.passed ?? 0}/${row.total ?? 0}`;
 }
 
 function SignalPrice({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {

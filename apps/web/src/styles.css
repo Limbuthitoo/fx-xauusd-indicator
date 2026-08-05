@@ -497,6 +497,34 @@ h2 {
   white-space: nowrap;
 }
 
+.live-missing-rule,
+.module2-live-missing {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #26372f;
+  border-radius: 6px;
+  background: #101612;
+}
+
+.live-missing-rule span,
+.live-missing-rule em,
+.module2-live-missing span,
+.module2-live-missing em {
+  color: #8f9d94;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.live-missing-rule strong,
+.module2-live-missing strong {
+  color: #edf4ef;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .module2-live-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(92px, 0.75fr);
@@ -2512,6 +2540,29 @@ button:hover,
   border-block: 1px solid #253027;
 }
 
+.trade-signal-entry.compact {
+  padding-block: 8px;
+}
+
+.trade-signal-entry.compact strong {
+  font-size: 13px;
+}
+
+.trade-signal-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trade-signal-checks span {
+  border: 1px solid #253027;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #aeb8b2;
+  font-size: 10px;
+  font-weight: 900;
+}
+
 .trade-long-boost,
 .trade-signal-chance {
   display: grid;
@@ -3079,6 +3130,21 @@ button:hover,
 .notification-detail-grid .metric strong {
   color: #edf4ef;
   font-size: 12px;
+}
+
+.notification-evidence-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notification-evidence-row span {
+  border: 1px solid #253027;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #aeb8b2;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .settings-list {

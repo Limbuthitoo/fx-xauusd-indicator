@@ -4480,6 +4480,9 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
   const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
   const variant = setup.scenario_flags?.module2Variant ?? null;
   const variantLabel = variant?.name ?? setup.scenario_flags?.variantCode ?? null;
+  const variantMiss = Array.isArray(setup.scenario_flags?.module2Variants)
+    ? setup.scenario_flags.module2Variants.find((item: any) => Array.isArray(item.missingRules) && item.missingRules.length > 0)
+    : null;
   const grade = setup.favorability_grade ?? setup.scenario_flags?.tradeGrade ?? setup.scenario_flags?.grade ?? null;
   const confidence = setup.favorability_score ?? setup.scenario_flags?.confidence ?? null;
   const rr = Number.isFinite(rewardToRisk) ? rewardToRisk.toFixed(2) : "--";
@@ -4521,7 +4524,19 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
       status: setup.status ?? null,
       mandatoryPassed: setup.scenario_flags?.mandatoryPassed ?? null,
       confirmationPassed: setup.scenario_flags?.confirmationPassed ?? null,
-      qualityPassed: setup.scenario_flags?.qualityPassed ?? null
+      qualityPassed: setup.scenario_flags?.qualityPassed ?? null,
+      missingRules: variantMiss?.missingRules ?? [],
+      liquidity: setup.scenario_flags?.sweep?.level ?? null,
+      displacement: setup.scenario_flags?.displacement ? {
+        rangeAtr: setup.scenario_flags.displacement.rangeAtr ?? null,
+        bodyRatio: setup.scenario_flags.displacement.bodyRatio ?? null,
+        at: setup.scenario_flags.displacement.candle?.timestampUtc ?? null
+      } : null,
+      bos: setup.scenario_flags?.bos ? {
+        level: setup.scenario_flags.bos.level ?? null,
+        at: setup.scenario_flags.bos.candle?.timestampUtc ?? null
+      } : null,
+      entryZone: setup.scenario_flags?.entryZone ?? null
     }
   };
 }

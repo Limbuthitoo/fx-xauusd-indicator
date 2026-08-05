@@ -141,6 +141,11 @@ type NotificationDetail = {
   mandatoryPassed?: string | number | boolean | null;
   confirmationPassed?: string | number | boolean | null;
   qualityPassed?: string | number | boolean | null;
+  missingRules?: string[];
+  liquidity?: any;
+  displacement?: any;
+  bos?: any;
+  entryZone?: any;
   category?: string | null;
   issueCode?: string | null;
   recommendedAction?: string | null;
@@ -1817,7 +1822,9 @@ function TradeSetupNotification({ detail, module }: { detail: NotificationDetail
           <Metric label="Grade" value={formatDetailValue(detail.grade)} />
           <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
           <Metric label="Variant" value={formatDetailValue(detail.variantName ?? detail.variantCode)} />
+          <Metric label="Missing" value={detail.missingRules?.length ? detail.missingRules.slice(0, 2).join(", ") : "--"} />
         </View>
+        <NotificationEvidenceStrip detail={detail} />
         <Text style={styles.reason}>{detail.finalReason ?? "Review the setup evidence before placing any manual real trade."}</Text>
       </View>
       <SetupEvidenceNotification detail={detail} module={module} />
@@ -1917,6 +1924,7 @@ function SetupEvidenceNotification({ detail, module }: { detail: NotificationDet
           <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
           <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
           <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
+          <Metric label="Missing" value={detail.missingRules?.length ? detail.missingRules.slice(0, 2).join(", ") : "--"} />
           <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
           <Metric label="Trade ID" value={formatDetailValue(detail.tradeId)} />
         </View>
@@ -1939,6 +1947,18 @@ function SetupEvidenceNotification({ detail, module }: { detail: NotificationDet
         </View>
       ))}
       {!hasSummary && groupedRules.length === 0 ? <Text style={styles.muted}>No checklist snapshot was attached to this notification.</Text> : null}
+    </View>
+  );
+}
+
+function NotificationEvidenceStrip({ detail }: { detail: NotificationDetail }) {
+  if (!detail.liquidity && !detail.bos && !detail.entryZone && !detail.displacement) return null;
+  return (
+    <View style={styles.notificationEvidenceStrip}>
+      <Metric label="Liquidity" value={notificationEvidencePrice(detail.liquidity?.type, detail.liquidity?.price)} />
+      <Metric label="Displacement" value={detail.displacement?.rangeAtr == null ? "--" : `${Number(detail.displacement.rangeAtr).toFixed(2)} ATR`} />
+      <Metric label="BOS" value={notificationEvidencePrice(null, detail.bos?.level)} />
+      <Metric label="Zone" value={notificationZoneLabel(detail.entryZone)} />
     </View>
   );
 }
@@ -2916,6 +2936,11 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
     confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
     qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
+    missingRules: notificationMissingRules(payload.missingRules ?? payload.missing_rules),
+    liquidity: payload.liquidity ?? null,
+    displacement: payload.displacement ?? null,
+    bos: payload.bos ?? null,
+    entryZone: payload.entryZone ?? payload.entry_zone ?? null,
     category: stringOrNull(payload.category),
     issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
     recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
@@ -2977,6 +3002,11 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     mandatoryPassed: payload.mandatoryPassed ?? payload.mandatory_passed ?? null,
     confirmationPassed: payload.confirmationPassed ?? payload.confirmation_passed ?? null,
     qualityPassed: payload.qualityPassed ?? payload.quality_passed ?? null,
+    missingRules: notificationMissingRules(payload.missingRules ?? payload.missing_rules),
+    liquidity: payload.liquidity ?? null,
+    displacement: payload.displacement ?? null,
+    bos: payload.bos ?? null,
+    entryZone: payload.entryZone ?? payload.entry_zone ?? null,
     category: stringOrNull(payload.category),
     issueCode: stringOrNull(payload.issueCode ?? payload.issue_code),
     recommendedAction: stringOrNull(payload.recommendedAction ?? payload.recommended_action),
@@ -3052,6 +3082,22 @@ function stringOrNull(value: unknown) {
   if (value == null) return null;
   const text = String(value).trim();
   return text.length > 0 ? text : null;
+}
+
+function notificationMissingRules(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter(Boolean).slice(0, 8);
+}
+
+function notificationEvidencePrice(label: unknown, price: unknown) {
+  const number = Number(price);
+  const prefix = label ? `${formatScenarioName(String(label))} ` : "";
+  return Number.isFinite(number) ? `${prefix}${number.toFixed(2)}` : "--";
+}
+
+function notificationZoneLabel(zone: any) {
+  if (!zone || zone.low == null || zone.high == null) return "--";
+  return `${formatPrice(zone.low)}-${formatPrice(zone.high)}`;
 }
 
 function hasTradeDetails(detail: NotificationDetail) {
@@ -3706,6 +3752,7 @@ const styles = StyleSheet.create({
   moreDiagnosticsCard: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 20, padding: 16, marginBottom: 14 },
   notificationTradeBuy: { borderColor: "#254f40", backgroundColor: "#101a15" },
   notificationTradeSell: { borderColor: "#573036", backgroundColor: "#1a1112" },
+  notificationEvidenceStrip: { marginTop: 10, gap: 8 },
   moreHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20, marginBottom: 14 },
   moreBackButton: {
     width: 42,

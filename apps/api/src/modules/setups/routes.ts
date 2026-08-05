@@ -1021,9 +1021,22 @@ function signalSetupView(row: any, evaluations: any[]) {
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   const checklistTotal = evaluations.length;
+  const mandatoryRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "mandatory");
+  const confirmationRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "confirmation");
+  const qualityRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "quality");
+  const missingRules = evaluations
+    .filter((evaluation) => evaluation.status !== "PASS" && evaluation.blocking)
+    .slice(0, 6)
+    .map((evaluation) => ({
+      code: evaluation.rule_code ?? evaluation.ruleCode,
+      name: evaluation.name,
+      status: evaluation.status,
+      explanation: evaluation.explanation
+    }));
   const fullChecklistValid = checklistTotal > 0 && checklistPassed === checklistTotal;
   const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
   const chance = signalChanceScore(confidence, checklistPassed, checklistTotal, Boolean(flags.fullChecklistMatched), direction);
+  const variant = flags.module2Variant ?? null;
   return {
     id: row.id,
     moduleCode: row.module_code,
@@ -1039,6 +1052,15 @@ function signalSetupView(row: any, evaluations: any[]) {
     chance,
     chanceLabel: `${chance}%`,
     chanceSource: confidence == null ? "Checklist completion" : "Module confidence score",
+    variantCode: variant?.code ?? flags.variantCode ?? null,
+    variantName: variant?.name ?? null,
+    variantVersion: variant?.version ?? flags.variantVersion ?? null,
+    checklistSummary: {
+      mandatory: signalRuleSummary(mandatoryRules),
+      confirmations: signalRuleSummary(confirmationRules),
+      quality: signalRuleSummary(qualityRules),
+      missingRules
+    },
     fullChecklistValid,
     longChecklistBoost: direction === "LONG" && fullChecklistValid,
     moduleSignal: `${row.module_name} ${direction === "LONG" ? "BUY" : "SELL"} signal`,
@@ -1090,6 +1112,22 @@ function signalSetupView(row: any, evaluations: any[]) {
     },
     reason: row.final_reason
   };
+}
+
+function signalRuleSummary(rows: any[]) {
+  return {
+    passed: rows.filter((row) => row.status === "PASS").length,
+    total: rows.length
+  };
+}
+
+function module2SignalLayer(moduleCode: string, ruleCode?: string) {
+  const code = String(ruleCode ?? "");
+  if (moduleCode !== "high_probability_strategy_2") return "other";
+  if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
+  if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
+  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "VARIANT_SELECTED"].includes(code)) return "mandatory";
+  return "other";
 }
 
 function predictionSetupView(row: any, evaluations: any[]) {
