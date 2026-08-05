@@ -129,6 +129,9 @@ type NotificationDetail = {
   grade?: string | number | null;
   confidence?: string | number | null;
   setupTier?: string | null;
+  variantCode?: string | null;
+  variantName?: string | null;
+  variantVersion?: string | null;
   setupCandidateId?: string | number | null;
   tradeId?: string | number | null;
   symbol?: string | null;
@@ -1655,6 +1658,7 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
 
 function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: ModuleRow }) {
   const setupTier = String(trade.scenario_flags?.setupTier ?? "FULL");
+  const variant = trade.scenario_flags?.module2Variant?.name ?? trade.scenario_flags?.variantCode ?? null;
   const outcome = String(trade.outcome ?? "ACTIVE");
   return (
     <View style={styles.journalTradeCard}>
@@ -1677,7 +1681,7 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
       </View>
       <View style={styles.journalEvidenceLine}>
         <Text style={styles.noticeTime}>{formatTime(trade.opened_at ?? trade.detected_at ?? "")}</Text>
-        <Text style={styles.noticeTime}>{module.shortName} · Grade {trade.favorability_grade ?? "--"} · Score {trade.favorability_score ?? "--"}</Text>
+        <Text style={styles.noticeTime}>{module.shortName} · {variant ? `${variant} · ` : ""}Grade {trade.favorability_grade ?? "--"} · Score {trade.favorability_score ?? "--"}</Text>
       </View>
       <Text style={styles.ruleExplanation}>{trade.final_reason ?? "Automatic paper trade recorded from module checklist validation."}</Text>
     </View>
@@ -1812,6 +1816,7 @@ function TradeSetupNotification({ detail, module }: { detail: NotificationDetail
           <Metric label="Chance" value={detail.confidence == null ? chanceLabel(module?.currentSetup ?? {}) : `${detail.confidence}%`} />
           <Metric label="Grade" value={formatDetailValue(detail.grade)} />
           <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
+          <Metric label="Variant" value={formatDetailValue(detail.variantName ?? detail.variantCode)} />
         </View>
         <Text style={styles.reason}>{detail.finalReason ?? "Review the setup evidence before placing any manual real trade."}</Text>
       </View>
@@ -1908,6 +1913,7 @@ function SetupEvidenceNotification({ detail, module }: { detail: NotificationDet
       {hasSummary ? (
         <View style={styles.metricsGrid}>
           <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
+          <Metric label="Variant" value={formatDetailValue(detail.variantName ?? detail.variantCode)} />
           <Metric label="Mandatory" value={formatDetailValue(detail.mandatoryPassed)} />
           <Metric label="Confirmations" value={formatDetailValue(detail.confirmationPassed)} />
           <Metric label="Quality" value={formatDetailValue(detail.qualityPassed)} />
@@ -2898,6 +2904,9 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     grade: payload.grade ?? null,
     confidence: payload.confidence ?? null,
     setupTier: stringOrNull(payload.setupTier ?? payload.setup_tier),
+    variantCode: stringOrNull(payload.variantCode ?? payload.variant_code),
+    variantName: stringOrNull(payload.variantName ?? payload.variant_name),
+    variantVersion: stringOrNull(payload.variantVersion ?? payload.variant_version),
     setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? null,
     tradeId: payload.tradeId ?? payload.trade_id ?? null,
     symbol: stringOrNull(payload.symbol) ?? "XAUUSD",
@@ -2956,6 +2965,9 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     grade: payload.grade ?? extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
     confidence: payload.confidence ?? extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
     setupTier: stringOrNull(payload.setupTier ?? payload.setup_tier) ?? stringOrNull(module?.currentSetup?.scenario_flags?.setupTier) ?? extractSetupTier(body),
+    variantCode: stringOrNull(payload.variantCode ?? payload.variant_code) ?? stringOrNull(module?.currentSetup?.scenario_flags?.variantCode),
+    variantName: stringOrNull(payload.variantName ?? payload.variant_name) ?? stringOrNull(module?.currentSetup?.scenario_flags?.module2Variant?.name),
+    variantVersion: stringOrNull(payload.variantVersion ?? payload.variant_version) ?? stringOrNull(module?.currentSetup?.scenario_flags?.variantVersion),
     setupCandidateId: payload.setupCandidateId ?? payload.setup_candidate_id ?? item?.setup_candidate_id ?? module?.currentSetup?.id ?? null,
     tradeId: payload.tradeId ?? payload.trade_id ?? item?.trade_id ?? trade.id ?? null,
     symbol: stringOrNull(payload.symbol) ?? "XAUUSD",

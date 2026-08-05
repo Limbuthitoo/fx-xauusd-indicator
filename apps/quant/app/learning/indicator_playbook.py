@@ -65,6 +65,11 @@ MODULE2_RULES: dict[str, dict[str, str]] = {
         "meaning": "The latest completed candle reacts from the zone in the intended direction.",
         "treatment": "Hard gate for paper entry. It converts candidate evidence into an actionable setup.",
     },
+    "VARIANT_SELECTED": {
+        "indicator": "Strategy variant",
+        "meaning": "The engine selected the strongest completed Module 2 variant from the current candle evidence.",
+        "treatment": "Final hard gate. Paper trades require an entry-grade variant, not only research-only sweep evidence.",
+    },
     "CONFIRM_EMA_200": {
         "indicator": "200 EMA alignment",
         "meaning": "Trend context agrees with the intended trade direction.",

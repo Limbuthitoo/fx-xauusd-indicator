@@ -3140,8 +3140,10 @@ function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: s
     const displacement = flags.displacement ?? {};
     const bos = flags.bos ?? {};
     const zone = flags.entryZone ?? {};
+    const variant = flags.module2Variant ?? {};
     return (
       <div className="live-evidence-list">
+        <div><span>Variant</span><strong>{variant?.name ?? flags.variantCode ?? "--"}</strong></div>
         <div><span>Liquidity</span><strong>{sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`}</strong></div>
         <div><span>Sweep</span><strong>{formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt)}</strong></div>
         <div><span>Displacement</span><strong>{displacement?.rangeAtr == null ? "--" : `${Number(displacement.rangeAtr).toFixed(2)} ATR`}</strong></div>
@@ -3202,6 +3204,7 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   const zone = flags.entryZone ?? {};
   const confirmationLayer = flags.confirmationLayer ?? {};
   const qualityLayer = flags.qualityLayer ?? {};
+  const variant = flags.module2Variant ?? {};
   const steps = [
     {
       label: "Liquidity",
@@ -3240,6 +3243,7 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
         ))}
       </div>
       <div className="module2-live-metrics">
+        <Metric label="Variant" value={variant?.name ?? flags.variantCode ?? "--"} />
         <Metric label="Confirm layer" value={confirmationLayer?.count == null ? "--" : `${confirmationLayer.count}/${confirmationLayer.required ?? 5}`} />
         <Metric label="Quality layer" value={qualityLayer?.count == null ? "--" : `${qualityLayer.count}/${qualityLayer.required ?? 3}`} />
         <Metric label="Setup tier" value={flags.setupTier ?? "--"} />
@@ -4810,9 +4814,12 @@ function Module2EvidenceInspector({ setup }: { setup?: any }) {
   const confirmationLayer = flags.confirmationLayer ?? {};
   const qualityLayer = flags.qualityLayer ?? {};
   const displacementCandle = displacement?.candle ?? {};
+  const variant = flags.module2Variant ?? {};
   return (
     <Panel icon={<Database />} title="Module 2 Evidence">
       <Metric label="State" value={String(flags.state ?? setup?.status ?? "WAITING")} />
+      <Metric label="Variant" value={variant?.name ?? flags.variantCode ?? "--"} />
+      <Metric label="Variant version" value={variant?.version ?? flags.variantVersion ?? "--"} />
       <Metric label="Liquidity map" value={levels.length ? `${levels.length} levels` : "--"} />
       <Metric label="Swept liquidity" value={sweep?.level?.type ? `${formatScenario(sweep.level.type)} · ${sweep.level.side ?? "--"}` : "--"} />
       <Metric label="Sweep level" value={sweep?.level?.price == null ? "--" : Number(sweep.level.price).toFixed(2)} />
@@ -5939,9 +5946,11 @@ function ModuleStrategyPanel({ setup, moduleCode, moduleName }: { setup?: any; m
   const zone = flags.entryZone ?? {};
   const sweep = flags.sweep ?? {};
   const bos = flags.bos ?? {};
+  const variant = flags.module2Variant ?? {};
   return (
     <Panel icon={<Database />} title={moduleShortName(moduleCode, moduleName)}>
       <Metric label="Current state" value={String(flags.state ?? setup?.status ?? "WAITING")} />
+      <Metric label="Variant" value={variant?.name ?? flags.variantCode ?? "--"} />
       <Metric label="Candidate direction" value={setup?.direction ?? "--"} />
       <Metric label="Paper entry" value={setup?.status === "PAPER_TRADE_OPENED" ? "OPEN" : "NOT OPENED"} />
       <Metric label="Score" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/110 ${setup.favorability_grade ?? ""}`} />
@@ -7777,7 +7786,8 @@ function module2RuleLayer(code?: string) {
   if (!code) return "other";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "SIGNAL_SCORE") return "quality";
-  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(code)) return "hard";
+  if (["STRATEGY_CYCLE_ACTIVE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"].includes(code)) return "hard";
+  if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }
 

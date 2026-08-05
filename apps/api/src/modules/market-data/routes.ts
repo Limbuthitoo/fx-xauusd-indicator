@@ -1174,6 +1174,7 @@ function module2RuleLayerForCloseout(code?: string) {
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
   if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
+  if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }
 
@@ -3655,7 +3656,7 @@ function requiredEntryRules(moduleCode: string) {
   if (moduleCode === "orb_max_options") {
     return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"];
   }
-  return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"];
+  return ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "VARIANT_SELECTED"];
 }
 
 function moduleRuleLayer(moduleCode: string, ruleCode: string) {
@@ -3679,6 +3680,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   if (module2Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
   if (module2Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
+  if (ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 
@@ -4476,12 +4478,15 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
   const moduleName = moduleDisplayName(moduleCode);
   const scenario = String(setup.scenario ?? "VALID_SETUP");
   const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
+  const variant = setup.scenario_flags?.module2Variant ?? null;
+  const variantLabel = variant?.name ?? setup.scenario_flags?.variantCode ?? null;
   const grade = setup.favorability_grade ?? setup.scenario_flags?.tradeGrade ?? setup.scenario_flags?.grade ?? null;
   const confidence = setup.favorability_score ?? setup.scenario_flags?.confidence ?? null;
   const rr = Number.isFinite(rewardToRisk) ? rewardToRisk.toFixed(2) : "--";
   const title = `${moduleName}: ${setupTier === "MANDATORY" ? "Core" : "Full"} ${action} ${direction}`;
   const bodyParts = [
     setupTier === "MANDATORY" ? "Mandatory setup" : "Full checklist setup",
+    variantLabel ? `Variant ${variantLabel}` : null,
     `${scenario}`,
     `Entry ${entry}`,
     `SL ${stopLoss}`,
@@ -4497,6 +4502,9 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
       moduleCode,
       moduleName,
       setupTier,
+      variantCode: variant?.code ?? setup.scenario_flags?.variantCode ?? null,
+      variantName: variant?.name ?? null,
+      variantVersion: variant?.version ?? setup.scenario_flags?.variantVersion ?? null,
       scenario,
       direction,
       action,

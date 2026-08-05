@@ -145,6 +145,27 @@ export type LiquiditySweepDecision = {
   favorabilityReasons: string[];
 };
 
+type Module2VariantCode =
+  | "SWEEP_CLOSE_BACK_INSIDE"
+  | "SWEEP_BOS"
+  | "SWEEP_MSS"
+  | "SWEEP_BOS_RETEST"
+  | "SWEEP_MSS_RETEST"
+  | "SWEEP_EMA_ALIGNMENT"
+  | "SWEEP_DISPLACEMENT_RETEST";
+
+type Module2Variant = {
+  code: Module2VariantCode;
+  version: string;
+  name: string;
+  status: "PASS" | "WAIT" | "RESEARCH_ONLY";
+  paperEligible: boolean;
+  score: number;
+  requiredRules: string[];
+  missingRules: string[];
+  reason: string;
+};
+
 type SweepCandidate = {
   index: number;
   sweepIndex: number;
@@ -160,6 +181,8 @@ type SweepCandidate = {
   sweptAt: string;
   closedBackAt: string;
 };
+
+const MODULE2_VARIANT_VERSION = "ULTIMATE_LIQUIDITY_SWEEP_V1.0";
 
 type SweepInvalidation = {
   index: number;
@@ -359,6 +382,26 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
   const scoreOk = score >= config.minimumSignalScore;
+  const variants = module2VariantCandidates({
+    sweep,
+    displacement,
+    bos,
+    structureType,
+    zone,
+    retrace,
+    entryConfirmation,
+    ema200Ok,
+    vwapOk,
+    fvgOk,
+    orderBlockRetestOk,
+    spreadOk,
+    newsOk,
+    rrOk,
+    stopValid: plan.stopValid,
+    score
+  });
+  const selectedVariant = selectModule2Variant(variants);
+  push(evaluations, "VARIANT_SELECTED", "Entry-grade strategy variant selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "BOS/MSS + retest/confirmation variant", selectedVariant ? selectedVariant.reason : "No entry-grade Module 2 variant has completed its required evidence chain.");
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
   const mandatoryEntryPassed = module2MandatoryEntryPassed(evaluations);
   const fullChecklistPassed = evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS");
@@ -373,6 +416,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.entryZone = zone;
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
+  flags.module2Variant = selectedVariant;
+  flags.module2Variants = variants;
+  flags.variantCode = selectedVariant?.code ?? null;
+  flags.variantVersion = selectedVariant?.version ?? MODULE2_VARIANT_VERSION;
   flags.tradeGrade = gradeValue;
   flags.confidence = score;
   flags.mandatoryChecklistMatched = mandatoryEntryPassed;
@@ -405,14 +452,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
     return {
-      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_BOS_BUY" : "MANDATORY_LIQUIDITY_SWEEP_BOS_SELL",
+      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_VARIANT_BUY" : "MANDATORY_LIQUIDITY_SWEEP_VARIANT_SELL",
       direction,
       status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
       state: "SIGNAL_ACTIVE",
       entryPrice: plan.entry,
       stopPrice: plan.stop,
       targetPrice: plan.target,
-      finalReason: `Mandatory Module 2 entry checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6, confidence ${score}%.`,
+      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "variant"} checklist passed. Small paper setup created while full confirmations continue. Confirmations ${confirmationCount}/5, quality ${qualityCount}/6, confidence ${score}%.`,
       evaluations,
       scenarioFlags: flags,
       favorabilityScore: score,
@@ -422,14 +469,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
 
   return {
-    scenario: direction === "LONG" ? "NY_LIQUIDITY_SWEEP_BOS_BUY" : "NY_LIQUIDITY_SWEEP_BOS_SELL",
+    scenario: direction === "LONG" ? "NY_LIQUIDITY_SWEEP_VARIANT_BUY" : "NY_LIQUIDITY_SWEEP_VARIANT_SELL",
     direction,
     status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
     state: "SIGNAL_ACTIVE",
     entryPrice: plan.entry,
     stopPrice: plan.stop,
     targetPrice: plan.target,
-    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} candidate passed hard rules, ${confirmationCount}/5 confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
+    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} ${selectedVariant?.name ?? "Module 2 variant"} passed hard rules, ${confirmationCount}/5 confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
     evaluations,
     scenarioFlags: flags,
     favorabilityScore: score,
@@ -451,7 +498,8 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "BOS_CHOCH_CONFIRMED",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE"
+    "CONFIRM_ENTRY_CANDLE",
+    "VARIANT_SELECTED"
   ]);
   return [...required].every((ruleCode) =>
     evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
@@ -471,7 +519,8 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "BOS_CHOCH_CONFIRMED",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE"
+    "CONFIRM_ENTRY_CANDLE",
+    "VARIANT_SELECTED"
   ]);
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
@@ -479,7 +528,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
   if (ruleCode === "PROTECTED_POINT_CONFIDENCE") return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
-  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
+  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: ruleCode === "VARIANT_SELECTED" };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 
@@ -1063,6 +1112,106 @@ function addEqualLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof dete
 
 function priorityScore(priority: LiquidityLevel["priority"]) {
   return priority === "HIGH" ? 3 : priority === "MEDIUM" ? 2 : 1;
+}
+
+function module2VariantCandidates(input: {
+  sweep: SweepCandidate;
+  displacement: unknown;
+  bos: any;
+  structureType: string;
+  zone: unknown;
+  retrace: boolean;
+  entryConfirmation: boolean;
+  ema200Ok: boolean;
+  vwapOk: boolean;
+  fvgOk: boolean;
+  orderBlockRetestOk: boolean;
+  spreadOk: boolean;
+  newsOk: boolean;
+  rrOk: boolean;
+  stopValid: boolean;
+  score: number;
+}): Module2Variant[] {
+  const base = {
+    version: MODULE2_VARIANT_VERSION,
+    qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
+  };
+  const rows: Module2Variant[] = [
+    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", false, 10, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
+    ], "Research-only sweep evidence. It records stop-run behavior but does not open paper trades without structure and entry evidence.", base),
+    variant("SWEEP_BOS", "Sweep + BOS", false, 20, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)]
+    ], "Research-only structure-break variant. It helps backtests compare BOS without retest entry.", base),
+    variant("SWEEP_MSS", "Sweep + MSS", false, 25, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)]
+    ], "Research-only market-structure-shift variant. It must still prove entry before paper trading.", base),
+    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["RISK_OK", base.qualityOk]
+    ], "Entry-grade displacement variant passed with retest, confirmation candle, and risk safety.", base),
+    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", true, 72, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_EMA_200", input.ema200Ok],
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["RISK_OK", base.qualityOk]
+    ], "Entry-grade EMA alignment variant passed with retest, confirmation candle, and risk safety.", base),
+    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["BOS_CHOCH_CONFIRMED", Boolean(input.bos)],
+      ["ENTRY_ZONE_READY", Boolean(input.zone)],
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["RISK_OK", base.qualityOk]
+    ], "Entry-grade BOS retest variant passed with defined zone, confirmation candle, and risk safety.", base),
+    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", true, 90, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
+      ["ENTRY_ZONE_READY", Boolean(input.zone)],
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["RISK_OK", base.qualityOk]
+    ], "Highest-priority reversal variant passed: sweep, MSS, retest, confirmation candle, and risk safety.", base)
+  ];
+  return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
+}
+
+function variant(
+  code: Module2VariantCode,
+  name: string,
+  paperVariant: boolean,
+  score: number,
+  requiredRules: string[],
+  checks: Array<[string, boolean]>,
+  passReason: string,
+  base: { version: string; qualityOk: boolean }
+): Module2Variant {
+  const missingRules = checks.filter(([, passed]) => !passed).map(([rule]) => rule);
+  const passed = missingRules.length === 0;
+  return {
+    code,
+    version: base.version,
+    name,
+    status: passed ? paperVariant ? "PASS" : "RESEARCH_ONLY" : "WAIT",
+    paperEligible: paperVariant && passed,
+    score,
+    requiredRules,
+    missingRules,
+    reason: passed ? passReason : `Waiting for ${missingRules.join(", ")}.`
+  };
+}
+
+function selectModule2Variant(variants: Module2Variant[]) {
+  return variants
+    .filter((row) => row.paperEligible)
+    .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
 function scoreSetup(input: any) {

@@ -92,6 +92,20 @@ Expected daily usage target:
   - Optional retest.
   - Risk validation.
   - Trade decision and automatic paper trade when setup-ready.
+- Module 2 variant engine:
+  - Variant version is stored as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
+  - Current variant metadata is persisted in `setup_candidates.scenario_flags.module2Variant`, plus `variantCode` and `variantVersion`.
+  - Research-only variants are recorded for backtesting and learning but must not open automatic paper trades.
+  - Paper-entry variants must pass `VARIANT_SELECTED`, which is a final required entry gate.
+  - Supported variants:
+    - `SWEEP_CLOSE_BACK_INSIDE` research-only.
+    - `SWEEP_BOS` research-only.
+    - `SWEEP_MSS` research-only.
+    - `SWEEP_DISPLACEMENT_RETEST` paper-entry eligible.
+    - `SWEEP_EMA_ALIGNMENT` paper-entry eligible.
+    - `SWEEP_BOS_RETEST` paper-entry eligible.
+    - `SWEEP_MSS_RETEST` highest-priority paper-entry eligible.
+  - Web and mobile notification/details should show the selected variant name/code/version when available.
 - Terms must be explicit and versioned. Use `POTENTIAL_LIQUIDITY_LEVELS`, not confirmed institutional liquidity.
 - `CHoCH` is a UI alias for structure shift; internally classify reversal confirmation as `REVERSAL_MSS`.
 - Use only closed candles for confirmed signals. Never use future candles or unconfirmed pivots.
