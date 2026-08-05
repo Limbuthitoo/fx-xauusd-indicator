@@ -1520,6 +1520,37 @@ button:hover,
   overflow-wrap: anywhere;
 }
 
+.module2-evidence-map {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 1px;
+  border: 1px solid #253027;
+  background: #253027;
+}
+
+.module2-evidence-map div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  background: #101612;
+}
+
+.module2-evidence-map span,
+.module2-evidence-map small {
+  color: #9aa59e;
+  font-size: 12px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.module2-evidence-map strong {
+  color: #edf4ef;
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

@@ -485,6 +485,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Sydney/Tokyo/London ORB evaluation should use the shared 30-minute catch-up candles to protect the 800/day Twelve Data credit budget.
 - Module 2 remains separate and uses its Liquidity Sweep + BOS rules.
 - Module 2 backtests must include variant analytics: each trade stores the selected variant, variant performance is summarized by win rate/R/PF/drawdown, and near-miss variants explain which one or two rules blocked a possible setup.
+- Module 2 QA/replay must expose the real variant families: sweep-only research, sweep+BOS research, sweep+MSS research, displacement retest, BOS retest, and EMA-aligned sweep. Backtest UI should show missed setup instructions and evidence markers for swept liquidity, displacement, BOS/CHoCH, FVG/OB zone, and entry/SL/TP.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 
 ## Operating Principles

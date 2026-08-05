@@ -4362,6 +4362,12 @@ function Module2QAControlPanel({
   const cases = [
     { code: "BUY", label: "Valid BUY", paper: true },
     { code: "SELL", label: "Valid SELL", paper: true },
+    { code: "SWEEP_ONLY", label: "Variant: sweep only" },
+    { code: "SWEEP_BOS", label: "Variant: sweep + BOS" },
+    { code: "SWEEP_MSS", label: "Variant: sweep + MSS" },
+    { code: "DISPLACEMENT_RETEST", label: "Variant: displacement retest", paper: true },
+    { code: "BOS_RETEST", label: "Variant: BOS retest", paper: true },
+    { code: "EMA_ALIGNED_SWEEP", label: "Variant: EMA aligned", paper: true },
     { code: "SWEEP_NO_DISPLACEMENT", label: "Hard fail: no displacement" },
     { code: "DISPLACEMENT_NO_BOS", label: "Hard fail: no BOS" },
     { code: "BOS_NO_RETRACE", label: "Setup waiting: no retrace" },
@@ -5269,6 +5275,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
   const liquidityBreakdown = summary.liquidityBreakdown ?? metrics.liquidity_type_breakdown ?? {};
   const variantBreakdown = summary.variantBreakdown ?? metrics.variant_breakdown ?? {};
   const variantReview = summary.variantReview ?? metrics.variant_review ?? {};
+  const missedVariants = Array.isArray(variantReview.missedVariants) ? variantReview.missedVariants : [];
   return (
     <Panel icon={<LineChart />} title="Module 2 Backtest Table">
       <div className="journal-detail-card">
@@ -5311,6 +5318,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
             <Metric label="Entry" value={selected.entry_price ?? selected.entryPrice ?? "--"} />
             <Metric label="Stop / target" value={`${selected.stop_price ?? selected.stopPrice ?? "--"} / ${selected.target_price ?? selected.targetPrice ?? "--"}`} />
           </div>
+          <Module2BacktestEvidenceMap detail={detail} trade={selected} />
           <div className="evidence-notes">
             <strong>Backtest Evidence</strong>
             {detail.instruction ? <span>{detail.instruction.operatorInstruction}</span> : null}
@@ -5362,8 +5370,100 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
           </tbody>
         </table>
       </div>
+      <Module2MissedSetupsTable rows={missedVariants} />
     </Panel>
   );
+}
+
+function Module2BacktestEvidenceMap({ detail, trade }: { detail: any; trade: any }) {
+  const flags = detail.scenarioFlags ?? {};
+  const zone = detail.entryZone ?? flags.entryZone ?? {};
+  const markers = [
+    {
+      label: "Swept liquidity",
+      value: flags.sweep?.level?.price ?? detail.liquidityPrice,
+      evidence: flags.sweep?.level?.type ?? detail.liquidityType,
+      time: flags.sweep?.sweptAt
+    },
+    {
+      label: "Displacement",
+      value: flags.displacement?.candle?.close,
+      evidence: flags.displacement ? `Range ${Number(flags.displacement.rangeAtr ?? 0).toFixed(2)} ATR · body ${Math.round(Number(flags.displacement.bodyRatio ?? 0) * 100)}%` : "--",
+      time: flags.displacement?.candle?.timestampUtc
+    },
+    {
+      label: "BOS / CHoCH",
+      value: detail.bosLevel ?? flags.bos?.level,
+      evidence: flags.bos?.structure?.kind ?? "Structure close",
+      time: flags.bos?.candle?.timestampUtc
+    },
+    {
+      label: "FVG / OB zone",
+      value: zone.low == null ? null : `${formatPriceValue(zone.low)}-${formatPriceValue(zone.high)}`,
+      evidence: zone.kind ?? "--",
+      time: zone.createdAt
+    },
+    {
+      label: "Entry / SL / TP",
+      value: `${formatPriceValue(trade.entry_price ?? trade.entryPrice)} / ${formatPriceValue(trade.stop_price ?? trade.stopPrice)} / ${formatPriceValue(trade.target_price ?? trade.targetPrice)}`,
+      evidence: `${trade.direction ?? "--"} · ${formatR(trade.resultR ?? trade.result_r)}R`,
+      time: detail.entryTime ?? trade.entryTime
+    }
+  ];
+  return (
+    <div className="module2-evidence-map">
+      {markers.map((marker) => (
+        <div key={marker.label}>
+          <span>{marker.label}</span>
+          <strong>{marker.value == null ? "--" : marker.value}</strong>
+          <small>{marker.evidence} · {formatNepalTime(marker.time)}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Module2MissedSetupsTable({ rows }: { rows: any[] }) {
+  return (
+    <div className="table-wrap">
+      <table className="data-table module2-backtest-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Variant</th>
+            <th>Direction</th>
+            <th>Blocker</th>
+            <th>Missing Rules</th>
+            <th>What Makes It Valid</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 20).map((row, index) => (
+            <tr key={`${row.variantCode ?? "variant"}-${row.at ?? index}`}>
+              <td>{formatNepalTime(row.at)}</td>
+              <td>{row.variantName ?? formatScenario(row.variantCode)}</td>
+              <td>{row.direction ?? "--"}</td>
+              <td>{formatScenario(row.blocker)}</td>
+              <td>{(row.missingRules ?? []).map(formatScenario).join(", ") || "--"}</td>
+              <td>{module2MissedSetupInstruction(row)}</td>
+            </tr>
+          ))}
+          {rows.length === 0 ? <tr><td colSpan={6}>No near-miss Module 2 setup has been captured by the latest backtest.</td></tr> : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function module2MissedSetupInstruction(row: any) {
+  const missing = new Set((row.missingRules ?? []).map((value: string) => String(value)));
+  if (missing.has("DISPLACEMENT_CONFIRMED")) return "Wait for a strong displacement candle after sweep before considering entry.";
+  if (missing.has("BOS_CHOCH_CONFIRMED")) return "Wait for candle-body BOS/CHoCH beyond the protected structure point.";
+  if (missing.has("ENTRY_ZONE_RETRACE")) return "Wait for price to retrace into the fresh FVG/order-block entry zone.";
+  if (missing.has("CONFIRM_ENTRY_CANDLE")) return "Wait for a confirmation candle in the entry zone before paper entry.";
+  if (missing.has("CONFIRMATION_COUNT")) return "Require at least 3 confirmation rules before trusting this setup.";
+  if (missing.has("QUALITY_FILTER_COUNT")) return "Require at least 3 quality filters, including RR/spread/news safety.";
+  return "Review the missing checklist rules before allowing this variant into paper entry.";
 }
 
 function MiniVariantBreakdown({ title, rows }: { title: string; rows?: Record<string, any> }) {
