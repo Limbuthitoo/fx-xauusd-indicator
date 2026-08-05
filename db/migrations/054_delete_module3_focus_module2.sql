@@ -53,11 +53,16 @@ WHERE requested_module_code = 'strategy_lab_3';
 DELETE FROM strategy_versions
 WHERE configuration_json->>'moduleCode' = 'strategy_lab_3'
    OR strategy_id IN (
-     SELECT id FROM strategies WHERE metadata->>'moduleCode' = 'strategy_lab_3'
+     SELECT s.id
+     FROM strategies s
+     JOIN strategy_sources src ON src.id = s.source_id
+     WHERE src.metadata->>'moduleCode' = 'strategy_lab_3'
    );
 
 DELETE FROM strategies
-WHERE metadata->>'moduleCode' = 'strategy_lab_3';
+WHERE source_id IN (
+  SELECT id FROM strategy_sources WHERE metadata->>'moduleCode' = 'strategy_lab_3'
+);
 
 DELETE FROM strategy_sources
 WHERE metadata->>'moduleCode' = 'strategy_lab_3';
