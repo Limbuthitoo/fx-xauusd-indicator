@@ -2,6 +2,17 @@ import type { Candle, Direction, RuleEvaluation } from "@orb-guide/shared-types"
 
 export type LiquiditySweepState =
   | "IDLE"
+  | "LEVEL_SELECTED"
+  | "SWEEP_CANDIDATE"
+  | "SWEEP_CONFIRMED"
+  | "WAITING_FOR_CONFIRMATION"
+  | "STRUCTURE_BREAK_CANDIDATE"
+  | "STRUCTURE_BREAK_CONFIRMED"
+  | "RETEST_REACHED"
+  | "ENTRY_READY"
+  | "TRADE_ACTIVE"
+  | "TRADE_CLOSED"
+  | "EXPIRED"
   | "LEVEL_APPROACH"
   | "SWEEP_DETECTED"
   | "DISPLACEMENT_CONFIRMED"
@@ -28,8 +39,42 @@ export type LiquidityLevel = {
   type: LiquidityLevelType;
   side: "BUY_SIDE" | "SELL_SIDE";
   price: number;
+  lowerBound?: number;
+  upperBound?: number;
   priority: "HIGH" | "MEDIUM" | "LOW";
+  priorityScore?: number;
   source: string;
+  zoneHalfWidth?: number;
+  touchCount?: number;
+  clusterSize?: number;
+  status?: "ACTIVE" | "TOUCHED" | "SWEPT" | "BROKEN" | "EXPIRED";
+};
+
+export type SwingPoint = {
+  id: string;
+  type: "HIGH" | "LOW";
+  price: number;
+  candleIndex: number;
+  formedAt: string;
+  confirmedAt: string;
+  timeframe: string;
+  prominence: number;
+  prominenceAtr: number;
+  strengthScore: number;
+  classification?: "HH" | "HL" | "LH" | "LL" | "EQH" | "EQL";
+  status: "ACTIVE" | "BROKEN" | "SWEPT" | "EXPIRED";
+};
+
+export type StructureState = "BULLISH" | "BEARISH" | "RANGING" | "TRANSITIONAL" | "UNKNOWN";
+
+export type StructureSummary = {
+  timeframe: string;
+  state: StructureState;
+  latestHigh?: SwingPoint;
+  latestLow?: SwingPoint;
+  highClassification?: SwingPoint["classification"];
+  lowClassification?: SwingPoint["classification"];
+  toleranceAtr: number;
 };
 
 export type LiquiditySweepConfig = {
@@ -41,6 +86,11 @@ export type LiquiditySweepConfig = {
   londonStartTime: string;
   londonEndTime: string;
   maximumTradesPerSession: number;
+  zoneToleranceATR: number;
+  equalityToleranceATR: number;
+  minimumSwingProminenceATR: number;
+  structureToleranceATR: number;
+  protectedPointMinimumConfidence: "LOW" | "MEDIUM" | "HIGH";
   minimumSweepDistanceATR: number;
   maximumSweepDistanceATR: number;
   closeBackMaximumBars: number;
@@ -111,6 +161,11 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   londonStartTime: "03:00",
   londonEndTime: "09:30",
   maximumTradesPerSession: 3,
+  zoneToleranceATR: 0.02,
+  equalityToleranceATR: 0.05,
+  minimumSwingProminenceATR: 0.2,
+  structureToleranceATR: 0.05,
+  protectedPointMinimumConfidence: "MEDIUM",
   minimumSweepDistanceATR: 0.1,
   maximumSweepDistanceATR: 1,
   closeBackMaximumBars: 3,
@@ -151,6 +206,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
 
   const atr = averageTrueRange(setupCandles, 14);
+  const internalSwings = detectSwingPoints(setupCandles, config.pivotLeftBars, config.pivotRightBars, atr, "5min", config);
+  const externalSwings = detectSwingPoints(biasCandles, config.pivotLeftBars, config.pivotRightBars, averageTrueRange(biasCandles, 14), "15min", config);
+  const internalStructure = classifyStructure(internalSwings, atr, config, "5min");
+  const externalStructure = classifyStructure(externalSwings, averageTrueRange(biasCandles, 14), config, "15min");
   const htfBias = detectBias(biasCandles);
   const levels = detectLiquidityLevels(setupCandles, current.timestampUtc, atr, config);
   const pivots = detectPivots(setupCandles, config.pivotLeftBars, config.pivotRightBars);
@@ -158,6 +217,15 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(context.newsStatus ?? "CLEAR").includes("BLOCKED");
   const tradeLimitOk = (context.tradesTakenThisSession ?? 0) < config.maximumTradesPerSession;
+  flags.terminologyVersion = "LIQUIDITY_SWEEP_STRUCTURE_CONFIRMATION_V1";
+  flags.atr14 = Number(atr.toFixed(5));
+  flags.internalStructure = internalStructure;
+  flags.externalStructure = externalStructure;
+  flags.recentSwings = internalSwings.slice(-12);
+  flags.stateMachine = {
+    current: "IDLE",
+    transitions: [{ from: null, to: "IDLE", at: current.timestampUtc, reason: "Processing latest closed 5M candle." }]
+  };
 
   push(evaluations, "NY_SESSION_ACTIVE", "New York session active", sessionActive, true, "AUTOMATIC", timeOnly(current.timestampUtc), `${config.newYorkStartTime}-${config.newYorkEndTime}`, sessionActive ? "Current candle is inside the configured New York sweep window." : "No Module 2 signal is allowed outside the configured New York window.");
   push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
@@ -166,23 +234,29 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
   }
 
-  const sequence = detectBestLiquiditySequence(setupCandles, levels, pivots, atr, config);
+  const sequence = detectBestLiquiditySequence(setupCandles, levels, pivots, internalSwings, atr, config);
   const sweep = sequence?.sweep ?? null;
   push(evaluations, "LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", Boolean(sweep?.level), true, "AUTOMATIC", sweep?.level?.type ?? null, "PDH/PDL, Asian, London, equal high/low", sweep?.level ? `${sweep.level.type} at ${sweep.level.price.toFixed(2)} was selected.` : "No valid liquidity level has been swept.");
   push(evaluations, "LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", Boolean(sweep), true, "AUTOMATIC", sweep?.distanceAtr == null ? null : Number(sweep.distanceAtr.toFixed(2)), `${config.minimumSweepDistanceATR}-${config.maximumSweepDistanceATR} ATR`, sweep ? "Price traded beyond liquidity and closed back through the level within the allowed candles." : "No valid close-back sweep has been confirmed.");
   if (!sweep) return waitDecision("WAITING_FOR_SWEEP", "Waiting for a valid liquidity sweep and close-back.", evaluations, flags, levels, htfBias);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "LEVEL_SELECTED", sweep.closedBackAt, `${sweep.level.type} ${sweep.level.side} zone selected at ${sweep.level.price.toFixed(2)}.`);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "SWEEP_CANDIDATE", sweep.sweptAt, `Price penetrated ${sweep.level.type} by ${sweep.distanceAtr.toFixed(2)} ATR.`);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "SWEEP_CONFIRMED", sweep.closedBackAt, "Sweep rejection confirmed by close-back-inside rule.");
 
   const direction: Direction = sequence?.direction ?? (sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT");
   const displacement = sequence?.displacement ?? null;
   push(evaluations, "DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, Boolean(displacement), true, "AUTOMATIC", displacement?.rangeAtr == null ? null : Number(displacement.rangeAtr.toFixed(2)), `>= ${config.minimumDisplacementRangeATR} ATR`, displacement ? "A strong directional candle appeared after the sweep." : "No strong displacement candle appeared after the sweep.");
   if (!displacement) return waitDecision("WAITING_FOR_DISPLACEMENT", "Sweep found. Waiting for displacement in the reversal direction.", evaluations, flags, levels, htfBias, sweep, direction);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_CONFIRMATION", displacement.candle.timestampUtc, "Displacement confirmed; waiting for protected-structure break.");
 
   const bos = sequence?.bos ?? null;
-  const structureType = htfBias === "NEUTRAL"
-    ? "MSS"
-    : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "BOS" : "CHOCH";
-  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the selected internal structure point; classified ${structureType} from the 15M context.` : "No candle-close BOS/CHoCH has confirmed yet.");
+  const structureType = bos?.subtype ?? (htfBias === "NEUTRAL"
+    ? "REVERSAL_MSS"
+    : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "CONTINUATION_BOS" : "REVERSAL_MSS");
+  push(evaluations, "PROTECTED_POINT_CONFIDENCE", "Protected structure point has usable confidence", Boolean(bos?.protectedPoint && protectedConfidenceRank(bos.protectedPoint.confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)), true, "AUTOMATIC", bos?.protectedPoint?.confidence ?? null, `>= ${config.protectedPointMinimumConfidence}`, bos?.protectedPoint ? `${bos.protectedPoint.type} at ${bos.protectedPoint.price.toFixed(2)} selected with ${bos.protectedPoint.confidence} confidence.` : "No protected structure point is available yet.");
+  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close BOS/MSS has confirmed yet.");
   if (!bos) return waitDecision("WAITING_FOR_BOS", "Displacement found. Waiting for candle-close BOS/CHoCH.", evaluations, flags, levels, htfBias, sweep, direction);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "STRUCTURE_BREAK_CONFIRMED", bos.candle.timestampUtc, `${structureType} confirmed by candle close beyond protected structure.`);
 
   const currentIndex = setupCandles.length - 1;
   const fvg = sequence?.fvg ?? null;
@@ -194,10 +268,12 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   push(evaluations, "ENTRY_ZONE_READY", "Fresh entry zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "fresh FVG or order block", zone ? "A fresh imbalance/order-block zone is available for entry." : "No fresh FVG or order-block zone is available after BOS/CHoCH.");
   if (!zone) return waitDecision("WAITING_FOR_ENTRY_ZONE", "BOS/CHoCH is confirmed. Waiting for a fresh FVG/order-block entry zone.", evaluations, flags, levels, htfBias, sweep, direction, zone);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
 
   const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
   push(evaluations, "ENTRY_ZONE_RETRACE", "Price retraced into entry zone", retrace, true, "AUTOMATIC", retrace ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps entry zone", retrace ? "Price has returned into the selected entry zone." : "Price has not returned into the selected FVG/order-block zone yet.");
   if (!retrace) return waitDecision("WAITING_FOR_RETRACE", "Fresh entry zone is ready. Waiting for price to retrace into it before any paper entry.", evaluations, flags, levels, htfBias, sweep, direction, zone);
+  flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
 
   const entryConfirmation = zone ? confirmsEntry(current, direction, zone) : confirmsDirectionalEntry(current, direction);
   const ema200Ok = ema200Aligned(biasCandles.length > 0 ? biasCandles : setupCandles, direction)
@@ -256,6 +332,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.sweep = sweep;
   flags.displacement = displacement;
   flags.bos = bos ? { ...bos, structureType } : null;
+  flags.protectedPoint = bos?.protectedPoint ?? null;
   flags.entryZone = zone;
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
@@ -266,6 +343,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
   flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
   flags.riskReward = plan.rr;
+  flags.stateMachine = appendStateTransition(flags.stateMachine, mandatoryEntryPassed ? "ENTRY_READY" : "RETEST_REACHED", current.timestampUtc, mandatoryEntryPassed ? "Risk and checklist gates produced setup-ready decision." : "Retest happened but entry gates are still waiting or blocked.");
 
   if (!mandatoryEntryPassed) {
     if (!entryConfirmation) {
@@ -330,6 +408,7 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
     "DISPLACEMENT_CONFIRMED",
+    "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
@@ -347,6 +426,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
     "DISPLACEMENT_CONFIRMED",
+    "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
     "ENTRY_ZONE_READY",
     "ENTRY_ZONE_RETRACE",
@@ -355,6 +435,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]);
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (ruleCode === "PROTECTED_POINT_CONFIDENCE") return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
   if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
@@ -395,21 +476,49 @@ function detectLiquidityLevels(candles: Candle[], now: string, atr: number, conf
   addRangeLevels(levels, london, "LONDON_HIGH", "LONDON_LOW", "HIGH");
   const pivots = detectPivots(preSession, 2, 2).slice(-18);
   addEqualHighLowLevels(levels, pivots, atr);
-  return dedupeLevels(levels);
+  return dedupeLevels(levels.map((level) => liquidityZone(level, atr, config)));
 }
 
 function addRangeLevels(levels: LiquidityLevel[], candles: Candle[], highType: LiquidityLevelType, lowType: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
   if (candles.length === 0) return;
-  levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), priority, source: highType });
-  levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, source: lowType });
+  levels.push({ type: highType, side: "BUY_SIDE", price: Math.max(...candles.map((candle) => candle.high)), priority, priorityScore: levelPriorityScore(highType, priority), source: highType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
+  levels.push({ type: lowType, side: "SELL_SIDE", price: Math.min(...candles.map((candle) => candle.low)), priority, priorityScore: levelPriorityScore(lowType, priority), source: lowType, touchCount: 1, clusterSize: 1, status: "ACTIVE" });
 }
 
-function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, atr: number, config: LiquiditySweepConfig) {
+function liquidityZone(level: LiquidityLevel, atr: number, config: LiquiditySweepConfig): LiquidityLevel {
+  const zoneHalfWidth = Math.max(0.01, atr * config.zoneToleranceATR);
+  return {
+    ...level,
+    lowerBound: level.price - zoneHalfWidth,
+    upperBound: level.price + zoneHalfWidth,
+    zoneHalfWidth,
+    priorityScore: level.priorityScore ?? levelPriorityScore(level.type, level.priority),
+    status: level.status ?? "ACTIVE"
+  };
+}
+
+function levelPriorityScore(type: LiquidityLevelType, priority: LiquidityLevel["priority"]) {
+  const typeScores: Record<LiquidityLevelType, number> = {
+    PREVIOUS_DAY_HIGH: 95,
+    PREVIOUS_DAY_LOW: 95,
+    LONDON_HIGH: 85,
+    LONDON_LOW: 85,
+    ASIAN_HIGH: 80,
+    ASIAN_LOW: 80,
+    EQUAL_HIGH: 70,
+    EQUAL_LOW: 70,
+    SWING_HIGH: 45,
+    SWING_LOW: 45
+  };
+  return typeScores[type] ?? priorityScore(priority) * 10;
+}
+
+function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
   const currentIndex = candles.length - 1;
   const sequences = detectSweepCandidates(candles, levels, atr, config).map((sweep) => {
     const direction: Direction = sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT";
     const displacement = detectDisplacement(candles, sweep.index, direction, atr, config);
-    const bos = displacement ? detectBos(candles, sweep.index, displacement.index, direction, pivots, atr, config) : null;
+    const bos = displacement ? detectBos(candles, sweep.index, displacement.index, direction, pivots, swings, atr, config) : null;
     const fvg = displacement ? detectFreshFvg(candles, sweep.index, displacement.index, direction, atr, config) : null;
     const orderBlock = displacement ? detectOrderBlock(candles, displacement.index, direction, atr) : null;
     const zone = bos ? selectFreshEntryZone(candles, currentIndex, direction, fvg, orderBlock) : null;
@@ -435,7 +544,9 @@ function detectSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr:
     const candle = candles[index];
     if (!isInsideNewYorkWindow(candle.timestampUtc, config.newYorkStartTime, config.newYorkEndTime)) continue;
     for (const level of levels) {
-      const penetration = level.side === "SELL_SIDE" ? level.price - candle.low : candle.high - level.price;
+      const lowerBound = level.lowerBound ?? level.price;
+      const upperBound = level.upperBound ?? level.price;
+      const penetration = level.side === "SELL_SIDE" ? lowerBound - candle.low : candle.high - upperBound;
       const distanceAtr = atr > 0 ? penetration / atr : 0;
       if (penetration <= 0 || distanceAtr < config.minimumSweepDistanceATR || distanceAtr > config.maximumSweepDistanceATR) continue;
       const closeBackEnd = Math.min(candles.length - 1, index + config.closeBackMaximumBars);
@@ -469,19 +580,63 @@ function detectDisplacement(candles: Candle[], sweepIndex: number, direction: Di
   return null;
 }
 
-function detectBos(candles: Candle[], sweepIndex: number, displacementIndex: number, direction: Direction, pivots: ReturnType<typeof detectPivots>, atr: number, config: LiquiditySweepConfig) {
-  const structure = [...pivots]
-    .reverse()
-    .find((pivot) => pivot.index < sweepIndex && (direction === "LONG" ? pivot.kind === "HIGH" : pivot.kind === "LOW"));
+function detectBos(candles: Candle[], sweepIndex: number, displacementIndex: number, direction: Direction, pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
+  const protectedPoint = findProtectedPoint(swings, sweepIndex, direction, config);
+  const structure = protectedPoint
+    ? { index: protectedPoint.candleIndex, kind: protectedPoint.type, price: protectedPoint.price, time: protectedPoint.formedAt }
+    : [...pivots]
+        .reverse()
+        .find((pivot) => pivot.index < sweepIndex && (direction === "LONG" ? pivot.kind === "HIGH" : pivot.kind === "LOW"));
   if (!structure) return null;
   const end = Math.min(candles.length - 1, sweepIndex + config.maximumBarsAfterSweepForBos);
   for (let index = displacementIndex; index <= end; index += 1) {
     const candle = candles[index];
     const threshold = config.minimumBosCloseDistanceATR * atr;
     const broken = direction === "LONG" ? candle.close > structure.price + threshold : candle.close < structure.price - threshold;
-    if (broken) return { index, level: structure.price, candle, structure };
+    if (broken) {
+      const range = candle.high - candle.low;
+      const bodyRatio = range > 0 ? Math.abs(candle.close - candle.open) / range : 0;
+      const breakDistanceAtr = atr > 0 ? Math.abs(candle.close - structure.price) / atr : 0;
+      const subtype = protectedPoint ? "REVERSAL_MSS" : "CONTINUATION_BOS";
+      return {
+        index,
+        level: structure.price,
+        candle,
+        structure,
+        protectedPoint,
+        subtype,
+        breakDistanceAtr,
+        bodyRatio
+      };
+    }
   }
   return null;
+}
+
+function findProtectedPoint(swings: SwingPoint[], sweepIndex: number, direction: Direction, config: LiquiditySweepConfig) {
+  const desired = direction === "LONG" ? "HIGH" : "LOW";
+  const candidates = swings
+    .filter((swing) => swing.type === desired && swing.candleIndex < sweepIndex && swing.status === "ACTIVE")
+    .sort((left, right) => right.candleIndex - left.candleIndex);
+  for (const swing of candidates) {
+    const confidence = protectedPointConfidence(swing);
+    if (protectedConfidenceRank(confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)) {
+      return { ...swing, confidence };
+    }
+  }
+  return null;
+}
+
+function protectedPointConfidence(swing: SwingPoint): "LOW" | "MEDIUM" | "HIGH" {
+  if (swing.prominenceAtr >= 0.75 || swing.strengthScore >= 80) return "HIGH";
+  if (swing.prominenceAtr >= 0.2 || swing.strengthScore >= 50) return "MEDIUM";
+  return "LOW";
+}
+
+function protectedConfidenceRank(value: "LOW" | "MEDIUM" | "HIGH") {
+  if (value === "HIGH") return 3;
+  if (value === "MEDIUM") return 2;
+  return 1;
 }
 
 function detectFreshFvg(candles: Candle[], sweepIndex: number, displacementIndex: number, direction: Direction, atr: number, config: LiquiditySweepConfig) {
@@ -615,6 +770,85 @@ function volumeWeightedAveragePrice(candles: Candle[]) {
   return totals.volume > 0 ? totals.priceVolume / totals.volume : candles.at(-1)?.close ?? 0;
 }
 
+function detectSwingPoints(candles: Candle[], left: number, right: number, atr: number, timeframe: string, config: LiquiditySweepConfig): SwingPoint[] {
+  const raw = detectPivots(candles, left, right);
+  const swings: SwingPoint[] = [];
+  for (const pivot of raw) {
+    const nearestLeftOpposite = [...raw]
+      .reverse()
+      .find((other) => other.index < pivot.index && other.kind !== pivot.kind);
+    const nearestRightOpposite = raw.find((other) => other.index > pivot.index && other.kind !== pivot.kind);
+    const reference = pivot.kind === "HIGH"
+      ? Math.max(nearestLeftOpposite?.price ?? pivot.price, nearestRightOpposite?.price ?? pivot.price)
+      : Math.min(nearestLeftOpposite?.price ?? pivot.price, nearestRightOpposite?.price ?? pivot.price);
+    const prominence = Math.abs(pivot.price - reference);
+    const prominenceAtr = atr > 0 ? prominence / atr : 0;
+    if (prominenceAtr < config.minimumSwingProminenceATR) continue;
+    const confirmedAt = candles[pivot.index + right]?.timestampUtc ?? pivot.time;
+    swings.push({
+      id: `${timeframe}-${pivot.kind}-${pivot.index}-${pivot.time}`,
+      type: pivot.kind,
+      price: pivot.price,
+      candleIndex: pivot.index,
+      formedAt: pivot.time,
+      confirmedAt,
+      timeframe,
+      prominence,
+      prominenceAtr,
+      strengthScore: Math.min(100, Math.round(40 + prominenceAtr * 60)),
+      status: "ACTIVE"
+    });
+  }
+  return classifySwings(swings, atr, config);
+}
+
+function classifySwings(swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
+  const tolerance = Math.max(0.01, atr * config.structureToleranceATR);
+  const latestByType: Partial<Record<SwingPoint["type"], SwingPoint>> = {};
+  return swings.map((swing) => {
+    const previous = latestByType[swing.type];
+    latestByType[swing.type] = swing;
+    if (!previous) return swing;
+    if (swing.type === "HIGH") {
+      const classification: SwingPoint["classification"] = swing.price > previous.price + tolerance
+        ? "HH"
+        : swing.price < previous.price - tolerance
+          ? "LH"
+          : "EQH";
+      return { ...swing, classification };
+    }
+    const classification: SwingPoint["classification"] = swing.price > previous.price + tolerance
+      ? "HL"
+      : swing.price < previous.price - tolerance
+        ? "LL"
+        : "EQL";
+    return { ...swing, classification };
+  });
+}
+
+function classifyStructure(swings: SwingPoint[], atr: number, config: LiquiditySweepConfig, timeframe: string): StructureSummary {
+  const highs = swings.filter((swing) => swing.type === "HIGH").slice(-2);
+  const lows = swings.filter((swing) => swing.type === "LOW").slice(-2);
+  const latestHigh = highs.at(-1);
+  const latestLow = lows.at(-1);
+  const highClassification = latestHigh?.classification;
+  const lowClassification = latestLow?.classification;
+  let state: StructureState = "UNKNOWN";
+  if (highClassification === "HH" && lowClassification === "HL") state = "BULLISH";
+  else if (highClassification === "LH" && lowClassification === "LL") state = "BEARISH";
+  else if (highClassification?.startsWith("EQ") || lowClassification?.startsWith("EQ")) state = "RANGING";
+  else if (latestHigh && latestLow) state = "TRANSITIONAL";
+  return {
+    timeframe,
+    state,
+    latestHigh,
+    latestLow,
+    highClassification,
+    lowClassification,
+    toleranceAtr: config.structureToleranceATR
+  };
+}
+
 function detectPivots(candles: Candle[], left: number, right: number) {
   const pivots: Array<{ index: number; kind: "HIGH" | "LOW"; price: number; time: string }> = [];
   for (let index = left; index < candles.length - right; index += 1) {
@@ -693,7 +927,7 @@ function dedupeLevels(levels: LiquidityLevel[]) {
 }
 
 function addEqualHighLowLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, atr: number) {
-  const tolerance = Math.max(0.05, atr * 0.1);
+  const tolerance = Math.max(0.05, atr * 0.05);
   addEqualLevels(levels, pivots.filter((pivot) => pivot.kind === "HIGH"), "EQUAL_HIGH", "BUY_SIDE", tolerance);
   addEqualLevels(levels, pivots.filter((pivot) => pivot.kind === "LOW"), "EQUAL_LOW", "SELL_SIDE", tolerance);
 }
@@ -706,9 +940,13 @@ function addEqualLevels(levels: LiquidityLevel[], pivots: ReturnType<typeof dete
     levels.push({
       type,
       side,
-      price: prices.reduce((sum, value) => sum + value, 0) / prices.length,
+      price: side === "BUY_SIDE" ? Math.max(...prices) : Math.min(...prices),
       priority: "MEDIUM",
-      source: `${type} cluster`
+      priorityScore: levelPriorityScore(type, "MEDIUM"),
+      source: `${type} cluster`,
+      touchCount: prices.length,
+      clusterSize: prices.length,
+      status: "ACTIVE"
     });
     return;
   }
@@ -809,6 +1047,23 @@ function blockedDecision(scenario: string, reason: string, evaluations: RuleEval
     favorabilityScore: score,
     favorabilityGrade: grade(score),
     favorabilityReasons: [reason]
+  };
+}
+
+function appendStateTransition(machine: unknown, to: LiquiditySweepState, at: string, reason: string) {
+  const current = typeof machine === "object" && machine !== null && "current" in machine
+    ? String((machine as any).current)
+    : null;
+  const transitions = typeof machine === "object" && machine !== null && Array.isArray((machine as any).transitions)
+    ? (machine as any).transitions
+    : [];
+  if (current === to && transitions.at(-1)?.reason === reason) return { current: to, transitions };
+  return {
+    current: to,
+    transitions: [
+      ...transitions,
+      { from: current, to, at, reason }
+    ]
   };
 }
 

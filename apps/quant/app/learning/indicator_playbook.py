@@ -25,6 +25,11 @@ MODULE2_RULES: dict[str, dict[str, str]] = {
         "meaning": "A strong body-driven candle after the sweep, showing urgency in the reversal direction.",
         "treatment": "Hard gate. Weak overlapping movement is ignored because it often becomes chop.",
     },
+    "PROTECTED_POINT_CONFIDENCE": {
+        "indicator": "Protected high / protected low",
+        "meaning": "The confirmed swing point whose candle-close break validates a market structure shift after the sweep.",
+        "treatment": "Hard gate. Automatic paper entries require a medium/high confidence protected point so wick-only structure breaks do not trigger trades.",
+    },
     "BOS_CHOCH_CONFIRMED": {
         "indicator": "BOS / CHoCH",
         "meaning": "A candle closes beyond internal structure after displacement, confirming a structure shift.",

@@ -1462,7 +1462,7 @@ function module2RuleLayer(code?: string) {
   if (!code) return "none";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT") return "quality";
-  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
+  if (["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED"].includes(code)) return "hard";
   return "other";
 }
 
@@ -1588,7 +1588,7 @@ function analyzeModule2RuleFailures(symbol: string, timeframe: number, candles: 
       const passed = new Set((decision.evaluations ?? []).filter((evaluation) => evaluation.status === "PASS").map((evaluation) => evaluation.ruleCode));
       const failedRule = failed?.ruleCode;
       if (passed.has("LIQUIDITY_SWEEP_CONFIRMED") && failedRule === "DISPLACEMENT_CONFIRMED") stageCounts.sweepPassedDisplacementFailed += 1;
-      if (passed.has("DISPLACEMENT_CONFIRMED") && failedRule === "BOS_CHOCH_CONFIRMED") stageCounts.displacementPassedBosFailed += 1;
+      if (passed.has("DISPLACEMENT_CONFIRMED") && (failedRule === "PROTECTED_POINT_CONFIDENCE" || failedRule === "BOS_CHOCH_CONFIRMED")) stageCounts.displacementPassedBosFailed += 1;
       if (passed.has("BOS_CHOCH_CONFIRMED") && failedRule === "CONFIRMATION_COUNT") stageCounts.bosPassedRetraceFailed += 1;
       if (failedRule === "CONFIRMATION_COUNT" || failedRule === "QUALITY_FILTER_COUNT") {
         stageCounts.scoreTooLow += 1;
