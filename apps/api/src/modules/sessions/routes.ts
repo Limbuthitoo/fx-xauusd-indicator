@@ -212,6 +212,41 @@ export async function sessionRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get("/api/sessions/orb-ranges", async (request) => {
+    const auth = await requireTenantModule(request, "orb_max_options");
+    const search = request.query as { limit?: string };
+    const limit = Math.min(Math.max(Number(search.limit ?? 2), 1), 6);
+    const { rows } = await query(
+      `SELECT
+         ts.id AS session_id,
+         ts.session_preset,
+         ts.session_date,
+         ts.session_start_at,
+         ts.opening_range_end_at,
+         ts.signal_window_end_at,
+         orr.status,
+         orr.high,
+         orr.low,
+         orr.midpoint,
+         orr.width,
+         orr.source_candle_count,
+         orr.locked_at
+       FROM trading_sessions ts
+       JOIN opening_ranges orr ON orr.session_id = ts.id
+       WHERE ts.tenant_id = $1
+         AND ts.module_code = 'orb_max_options'
+         AND orr.status = 'LOCKED'
+       ORDER BY ts.session_start_at DESC, orr.locked_at DESC NULLS LAST
+       LIMIT $2`,
+      [auth.tenantId, limit]
+    );
+    return rows.map((row: any) => ({
+      ...row,
+      label: orbPresetLabel(row.session_preset),
+      shortLabel: orbPresetShortLabel(row.session_preset)
+    }));
+  });
+
   app.get("/api/sessions/:id/readiness", async (request) => {
     await requireTenantModule(request, "orb_max_options");
     const { id } = request.params as { id: string };
@@ -454,4 +489,20 @@ function formatInTimezone(value: string, timeZone: string) {
     second: "2-digit",
     hour12: false
   }).format(new Date(value));
+}
+
+function orbPresetLabel(preset?: string | null) {
+  if (preset === "SYDNEY_ORB") return "Sydney ORB";
+  if (preset === "TOKYO_ORB") return "Tokyo ORB";
+  if (preset === "LONDON_ORB") return "London ORB";
+  if (preset === "NEW_YORK_ORB" || preset === "NY_0915" || preset === "NY_0930") return "New York ORB";
+  return "ORB";
+}
+
+function orbPresetShortLabel(preset?: string | null) {
+  if (preset === "SYDNEY_ORB") return "SY";
+  if (preset === "TOKYO_ORB") return "TY";
+  if (preset === "LONDON_ORB") return "LN";
+  if (preset === "NEW_YORK_ORB" || preset === "NY_0915" || preset === "NY_0930") return "NY";
+  return "ORB";
 }

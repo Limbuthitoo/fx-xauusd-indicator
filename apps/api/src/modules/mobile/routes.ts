@@ -81,7 +81,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       error.statusCode = 403;
       throw error;
     }
-    const [candles, setup, trade, openingRange] = await Promise.all([
+    const [candles, setup, trade, openingRanges] = await Promise.all([
       query(
         `SELECT timestamp_utc, open, high, low, close, volume, spread
          FROM candles
@@ -109,12 +109,14 @@ export async function mobileRoutes(app: FastifyInstance) {
         [session.tenantId, moduleCode]
       ),
       query(
-        `SELECT r.high, r.low, r.midpoint, r.width
+        `SELECT ts.session_preset, r.high, r.low, r.midpoint, r.width
          FROM opening_ranges r
          JOIN trading_sessions ts ON ts.id = r.session_id
-         WHERE ts.tenant_id = $1 AND ts.module_code = $2
-         ORDER BY r.created_at DESC
-         LIMIT 1`,
+         WHERE ts.tenant_id = $1
+           AND ts.module_code = $2
+           AND r.status = 'LOCKED'
+         ORDER BY ts.session_start_at DESC, r.locked_at DESC NULLS LAST
+         LIMIT 2`,
         [session.tenantId, moduleCode]
       )
     ]);
@@ -140,7 +142,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       candles: chartCandles,
       setup: latestSetup,
       trade: trade.rows[0] ?? null,
-      levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRange.rows[0] ?? null)
+      levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRanges.rows)
     };
   });
 
@@ -494,12 +496,15 @@ function normalizeSupportInfo(input?: Record<string, unknown> | null) {
   };
 }
 
-function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, openingRange?: any) {
+function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, openingRanges?: any[]) {
   const levels = [];
-  if (moduleCode === "orb_max_options" && openingRange) {
-    levels.push({ label: "15M ORB High", price: Number(openingRange.high), tone: "warn" });
-    levels.push({ label: "15M ORB Mid", price: Number(openingRange.midpoint), tone: "neutral" });
-    levels.push({ label: "15M ORB Low", price: Number(openingRange.low), tone: "warn" });
+  if (moduleCode === "orb_max_options" && openingRanges?.length) {
+    for (const range of openingRanges.slice(0, 2)) {
+      const prefix = mobileOrbShortLabel(range.session_preset);
+      levels.push({ label: `${prefix} ORB High`, price: Number(range.high), tone: "warn" });
+      levels.push({ label: `${prefix} ORB Mid`, price: Number(range.midpoint), tone: "neutral" });
+      levels.push({ label: `${prefix} ORB Low`, price: Number(range.low), tone: "warn" });
+    }
   }
   const entry = Number(trade?.actual_entry ?? setup?.entry_price);
   const stop = Number(trade?.actual_stop ?? setup?.stop_price);
@@ -531,6 +536,14 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
     levels.push({ label: `${zoneName} High`, price: Number(zone.high), tone: "neutral" });
   }
   return dedupeMobileLevels(levels.filter((level) => Number.isFinite(level.price)));
+}
+
+function mobileOrbShortLabel(preset?: string | null) {
+  if (preset === "SYDNEY_ORB") return "SY";
+  if (preset === "TOKYO_ORB") return "TY";
+  if (preset === "LONDON_ORB") return "LN";
+  if (preset === "NEW_YORK_ORB" || preset === "NY_0915" || preset === "NY_0930") return "NY";
+  return "ORB";
 }
 
 function formatLevelLabel(value: unknown, fallback: string) {

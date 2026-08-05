@@ -49,6 +49,7 @@ type PanelState = {
   latestBacktest?: any;
   orbDataReadiness?: any;
   orbRangeAudit?: any;
+  orbRanges?: any[];
   orbRehearsals?: any[];
   module2JournalTrades?: any[];
   module2Audit?: any;
@@ -1088,6 +1089,7 @@ function App() {
                 moduleName={activeModule?.name}
                 session={state.session}
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
+                orbRanges={selectedModuleCode === "orb_max_options" ? state.orbRanges ?? [] : []}
                 setup={currentModuleSetup}
                 priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, orb)}
                 showEma={selectedModuleCode !== "orb_max_options"}

@@ -83,6 +83,16 @@ export type TwelveDataChartProps = {
     midpoint?: number | string | null;
     low?: number | string | null;
   } | null;
+  orbRanges?: Array<{
+    session_preset?: string | null;
+    label?: string | null;
+    shortLabel?: string | null;
+    high?: number | string | null;
+    midpoint?: number | string | null;
+    low?: number | string | null;
+    session_start_at?: string | null;
+    opening_range_end_at?: string | null;
+  }>;
   setup?: {
     module_code?: string | null;
     status?: string;
@@ -120,7 +130,7 @@ const CHART_RIGHT_OFFSET = 16;
 const INITIAL_CHART_CANDLES = 300;
 const OLDER_CANDLE_PAGE = 300;
 
-export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, setup, priceLines, showEma = true, onMessage }: TwelveDataChartProps) {
+export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, orbRanges = [], setup, priceLines, showEma = true, onMessage }: TwelveDataChartProps) {
   const chartCandleLimit = Math.ceil(7 * 24 * (60 / timeframeMinutes)) + 10;
   const activeSetup = !setup?.module_code || setup.module_code === moduleCode ? setup : null;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -155,6 +165,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const effectiveOpeningRange = useMemo(
     () => moduleCode === "orb_max_options" ? orbRangeState?.range ?? openingRange : openingRange,
     [moduleCode, orbRangeState, openingRange]
+  );
+  const effectiveOrbRanges = useMemo(
+    () => moduleCode === "orb_max_options" ? normalizeOrbRanges(orbRanges, effectiveOpeningRange) : [],
+    [moduleCode, orbRanges, effectiveOpeningRange]
   );
 
   async function loadChartMetadata() {
@@ -409,16 +423,14 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
-  }, [activeSetup, session, moduleCode, effectiveOpeningRange]);
+  }, [activeSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
     priceLinesRef.current.forEach((line) => candleSeriesRef.current?.removePriceLine(line as never));
     priceLinesRef.current = [];
     const defaultLines = [
-      { title: "15M ORB High", price: numberValue(effectiveOpeningRange?.high), color: "#1f7a8c" },
-      { title: "15M ORB Mid", price: numberValue(effectiveOpeningRange?.midpoint), color: "#f0b429" },
-      { title: "15M ORB Low", price: numberValue(effectiveOpeningRange?.low), color: "#e05252" },
+      ...effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index)),
       { title: "Entry", price: numberValue(activeSetup?.entry_price), color: "#16a46c" },
       { title: "Stop", price: numberValue(activeSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeSetup?.target_price), color: "#7c9cff" }
@@ -441,7 +453,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [effectiveOpeningRange, activeSetup, priceLines, moduleCode]);
+  }, [effectiveOpeningRange, effectiveOrbRanges, activeSetup, priceLines, moduleCode]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -494,6 +506,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       moduleCode,
       session,
       openingRange: effectiveOpeningRange,
+      orbRanges: effectiveOrbRanges,
       setup: activeSetup,
       chart: chartRef.current,
       series: candleSeriesRef.current,
@@ -513,9 +526,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             </>
           ) : (
             <>
-              <span><i style={{ background: "#1f7a8c" }} />15M ORB High</span>
-              <span><i style={{ background: "#f0b429" }} />15M Midpoint</span>
-              <span><i style={{ background: "#e05252" }} />15M ORB Low</span>
+              <span><i style={{ background: "#1f7a8c" }} />Recent ORB High</span>
+              <span><i style={{ background: "#f0b429" }} />Recent ORB Mid</span>
+              <span><i style={{ background: "#e05252" }} />Recent ORB Low</span>
             </>
           )}
         </div>
@@ -544,7 +557,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             <span>ORB range</span>
             <strong className={orbRangeState?.range ? "good" : "warn"}>{orbRangeState?.label ?? "MISSING"}</strong>
             <span>ORB values</span>
-            <strong>{orbRangeState?.range ? `${format(numberValue(orbRangeState.range.high))} / ${format(numberValue(orbRangeState.range.midpoint))} / ${format(numberValue(orbRangeState.range.low))}` : `${orbRangeState?.candleCount ?? 0}/3 candles`}</strong>
+            <strong>{effectiveOrbRanges.length > 0 ? effectiveOrbRanges.map((range) => `${range.shortLabel ?? "ORB"} ${format(numberValue(range.high))}/${format(numberValue(range.midpoint))}/${format(numberValue(range.low))}`).join(" | ") : `${orbRangeState?.candleCount ?? 0}/3 candles`}</strong>
           </>
         ) : null}
       </div>
@@ -652,6 +665,56 @@ function module1OrbRangeState(
       midpoint: (high + low) / 2
     }
   };
+}
+
+function normalizeOrbRanges(
+  ranges: NonNullable<TwelveDataChartProps["orbRanges"]>,
+  fallback: TwelveDataChartProps["openingRange"]
+) {
+  const clean = ranges
+    .map((range) => ({
+      ...range,
+      shortLabel: range.shortLabel ?? sessionShortLabel(range.session_preset),
+      high: numberValue(range.high),
+      midpoint: numberValue(range.midpoint),
+      low: numberValue(range.low)
+    }))
+    .filter((range) => range.high != null && range.midpoint != null && range.low != null)
+    .slice(0, 2);
+  if (clean.length > 0) return clean;
+  if (numberValue(fallback?.high) != null && numberValue(fallback?.midpoint) != null && numberValue(fallback?.low) != null) {
+    return [{
+      session_preset: "ORB_FALLBACK",
+      label: "Current ORB",
+      shortLabel: "ORB",
+      high: numberValue(fallback?.high),
+      midpoint: numberValue(fallback?.midpoint),
+      low: numberValue(fallback?.low),
+      session_start_at: null,
+      opening_range_end_at: null
+    }];
+  }
+  return [];
+}
+
+function sessionOrbPriceLines(range: ReturnType<typeof normalizeOrbRanges>[number], index: number) {
+  const colors = index === 0
+    ? { high: "#1f7a8c", mid: "#f0b429", low: "#e05252" }
+    : { high: "#38bdf8", mid: "#d9a520", low: "#ff7a7a" };
+  const label = range.shortLabel ?? "ORB";
+  return [
+    { title: `${label} ORB High`, price: numberValue(range.high), color: colors.high },
+    { title: `${label} ORB Mid`, price: numberValue(range.midpoint), color: colors.mid },
+    { title: `${label} ORB Low`, price: numberValue(range.low), color: colors.low }
+  ];
+}
+
+function sessionShortLabel(preset?: string | null) {
+  if (preset === "SYDNEY_ORB") return "SY";
+  if (preset === "TOKYO_ORB") return "TY";
+  if (preset === "LONDON_ORB") return "LN";
+  if (preset === "NEW_YORK_ORB" || preset === "NY_0915" || preset === "NY_0930") return "NY";
+  return "ORB";
 }
 
 function module1RangeCandlesForWindow(candles: TwelveDataCandle[], startAt: string, endAt: string) {
@@ -895,6 +958,7 @@ function buildPositionedOverlays(input: {
   moduleCode: string;
   session?: TwelveDataChartProps["session"];
   openingRange?: TwelveDataChartProps["openingRange"];
+  orbRanges?: ReturnType<typeof normalizeOrbRanges>;
   setup?: TwelveDataChartProps["setup"];
   chart: IChartApi | null;
   series: ISeriesApi<"Candlestick"> | null;
@@ -949,9 +1013,13 @@ function buildPositionedOverlays(input: {
   const sessionHigh = Math.max(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.high));
   const sessionLow = Math.min(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.low));
   if (input.moduleCode === "orb_max_options") {
-    addHorizontalLine("orb-high", "15M ORB High", "orbHigh", input.openingRange?.high);
-    addHorizontalLine("orb-mid", "15M ORB Mid", "orbMid", input.openingRange?.midpoint);
-    addHorizontalLine("orb-low", "15M ORB Low", "orbLow", input.openingRange?.low);
+    const ranges = input.orbRanges?.length ? input.orbRanges : normalizeOrbRanges([], input.openingRange);
+    ranges.forEach((range, index) => {
+      const prefix = range.shortLabel ?? "ORB";
+      addHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.high);
+      addHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.midpoint);
+      addHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.low);
+    });
     return overlays;
   }
   if (input.moduleCode === "high_probability_strategy_2" && input.session?.session_start_at && input.session?.signal_window_end_at) {

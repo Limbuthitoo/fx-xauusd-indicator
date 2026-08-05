@@ -310,6 +310,8 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 1 ORB is no longer New York-only.
 - Module 1 should evaluate ORB sessions for Sydney, Tokyo, London, and New York.
 - Each Module 1 ORB session uses a 15-minute opening range and 5-minute trigger candles.
+- Module 1 chart should display only the latest two locked session ORB ranges, using session labels such as `TY ORB High/Mid/Low` and `NY ORB High/Mid/Low`.
+- Module 1 strategy entry logic should evaluate against the current active session ORB; previous session ORBs are chart/reference context.
 - New York keeps the 1-minute live Twelve Data polling cadence.
 - Sydney/Tokyo/London ORB evaluation should use the shared 30-minute catch-up candles to protect the 800/day Twelve Data credit budget.
 - Module 2 remains separate and uses its Liquidity Sweep + BOS rules.
