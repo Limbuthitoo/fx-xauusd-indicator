@@ -17,6 +17,12 @@ const readinessItems = [
 
 const ORB_RANGE_TIMEFRAME_MINUTES = 5;
 const ORB_RANGE_SOURCE_CANDLES = 3;
+const ORB_SESSION_PRESETS = [
+  { preset: "SYDNEY_ORB", label: "Sydney", sessionStart: "17:00", tradeWindowEnd: "02:00" },
+  { preset: "TOKYO_ORB", label: "Tokyo", sessionStart: "20:00", tradeWindowEnd: "05:00" },
+  { preset: "LONDON_ORB", label: "London", sessionStart: "03:00", tradeWindowEnd: "12:00" },
+  { preset: "NEW_YORK_ORB", label: "New York", sessionStart: "09:15", tradeWindowEnd: "16:00" }
+] as const;
 
 export async function sessionRoutes(app: FastifyInstance) {
   app.get("/api/clocks", async () => clocks());
@@ -386,11 +392,19 @@ export async function recentOrbRangesForTenant(tenantId: string | null, limit = 
      LIMIT $2`,
     [tenantId, safeLimit]
   );
-  return rows.map((row: any) => ({
+  const persisted = rows.map((row: any) => ({
     ...row,
     label: orbPresetLabel(row.session_preset),
     shortLabel: orbPresetShortLabel(row.session_preset)
   }));
+  if (persisted.length >= safeLimit) return persisted;
+  const calculated = await calculateRecentOrbRangesFromCandles(tenantId, safeLimit, persisted);
+  return [...persisted, ...calculated]
+    .sort((left: any, right: any) => new Date(right.session_start_at).getTime() - new Date(left.session_start_at).getTime())
+    .filter((range: any, index: number, all: any[]) =>
+      all.findIndex((item) => item.session_date === range.session_date && item.session_preset === range.session_preset) === index
+    )
+    .slice(0, safeLimit);
 }
 
 async function lockRecentOrbRangesIfReady(tenantId: string | null, limit: number) {
@@ -411,6 +425,74 @@ async function lockRecentOrbRangesIfReady(tenantId: string | null, limit: number
   for (const row of result.rows as Array<{ id: string }>) {
     await lockOrbRangeIfReady(row.id, tenantId);
   }
+}
+
+async function calculateRecentOrbRangesFromCandles(tenantId: string | null, limit: number, existing: any[]) {
+  const settings = await getRuntimeSettings(tenantId);
+  const now = new Date();
+  const dates = [-2, -1, 0, 1].map((offset) => shiftIsoDate(newYorkDate(now), offset));
+  const existingKeys = new Set(existing.map((row) => `${row.session_date}:${row.session_preset}`));
+  const candidates = dates.flatMap((sessionDate) =>
+    ORB_SESSION_PRESETS.map((preset) => {
+      const sessionStart = preset.preset === "NEW_YORK_ORB" ? settings.orb.sessionStart : preset.sessionStart;
+      const tradeWindowEnd = preset.preset === "NEW_YORK_ORB" ? settings.orb.tradeWindowEnd : preset.tradeWindowEnd;
+      const times = sessionTimesForDate(sessionDate, sessionStart, settings.orb.openingRangeMinutes, tradeWindowEnd);
+      return { ...preset, sessionDate, ...times };
+    })
+  )
+    .filter((candidate) => new Date(candidate.openingRangeEndAt) <= now)
+    .filter((candidate) => !existingKeys.has(`${candidate.sessionDate}:${candidate.preset}`))
+    .sort((left, right) => new Date(right.sessionStartAt).getTime() - new Date(left.sessionStartAt).getTime())
+    .slice(0, limit * 4);
+  const ranges = [];
+  for (const candidate of candidates) {
+    const candlesResult = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND timestamp_utc >= $3
+         AND timestamp_utc < $4
+       ORDER BY timestamp_utc ASC`,
+      [settings.symbol, ORB_RANGE_TIMEFRAME_MINUTES, candidate.sessionStartAt, candidate.openingRangeEndAt]
+    );
+    const candles: Candle[] = candlesResult.rows.slice(0, ORB_RANGE_SOURCE_CANDLES).map((row: any) => ({
+      timestampUtc: row.timestamp_utc,
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: row.volume == null ? null : Number(row.volume),
+      spread: row.spread == null ? null : Number(row.spread)
+    }));
+    const range = buildOpeningRange(candles, 0.01, ORB_RANGE_SOURCE_CANDLES);
+    if (range.status !== "LOCKED") continue;
+    ranges.push({
+      session_id: null,
+      session_preset: candidate.preset,
+      session_date: candidate.sessionDate,
+      session_start_at: candidate.sessionStartAt,
+      opening_range_end_at: candidate.openingRangeEndAt,
+      signal_window_end_at: candidate.signalWindowEndAt,
+      status: range.status,
+      high: range.high,
+      low: range.low,
+      midpoint: range.midpoint,
+      width: range.width,
+      source_candle_count: range.sourceCandleCount,
+      locked_at: range.lockedAt,
+      label: candidate.label,
+      shortLabel: orbPresetShortLabel(candidate.preset),
+      calculated: true
+    });
+  }
+  return ranges;
+}
+
+function shiftIsoDate(sessionDate: string, days: number) {
+  const date = new Date(`${sessionDate}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 async function ensureReadiness(sessionId: string) {
