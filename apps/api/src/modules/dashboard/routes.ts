@@ -129,7 +129,11 @@ export async function dashboardRoutes(app: FastifyInstance) {
     ]);
 
     const sessionReview = session?.id ? await injectJson(app, request, "GET", `/api/sessions/${session.id}/review`, undefined) : undefined;
-    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
+    const effectiveOrbRanges =
+      isModule1 && (!Array.isArray(orbRanges) || orbRanges.length < 2)
+        ? await injectJson(app, request, "GET", "/api/sessions/orb-ranges?limit=2", undefined, [])
+        : orbRanges;
+    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges: effectiveOrbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
   });
 
   app.get("/api/platform/bundle", async (request) => {

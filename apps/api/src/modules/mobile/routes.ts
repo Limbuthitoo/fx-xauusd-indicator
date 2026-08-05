@@ -4,6 +4,7 @@ import { clocks } from "../../infrastructure/time.js";
 import { query } from "../../infrastructure/db/client.js";
 import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
+import { recentOrbRangesForTenant } from "../sessions/routes.js";
 
 const XAUUSD_PIP_SIZE = 0.01;
 const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
@@ -105,20 +106,10 @@ export async function mobileRoutes(app: FastifyInstance) {
          JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
          WHERE sc.tenant_id = $1 AND sc.module_code = $2
          ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, t.closed_at) DESC
-         LIMIT 1`,
+        LIMIT 1`,
         [session.tenantId, moduleCode]
       ),
-      query(
-        `SELECT ts.session_preset, r.high, r.low, r.midpoint, r.width
-         FROM opening_ranges r
-         JOIN trading_sessions ts ON ts.id = r.session_id
-         WHERE ts.tenant_id = $1
-           AND ts.module_code = $2
-           AND r.status = 'LOCKED'
-         ORDER BY ts.session_start_at DESC, r.locked_at DESC NULLS LAST
-         LIMIT 2`,
-        [session.tenantId, moduleCode]
-      )
+      moduleCode === "orb_max_options" ? recentOrbRangesForTenant(session.tenantId, 2) : []
     ]);
     const latestSetup = setup.rows[0] ?? null;
     const chartCandles = candles.rows.reverse()
@@ -142,7 +133,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       candles: chartCandles,
       setup: latestSetup,
       trade: trade.rows[0] ?? null,
-      levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRanges.rows)
+      levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRanges)
     };
   });
 

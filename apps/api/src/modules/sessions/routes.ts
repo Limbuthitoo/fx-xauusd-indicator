@@ -216,35 +216,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     const auth = await requireTenantModule(request, "orb_max_options");
     const search = request.query as { limit?: string };
     const limit = Math.min(Math.max(Number(search.limit ?? 2), 1), 6);
-    const { rows } = await query(
-      `SELECT
-         ts.id AS session_id,
-         ts.session_preset,
-         ts.session_date,
-         ts.session_start_at,
-         ts.opening_range_end_at,
-         ts.signal_window_end_at,
-         orr.status,
-         orr.high,
-         orr.low,
-         orr.midpoint,
-         orr.width,
-         orr.source_candle_count,
-         orr.locked_at
-       FROM trading_sessions ts
-       JOIN opening_ranges orr ON orr.session_id = ts.id
-       WHERE ts.tenant_id = $1
-         AND ts.module_code = 'orb_max_options'
-         AND orr.status = 'LOCKED'
-       ORDER BY ts.session_start_at DESC, orr.locked_at DESC NULLS LAST
-       LIMIT $2`,
-      [auth.tenantId, limit]
-    );
-    return rows.map((row: any) => ({
-      ...row,
-      label: orbPresetLabel(row.session_preset),
-      shortLabel: orbPresetShortLabel(row.session_preset)
-    }));
+    return recentOrbRangesForTenant(auth.tenantId, limit);
   });
 
   app.get("/api/sessions/:id/readiness", async (request) => {
@@ -385,6 +357,60 @@ async function lockOrbRangeIfReady(sessionId: string, tenantId: string) {
   if (session.opening_range?.status === "LOCKED") return session.opening_range;
   if (new Date() < new Date(session.opening_range_end_at)) return null;
   return lockOpeningRangeForSessionId(sessionId, tenantId);
+}
+
+export async function recentOrbRangesForTenant(tenantId: string | null, limit = 2) {
+  const safeLimit = Math.min(Math.max(Number(limit ?? 2), 1), 6);
+  await lockRecentOrbRangesIfReady(tenantId, Math.max(safeLimit, 2));
+  const { rows } = await query(
+    `SELECT
+       ts.id AS session_id,
+       ts.session_preset,
+       ts.session_date,
+       ts.session_start_at,
+       ts.opening_range_end_at,
+       ts.signal_window_end_at,
+       orr.status,
+       orr.high,
+       orr.low,
+       orr.midpoint,
+       orr.width,
+       orr.source_candle_count,
+       orr.locked_at
+     FROM trading_sessions ts
+     JOIN opening_ranges orr ON orr.session_id = ts.id
+     WHERE ts.tenant_id = $1
+       AND ts.module_code = 'orb_max_options'
+       AND orr.status = 'LOCKED'
+     ORDER BY ts.session_start_at DESC, orr.locked_at DESC NULLS LAST
+     LIMIT $2`,
+    [tenantId, safeLimit]
+  );
+  return rows.map((row: any) => ({
+    ...row,
+    label: orbPresetLabel(row.session_preset),
+    shortLabel: orbPresetShortLabel(row.session_preset)
+  }));
+}
+
+async function lockRecentOrbRangesIfReady(tenantId: string | null, limit: number) {
+  if (!tenantId) return;
+  const result = await query(
+    `SELECT ts.id
+     FROM trading_sessions ts
+     LEFT JOIN opening_ranges orr ON orr.session_id = ts.id
+     WHERE ts.tenant_id = $1
+       AND ts.module_code = 'orb_max_options'
+       AND ts.opening_range_end_at <= now()
+       AND ts.session_start_at >= now() - interval '36 hours'
+       AND COALESCE(orr.status, 'FORMING') <> 'LOCKED'
+     ORDER BY ts.session_start_at DESC
+     LIMIT $2`,
+    [tenantId, Math.max(limit, 2)]
+  );
+  for (const row of result.rows as Array<{ id: string }>) {
+    await lockOrbRangeIfReady(row.id, tenantId);
+  }
 }
 
 async function ensureReadiness(sessionId: string) {
