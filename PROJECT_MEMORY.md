@@ -119,6 +119,13 @@ Expected daily usage target:
 - Sweep logic:
   - Buy-side candidate: candle high penetrates above a buy-side liquidity zone.
   - Sell-side candidate: candle low penetrates below a sell-side liquidity zone.
+  - A sweep is only valid when price rejects or quickly reclaims the level using closed candles.
+  - Rejection quality is tracked with `SWEEP_REJECTION_CONFIRMED`.
+  - Acceptance/breakout behavior is blocked with `SWEEP_ACCEPTANCE_BLOCK`.
+  - Sweep invalidation reasons include `SWEEP_TOO_SMALL`, `SWEEP_TOO_DEEP`, `NO_REJECTION`, `ACCEPTED_BEYOND_LEVEL`, and `POSSIBLE_BREAKOUT`.
+  - Conflicting buy-side and sell-side sweeps inside the recent decision window are exposed as `DOUBLE_SWEEP_FILTER` warning/evidence, not a hard gate.
+  - Liquidity sequence selection ranks level priority and rejection quality before displacement, BOS/MSS, zone, retrace, and confirmation.
+  - Sell-side candidate: candle low penetrates below a sell-side liquidity zone.
   - Baseline sweep penetration: minimum `0.02 ATR`, maximum `0.50 ATR`.
   - Penetration below minimum is an insignificant touch.
   - Penetration above maximum is a possible breakout/acceptance warning, not immediate reversal.
@@ -221,7 +228,7 @@ Expected daily usage target:
   - Decision: ready, waiting, blocked, invalidated, expired.
 - Module 2 implementation order:
   - Phase 1: candles, ATR, pivots, structure, session levels.
-  - Phase 2: liquidity levels, equal highs/lows, sweep, rejection/acceptance.
+  - Phase 2: liquidity levels, equal highs/lows, sweep, rejection/acceptance. Implemented in production gate with sweep invalidation evidence.
   - Phase 3: protected points, BOS/MSS, displacement.
   - Phase 4: plugin engine, retest, EMA, candle patterns, volume.
   - Phase 5: risk, notifications, journal.

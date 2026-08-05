@@ -93,6 +93,10 @@ export type LiquiditySweepConfig = {
   protectedPointMinimumConfidence: "LOW" | "MEDIUM" | "HIGH";
   minimumSweepDistanceATR: number;
   maximumSweepDistanceATR: number;
+  minimumSweepRejectionWickRatio: number;
+  acceptanceCloseCount: number;
+  acceptanceCloseDistanceATR: number;
+  doubleSweepLookbackBars: number;
   closeBackMaximumBars: number;
   maximumSweepLookbackBars: number;
   minimumDisplacementRangeATR: number;
@@ -148,8 +152,23 @@ type SweepCandidate = {
   candle: Candle;
   closeBackCandle: Candle;
   distanceAtr: number;
+  penetration: number;
+  sweepType: "WICK_SWEEP" | "DELAYED_REJECTION_SWEEP" | "CLOSE_THROUGH_THEN_RECLAIM" | "DEEP_SWEEP";
+  rejectionType: "CLOSE_BACK_INSIDE" | "WICK_REJECTION" | "DELAYED_CLOSE_BACK";
+  wickRatio: number;
+  resolutionBars: number;
   sweptAt: string;
   closedBackAt: string;
+};
+
+type SweepInvalidation = {
+  index: number;
+  level: LiquidityLevel;
+  candle: Candle;
+  reason: "SWEEP_TOO_SMALL" | "SWEEP_TOO_DEEP" | "NO_REJECTION" | "ACCEPTED_BEYOND_LEVEL" | "POSSIBLE_BREAKOUT";
+  distanceAtr: number;
+  occurredAt: string;
+  detail: string;
 };
 
 const DEFAULT_CONFIG: LiquiditySweepConfig = {
@@ -168,6 +187,10 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   protectedPointMinimumConfidence: "MEDIUM",
   minimumSweepDistanceATR: 0.1,
   maximumSweepDistanceATR: 1,
+  minimumSweepRejectionWickRatio: 0.35,
+  acceptanceCloseCount: 2,
+  acceptanceCloseDistanceATR: 0.15,
+  doubleSweepLookbackBars: 6,
   closeBackMaximumBars: 3,
   maximumSweepLookbackBars: 96,
   minimumDisplacementRangeATR: 1.2,
@@ -234,11 +257,25 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
   }
 
-  const sequence = detectBestLiquiditySequence(setupCandles, levels, pivots, internalSwings, atr, config);
+  const sweepAnalysis = analyzeSweepCandidates(setupCandles, levels, atr, config);
+  const sequence = detectBestLiquiditySequence(setupCandles, sweepAnalysis.candidates, pivots, internalSwings, atr, config);
   const sweep = sequence?.sweep ?? null;
+  const latestSweepInvalidation = sweepAnalysis.invalidations.at(-1) ?? null;
+  const sweepAcceptanceOk = !latestSweepInvalidation || !["ACCEPTED_BEYOND_LEVEL", "POSSIBLE_BREAKOUT", "SWEEP_TOO_DEEP"].includes(latestSweepInvalidation.reason);
+  const doubleSweepOk = !sweepAnalysis.doubleSweepWarning;
   push(evaluations, "LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", Boolean(sweep?.level), true, "AUTOMATIC", sweep?.level?.type ?? null, "PDH/PDL, Asian, London, equal high/low", sweep?.level ? `${sweep.level.type} at ${sweep.level.price.toFixed(2)} was selected.` : "No valid liquidity level has been swept.");
   push(evaluations, "LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", Boolean(sweep), true, "AUTOMATIC", sweep?.distanceAtr == null ? null : Number(sweep.distanceAtr.toFixed(2)), `${config.minimumSweepDistanceATR}-${config.maximumSweepDistanceATR} ATR`, sweep ? "Price traded beyond liquidity and closed back through the level within the allowed candles." : "No valid close-back sweep has been confirmed.");
+  push(evaluations, "SWEEP_REJECTION_CONFIRMED", "Sweep rejection quality confirmed", Boolean(sweep), true, "AUTOMATIC", sweep ? sweep.sweepType : latestSweepInvalidation?.reason ?? null, "wick or delayed close-back rejection", sweep ? `${sweep.rejectionType} confirmed after ${sweep.resolutionBars} candle(s); wick rejection ratio ${Math.round(sweep.wickRatio * 100)}%.` : latestSweepInvalidation?.detail ?? "No valid rejection candle has confirmed yet.");
+  push(evaluations, "SWEEP_ACCEPTANCE_BLOCK", "No acceptance beyond swept level", sweepAcceptanceOk, true, "AUTOMATIC", latestSweepInvalidation?.reason ?? "CLEAR", `fewer than ${config.acceptanceCloseCount} accepted closes`, sweepAcceptanceOk ? "No active acceptance/breakout invalidation is present." : latestSweepInvalidation?.detail ?? "Price accepted beyond the swept level.");
+  push(evaluations, "DOUBLE_SWEEP_FILTER", "No conflicting double sweep", doubleSweepOk, false, "AUTOMATIC", sweepAnalysis.doubleSweepWarning ? "BUY_SIDE + SELL_SIDE" : "CLEAR", `not within ${config.doubleSweepLookbackBars} candles`, doubleSweepOk ? "No conflicting buy-side and sell-side sweep appeared in the recent decision window." : "Both sides were swept recently, so reduce confidence and require the rest of the sequence to confirm cleanly.");
+  flags.sweepAnalysis = {
+    candidates: sweepAnalysis.candidates.slice(0, 8),
+    invalidations: sweepAnalysis.invalidations.slice(-8),
+    doubleSweepWarning: sweepAnalysis.doubleSweepWarning,
+    latestInvalidation: latestSweepInvalidation
+  };
   if (!sweep) return waitDecision("WAITING_FOR_SWEEP", "Waiting for a valid liquidity sweep and close-back.", evaluations, flags, levels, htfBias);
+  if (!sweepAcceptanceOk) return blockedDecision("SWEEP_ACCEPTANCE_INVALIDATION", "Price accepted beyond the liquidity level instead of rejecting it.", evaluations, flags);
   flags.stateMachine = appendStateTransition(flags.stateMachine, "LEVEL_SELECTED", sweep.closedBackAt, `${sweep.level.type} ${sweep.level.side} zone selected at ${sweep.level.price.toFixed(2)}.`);
   flags.stateMachine = appendStateTransition(flags.stateMachine, "SWEEP_CANDIDATE", sweep.sweptAt, `Price penetrated ${sweep.level.type} by ${sweep.distanceAtr.toFixed(2)} ATR.`);
   flags.stateMachine = appendStateTransition(flags.stateMachine, "SWEEP_CONFIRMED", sweep.closedBackAt, "Sweep rejection confirmed by close-back-inside rule.");
@@ -407,6 +444,8 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "DAILY_TRADE_LIMIT",
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
     "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
@@ -425,6 +464,8 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "DAILY_TRADE_LIMIT",
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
     "DISPLACEMENT_CONFIRMED",
     "PROTECTED_POINT_CONFIDENCE",
     "BOS_CHOCH_CONFIRMED",
@@ -513,9 +554,9 @@ function levelPriorityScore(type: LiquidityLevelType, priority: LiquidityLevel["
   return typeScores[type] ?? priorityScore(priority) * 10;
 }
 
-function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[], pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
+function detectBestLiquiditySequence(candles: Candle[], sweeps: SweepCandidate[], pivots: ReturnType<typeof detectPivots>, swings: SwingPoint[], atr: number, config: LiquiditySweepConfig) {
   const currentIndex = candles.length - 1;
-  const sequences = detectSweepCandidates(candles, levels, atr, config).map((sweep) => {
+  const sequences = sweeps.map((sweep) => {
     const direction: Direction = sweep.level.side === "SELL_SIDE" ? "LONG" : "SHORT";
     const displacement = detectDisplacement(candles, sweep.index, direction, atr, config);
     const bos = displacement ? detectBos(candles, sweep.index, displacement.index, direction, pivots, swings, atr, config) : null;
@@ -525,8 +566,12 @@ function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[]
     const retrace = zone ? candles[currentIndex].low <= zone.high && candles[currentIndex].high >= zone.low : false;
     const confirmation = zone ? confirmsEntry(candles[currentIndex], direction, zone) : false;
     const agePenalty = Math.max(0, currentIndex - (bos?.index ?? displacement?.index ?? sweep.index)) * 0.01;
+    const levelQuality = (sweep.level.priorityScore ?? levelPriorityScore(sweep.level.type, sweep.level.priority)) / 20;
+    const rejectionQuality = sweep.sweepType === "WICK_SWEEP" ? 2 : sweep.sweepType === "DELAYED_REJECTION_SWEEP" ? 1 : 0.5;
     const score =
       1 +
+      levelQuality +
+      rejectionQuality +
       (displacement ? 4 : 0) +
       (bos ? 8 : 0) +
       (zone ? 16 : 0) +
@@ -538,8 +583,9 @@ function detectBestLiquiditySequence(candles: Candle[], levels: LiquidityLevel[]
   return sequences.sort((left, right) => right.score - left.score || right.sweep.index - left.sweep.index)[0] ?? null;
 }
 
-function detectSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr: number, config: LiquiditySweepConfig) {
+function analyzeSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr: number, config: LiquiditySweepConfig) {
   const candidates: SweepCandidate[] = [];
+  const invalidations: SweepInvalidation[] = [];
   for (let index = candles.length - 1; index >= Math.max(0, candles.length - config.maximumSweepLookbackBars - config.closeBackMaximumBars); index -= 1) {
     const candle = candles[index];
     if (!isInsideNewYorkWindow(candle.timestampUtc, config.newYorkStartTime, config.newYorkEndTime)) continue;
@@ -548,19 +594,82 @@ function detectSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr:
       const upperBound = level.upperBound ?? level.price;
       const penetration = level.side === "SELL_SIDE" ? lowerBound - candle.low : candle.high - upperBound;
       const distanceAtr = atr > 0 ? penetration / atr : 0;
-      if (penetration <= 0 || distanceAtr < config.minimumSweepDistanceATR || distanceAtr > config.maximumSweepDistanceATR) continue;
+      if (penetration <= 0) continue;
+      if (distanceAtr < config.minimumSweepDistanceATR) {
+        invalidations.push(sweepInvalidation(index, level, candle, "SWEEP_TOO_SMALL", distanceAtr, `Sweep penetration was ${distanceAtr.toFixed(2)} ATR, below the minimum ${config.minimumSweepDistanceATR}.`));
+        continue;
+      }
+      if (distanceAtr > config.maximumSweepDistanceATR) {
+        invalidations.push(sweepInvalidation(index, level, candle, "SWEEP_TOO_DEEP", distanceAtr, `Sweep penetration was ${distanceAtr.toFixed(2)} ATR, above the maximum ${config.maximumSweepDistanceATR}.`));
+        invalidations.push(sweepInvalidation(index, level, candle, "POSSIBLE_BREAKOUT", distanceAtr, "Move extended too far beyond liquidity and is treated as possible acceptance/breakout, not a clean sweep."));
+        continue;
+      }
       const closeBackEnd = Math.min(candles.length - 1, index + config.closeBackMaximumBars);
+      let closed = false;
       for (let closeIndex = index; closeIndex <= closeBackEnd; closeIndex += 1) {
         const closeBackCandle = candles[closeIndex];
         const closedBack = level.side === "SELL_SIDE" ? closeBackCandle.close > level.price : closeBackCandle.close < level.price;
         if (closedBack) {
-          candidates.push({ index: closeIndex, sweepIndex: index, level, candle, closeBackCandle, distanceAtr, sweptAt: candle.timestampUtc, closedBackAt: closeBackCandle.timestampUtc });
+          const range = candle.high - candle.low;
+          const rejectionWick = level.side === "SELL_SIDE" ? Math.min(candle.open, candle.close) - candle.low : candle.high - Math.max(candle.open, candle.close);
+          const wickRatio = range > 0 ? Math.max(0, rejectionWick) / range : 0;
+          const resolutionBars = closeIndex - index;
+          const sweepType = classifySweepType(candle, closeIndex, index, distanceAtr, wickRatio, level, config);
+          const rejectionType = resolutionBars === 0 && wickRatio >= config.minimumSweepRejectionWickRatio
+            ? "WICK_REJECTION"
+            : resolutionBars > 0 ? "DELAYED_CLOSE_BACK" : "CLOSE_BACK_INSIDE";
+          candidates.push({ index: closeIndex, sweepIndex: index, level, candle, closeBackCandle, distanceAtr, penetration, sweepType, rejectionType, wickRatio, resolutionBars, sweptAt: candle.timestampUtc, closedBackAt: closeBackCandle.timestampUtc });
+          closed = true;
           break;
         }
       }
+      if (!closed) {
+        const accepted = acceptedBeyondLevel(candles, index, closeBackEnd, level, atr, config);
+        if (accepted) {
+          invalidations.push(sweepInvalidation(index, level, candle, "ACCEPTED_BEYOND_LEVEL", distanceAtr, accepted));
+          continue;
+        }
+        invalidations.push(sweepInvalidation(index, level, candle, "NO_REJECTION", distanceAtr, `Price swept ${level.type} but did not close back inside within ${config.closeBackMaximumBars} candle(s).`));
+      }
     }
   }
-  return candidates;
+  const recentWindowStart = Math.max(0, candles.length - 1 - config.doubleSweepLookbackBars);
+  const recentSides = new Set(candidates.filter((candidate) => candidate.index >= recentWindowStart).map((candidate) => candidate.level.side));
+  const doubleSweepWarning = recentSides.has("BUY_SIDE") && recentSides.has("SELL_SIDE");
+  return { candidates, invalidations, doubleSweepWarning };
+}
+
+function sweepInvalidation(index: number, level: LiquidityLevel, candle: Candle, reason: SweepInvalidation["reason"], distanceAtr: number, detail: string): SweepInvalidation {
+  return { index, level, candle, reason, distanceAtr, occurredAt: candle.timestampUtc, detail };
+}
+
+function acceptedBeyondLevel(candles: Candle[], sweepIndex: number, endIndex: number, level: LiquidityLevel, atr: number, config: LiquiditySweepConfig) {
+  let acceptedCloses = 0;
+  for (let index = sweepIndex; index <= endIndex; index += 1) {
+    const candle = candles[index];
+    const distance = level.side === "SELL_SIDE" ? level.price - candle.close : candle.close - level.price;
+    const closeBeyond = distance > 0;
+    const closeDistanceAtr = atr > 0 ? distance / atr : 0;
+    if (closeBeyond) acceptedCloses += 1;
+    if (closeBeyond && closeDistanceAtr >= config.acceptanceCloseDistanceATR) {
+      return `Candle closed ${closeDistanceAtr.toFixed(2)} ATR beyond ${level.type}, which signals acceptance instead of rejection.`;
+    }
+    if (acceptedCloses >= config.acceptanceCloseCount) {
+      return `${acceptedCloses} consecutive closes accepted beyond ${level.type}; treat as breakout/continuation risk.`;
+    }
+  }
+  return null;
+}
+
+function classifySweepType(candle: Candle, closeIndex: number, sweepIndex: number, distanceAtr: number, wickRatio: number, level: LiquidityLevel, config: LiquiditySweepConfig): SweepCandidate["sweepType"] {
+  if (distanceAtr > config.maximumSweepDistanceATR * 0.75) return "DEEP_SWEEP";
+  if (closeIndex > sweepIndex) return candleCloseBeyondLevel(candle, level) ? "CLOSE_THROUGH_THEN_RECLAIM" : "DELAYED_REJECTION_SWEEP";
+  if (wickRatio >= config.minimumSweepRejectionWickRatio) return "WICK_SWEEP";
+  return "DELAYED_REJECTION_SWEEP";
+}
+
+function candleCloseBeyondLevel(candle: Candle, level: LiquidityLevel) {
+  return level.side === "SELL_SIDE" ? candle.close < level.price : candle.close > level.price;
 }
 
 function detectDisplacement(candles: Candle[], sweepIndex: number, direction: Direction, atr: number, config: LiquiditySweepConfig) {

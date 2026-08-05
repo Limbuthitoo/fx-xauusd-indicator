@@ -20,6 +20,21 @@ MODULE2_RULES: dict[str, dict[str, str]] = {
         "meaning": "Price runs beyond a liquidity level and closes back inside, showing a possible stop run.",
         "treatment": "Hard gate. A wick without close-back is only a break, not a confirmed sweep.",
     },
+    "SWEEP_REJECTION_CONFIRMED": {
+        "indicator": "Sweep rejection",
+        "meaning": "The sweep candle must reject or quickly reclaim the liquidity level instead of accepting beyond it.",
+        "treatment": "Hard gate. Prefer wick rejection or a fast delayed close-back; ignore simple stop-run labels without rejection.",
+    },
+    "SWEEP_ACCEPTANCE_BLOCK": {
+        "indicator": "Acceptance filter",
+        "meaning": "Multiple closes or a strong close beyond the swept level means breakout/continuation risk.",
+        "treatment": "Hard gate. Block paper entries when price accepts beyond liquidity instead of rejecting it.",
+    },
+    "DOUBLE_SWEEP_FILTER": {
+        "indicator": "Double sweep filter",
+        "meaning": "Both buy-side and sell-side liquidity were swept in a tight window, making direction unreliable.",
+        "treatment": "Hard gate. Wait for one side to produce displacement and structure confirmation cleanly.",
+    },
     "DISPLACEMENT_CONFIRMED": {
         "indicator": "Displacement",
         "meaning": "A strong body-driven candle after the sweep, showing urgency in the reversal direction.",
