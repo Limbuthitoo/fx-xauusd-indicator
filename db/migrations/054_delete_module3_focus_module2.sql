@@ -1,11 +1,35 @@
 DELETE FROM backtest_runs
-WHERE module_code = 'strategy_lab_3';
+WHERE module_code = 'strategy_lab_3'
+   OR strategy_version_id IN (
+     SELECT sv.id
+     FROM strategy_versions sv
+     JOIN strategies s ON s.id = sv.strategy_id
+     JOIN strategy_sources src ON src.id = s.source_id
+     WHERE sv.configuration_json->>'moduleCode' = 'strategy_lab_3'
+        OR src.metadata->>'moduleCode' = 'strategy_lab_3'
+   );
 
 DELETE FROM trading_sessions
-WHERE module_code = 'strategy_lab_3';
+WHERE module_code = 'strategy_lab_3'
+   OR strategy_version_id IN (
+     SELECT sv.id
+     FROM strategy_versions sv
+     JOIN strategies s ON s.id = sv.strategy_id
+     JOIN strategy_sources src ON src.id = s.source_id
+     WHERE sv.configuration_json->>'moduleCode' = 'strategy_lab_3'
+        OR src.metadata->>'moduleCode' = 'strategy_lab_3'
+   );
 
 DELETE FROM setup_candidates
-WHERE module_code = 'strategy_lab_3';
+WHERE module_code = 'strategy_lab_3'
+   OR strategy_version_id IN (
+     SELECT sv.id
+     FROM strategy_versions sv
+     JOIN strategies s ON s.id = sv.strategy_id
+     JOIN strategy_sources src ON src.id = s.source_id
+     WHERE sv.configuration_json->>'moduleCode' = 'strategy_lab_3'
+        OR src.metadata->>'moduleCode' = 'strategy_lab_3'
+   );
 
 DELETE FROM module_session_closeouts
 WHERE module_code = 'strategy_lab_3';
