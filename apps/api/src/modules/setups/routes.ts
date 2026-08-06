@@ -289,7 +289,8 @@ export async function setupRoutes(app: FastifyInstance) {
     );
     if (!setup.rows[0]) return null;
     const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [setup.rows[0].id]);
-    return { ...setup.rows[0], evaluations: evaluations.rows };
+    const coreEvidence = evidenceMode ? await module2CoreEvidence(auth.tenantId, setup.rows[0]) : null;
+    return { ...setup.rows[0], evaluations: evaluations.rows, coreEvidence };
   });
 
   app.get("/api/setups/history", async (request) => {
@@ -336,6 +337,118 @@ export async function setupRoutes(app: FastifyInstance) {
       recommendation: setupRecommendation(row)
     }));
   });
+
+  async function module2CoreEvidence(tenantId: string | null, setup: any) {
+    if (!tenantId || setup.module_code !== "high_probability_strategy_2") return null;
+    const [liquidity, liquidityEvents, structurePoints, structureBreaks, regimes, domainEvents, checkpoints, transitions, positions] = await Promise.all([
+      query(
+        `SELECT *
+         FROM liquidity_levels
+         WHERE tenant_id = $1
+           AND module_code = 'high_probability_strategy_2'
+           AND symbol = $2
+           AND metadata->>'setupCandidateId' = $3
+         ORDER BY priority_score DESC, updated_at DESC
+         LIMIT 12`,
+        [tenantId, setup.symbol, setup.id]
+      ),
+      query(
+        `SELECT lle.*
+         FROM liquidity_level_events lle
+         JOIN liquidity_levels ll ON ll.id = lle.liquidity_level_id
+         WHERE lle.tenant_id = $1
+           AND lle.module_code = 'high_probability_strategy_2'
+           AND ll.metadata->>'setupCandidateId' = $2
+         ORDER BY lle.occurred_at DESC
+         LIMIT 12`,
+        [tenantId, setup.id]
+      ),
+      query(
+        `SELECT *
+         FROM structure_points
+         WHERE tenant_id = $1
+           AND module_code = 'high_probability_strategy_2'
+           AND symbol = $2
+           AND metadata->>'setupCandidateId' = $3
+         ORDER BY confirmed_at DESC
+         LIMIT 16`,
+        [tenantId, setup.symbol, setup.id]
+      ),
+      query(
+        `SELECT *
+         FROM structure_break_events
+         WHERE tenant_id = $1
+           AND module_code = 'high_probability_strategy_2'
+           AND symbol = $2
+           AND metadata->>'setupCandidateId' = $3
+         ORDER BY occurred_at DESC
+         LIMIT 12`,
+        [tenantId, setup.symbol, setup.id]
+      ),
+      query(
+        `SELECT *
+         FROM market_regimes
+         WHERE tenant_id = $1
+           AND module_code = 'high_probability_strategy_2'
+           AND symbol = $2
+           AND candle_timestamp <= $3
+         ORDER BY candle_timestamp DESC
+         LIMIT 3`,
+        [tenantId, setup.symbol, setup.detected_at]
+      ),
+      query(
+        `SELECT *
+         FROM domain_events
+         WHERE aggregate_id = $1
+         ORDER BY occurred_at DESC
+         LIMIT 8`,
+        [setup.id]
+      ),
+      query(
+        `SELECT *
+         FROM system_checkpoints
+         WHERE tenant_id = $1
+           AND module_code = 'high_probability_strategy_2'
+           AND symbol = $2
+           AND state->>'setupCandidateId' = $3
+         ORDER BY created_at DESC
+         LIMIT 10`,
+        [tenantId, setup.symbol, setup.id]
+      ),
+      query(
+        `SELECT *
+         FROM module2_state_transitions
+         WHERE tenant_id = $1
+           AND setup_candidate_id = $2
+         ORDER BY occurred_at DESC
+         LIMIT 12`,
+        [tenantId, setup.id]
+      ),
+      query(
+        `SELECT p.*, t.outcome AS trade_outcome, t.result_r
+         FROM positions p
+         LEFT JOIN trades t ON t.id = p.trade_id
+         WHERE p.tenant_id = $1
+           AND p.trade_plan_id IN (
+             SELECT id FROM trade_plans WHERE setup_candidate_id = $2
+           )
+         ORDER BY p.created_at DESC
+         LIMIT 3`,
+        [tenantId, setup.id]
+      )
+    ]);
+    return {
+      liquidityLevels: liquidity.rows,
+      liquidityEvents: liquidityEvents.rows,
+      structurePoints: structurePoints.rows,
+      structureBreaks: structureBreaks.rows,
+      marketRegimes: regimes.rows,
+      domainEvents: domainEvents.rows,
+      checkpoints: checkpoints.rows,
+      transitions: transitions.rows,
+      positions: positions.rows
+    };
+  }
 
   app.get("/api/dev/orb-replay/cases", async () => ({
     cases: ORB_QA_CASES

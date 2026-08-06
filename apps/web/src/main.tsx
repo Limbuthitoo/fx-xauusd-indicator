@@ -3269,6 +3269,7 @@ function firstMissingRule(rows: any[]) {
 
 function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   const flags = setup?.scenario_flags ?? {};
+  const core = setup?.coreEvidence ?? {};
   const sweep = flags.sweep ?? {};
   const displacement = flags.displacement ?? {};
   const bos = flags.bos ?? {};
@@ -3277,12 +3278,23 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   const qualityLayer = flags.qualityLayer ?? {};
   const variant = flags.module2Variant ?? {};
   const variants = Array.isArray(flags.module2Variants) ? flags.module2Variants : [];
-  const transitions = Array.isArray(flags.stateMachine?.transitions) ? flags.stateMachine.transitions.slice(-6) : [];
+  const persistedTransitions = Array.isArray(core.transitions) ? core.transitions : [];
+  const transitions = persistedTransitions.length > 0
+    ? persistedTransitions
+    : Array.isArray(flags.stateMachine?.transitions) ? flags.stateMachine.transitions.slice(-6) : [];
+  const liquidityLevels = Array.isArray(core.liquidityLevels) ? core.liquidityLevels : [];
+  const structureBreaks = Array.isArray(core.structureBreaks) ? core.structureBreaks : [];
+  const marketRegime = Array.isArray(core.marketRegimes) ? core.marketRegimes[0] : null;
+  const checkpoints = Array.isArray(core.checkpoints) ? core.checkpoints : [];
+  const positions = Array.isArray(core.positions) ? core.positions : [];
+  const engineState = module2EngineState(setup, positions[0]);
   const steps = [
     {
       label: "Liquidity",
-      status: sweep?.level?.price != null ? "PASS" : "WAIT",
-      value: sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`
+      status: sweep?.level?.price != null || liquidityLevels.length > 0 ? "PASS" : "WAIT",
+      value: sweep?.level?.price == null
+        ? formatCoreLiquidityLevel(liquidityLevels[0])
+        : `${formatScenario(sweep.level.type)} ${Number(sweep.level.price).toFixed(2)}`
     },
     {
       label: "Sweep",
@@ -3296,8 +3308,8 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
     },
     {
       label: "Reversal MSS",
-      status: bos?.candle ? "PASS" : "WAIT",
-      value: bos?.level == null ? "--" : Number(bos.level).toFixed(2)
+      status: bos?.candle || structureBreaks.length > 0 ? "PASS" : "WAIT",
+      value: bos?.level == null ? formatCoreStructureBreak(structureBreaks[0]) : Number(bos.level).toFixed(2)
     },
     {
       label: "MSS Retest",
@@ -3307,6 +3319,16 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
   ];
   return (
     <Panel icon={<Database />} title="Module 2 Setup Evidence">
+      <div className={`module2-live-hero ${engineState.tone}`}>
+        <div>
+          <span>Engine state</span>
+          <strong>{engineState.label}</strong>
+        </div>
+        <div>
+          <span>Output</span>
+          <strong>{module2OutputState(setup, positions[0])}</strong>
+        </div>
+      </div>
       <div className="module2-sequence">
         {steps.map((step) => (
           <div className={`module2-step ${step.status === "PASS" ? "good" : "warn"}`} key={step.label}>
@@ -3317,11 +3339,36 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
       </div>
       <div className="module2-live-metrics">
         <Metric label="Profile" value={variant?.name ?? flags.variantCode ?? "--"} />
+        <Metric label="Regime" value={marketRegime?.primary_regime ? formatScenario(marketRegime.primary_regime) : flags.marketRegime?.primary ? formatScenario(flags.marketRegime.primary) : "--"} />
         <Metric label="Confirm layer" value={confirmationLayer?.count == null ? "--" : `${confirmationLayer.count}/${confirmationLayer.required ?? 5}`} />
         <Metric label="Quality layer" value={qualityLayer?.count == null ? "--" : `${qualityLayer.count}/${qualityLayer.required ?? 3}`} />
         <Metric label="Setup tier" value={flags.setupTier ?? "--"} />
         <Metric label="Score" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
       </div>
+      {liquidityLevels.length > 0 || structureBreaks.length > 0 || positions.length > 0 ? (
+        <div className="module2-core-evidence-grid">
+          <div>
+            <span>Top liquidity</span>
+            <strong>{formatCoreLiquidityLevel(liquidityLevels[0])}</strong>
+            <em>{liquidityLevels[0]?.state ? formatScenario(liquidityLevels[0].state) : "--"}</em>
+          </div>
+          <div>
+            <span>Structure break</span>
+            <strong>{formatCoreStructureBreak(structureBreaks[0])}</strong>
+            <em>{structureBreaks[0]?.occurred_at ? formatNepalTime(structureBreaks[0].occurred_at) : "--"}</em>
+          </div>
+          <div>
+            <span>Position</span>
+            <strong>{positions[0]?.state ? formatScenario(positions[0].state) : "--"}</strong>
+            <em>{positions[0]?.planned_entry ? `Entry ${formatPriceValue(positions[0].planned_entry)}` : "--"}</em>
+          </div>
+          <div>
+            <span>Checkpoint</span>
+            <strong>{checkpoints[0]?.checkpoint_type ? formatScenario(checkpoints[0].checkpoint_type) : "--"}</strong>
+            <em>{checkpoints[0]?.created_at ? formatNepalTime(checkpoints[0].created_at) : "--"}</em>
+          </div>
+        </div>
+      ) : null}
       {variants.length > 0 ? (
         <div className="module2-variant-matrix">
           {variants.map((item: any) => (
@@ -3339,14 +3386,51 @@ function Module2LiveEvidencePanel({ setup }: { setup?: any }) {
         <div className="module2-transition-list">
           <strong>State Flow</strong>
           {transitions.map((item: any, index: number) => (
-            <span key={`${item.to ?? "state"}-${item.at ?? index}`}>
-              {formatScenario(item.to)} · {formatNepalTime(item.at)}
+            <span key={`${item.to_state ?? item.to ?? "state"}-${item.occurred_at ?? item.at ?? index}`}>
+              {formatScenario(item.to_state ?? item.to)} · {formatNepalTime(item.occurred_at ?? item.at)}
             </span>
           ))}
         </div>
       ) : null}
     </Panel>
   );
+}
+
+function module2EngineState(setup?: any, position?: any) {
+  const output = module2OutputState(setup, position);
+  if (output === "TRADE_ACTIVE" || output === "BUY_READY" || output === "SELL_READY" || output === "TRADE_CLOSED") return { label: output, tone: "good" };
+  if (output === "BLOCKED" || output === "INVALIDATED" || output === "EXPIRED" || output === "NO_TRADE") return { label: output, tone: "bad" };
+  return { label: output, tone: "warn" };
+}
+
+function module2OutputState(setup?: any, position?: any) {
+  if (position?.state === "OPEN") return "TRADE_ACTIVE";
+  if (String(position?.state ?? "").startsWith("CLOSED")) return "TRADE_CLOSED";
+  const status = String(setup?.status ?? "").toUpperCase();
+  const state = String(setup?.scenario_flags?.stateMachine?.currentState ?? setup?.scenario_flags?.platformEngines?.decisionState ?? "").toUpperCase();
+  if (status === "LONG SETUP READY") return "BUY_READY";
+  if (status === "SHORT SETUP READY") return "SELL_READY";
+  if (status.includes("BLOCK")) return "BLOCKED";
+  if (status.includes("INVALID")) return "INVALIDATED";
+  if (status.includes("EXPIRED")) return "EXPIRED";
+  if (status === "NO TRADE" || status === "NO_TRADE") return "NO_TRADE";
+  if (state.includes("INVALID")) return "INVALIDATED";
+  if (state.includes("EXPIRED")) return "EXPIRED";
+  return "WAIT";
+}
+
+function formatCoreLiquidityLevel(level: any) {
+  if (!level) return "--";
+  const type = level.type ? formatScenario(level.type) : "Liquidity";
+  const price = level.price == null ? "--" : formatPriceValue(level.price);
+  return `${type} ${price}`;
+}
+
+function formatCoreStructureBreak(event: any) {
+  if (!event) return "--";
+  const type = event.break_type ? formatScenario(event.break_type) : "MSS";
+  const direction = event.direction ? formatScenario(event.direction) : "";
+  return [type, direction].filter(Boolean).join(" · ");
 }
 
 function ModulePerformancePanel({ state, moduleCode, moduleName }: { state: PanelState; moduleCode: string; moduleName?: string }) {
