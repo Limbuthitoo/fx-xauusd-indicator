@@ -92,6 +92,8 @@ export type TwelveDataChartProps = {
     low?: number | string | null;
     session_start_at?: string | null;
     opening_range_end_at?: string | null;
+    sessionStartAt?: string | null;
+    openingRangeEndAt?: string | null;
   }>;
   setup?: {
     module_code?: string | null;
@@ -103,6 +105,7 @@ export type TwelveDataChartProps = {
     stop_price?: number | string | null;
     target_price?: number | string | null;
     scenario_flags?: any;
+    coreEvidence?: any;
   } | null;
   priceLines?: ChartPriceLine[];
   showEma?: boolean;
@@ -682,7 +685,9 @@ function normalizeOrbRanges(
       shortLabel: range.shortLabel ?? sessionShortLabel(range.session_preset),
       high: numberValue(range.high),
       midpoint: numberValue(range.midpoint),
-      low: numberValue(range.low)
+      low: numberValue(range.low),
+      session_start_at: range.session_start_at ?? range.sessionStartAt ?? null,
+      opening_range_end_at: range.opening_range_end_at ?? range.openingRangeEndAt ?? null
     }))
     .filter((range) => range.high != null && range.midpoint != null && range.low != null)
     .slice(0, 2);
@@ -891,7 +896,10 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
   const isLong = direction === "LONG";
   const markers: SeriesMarker<Time>[] = [];
   if (setup.module_code !== "high_probability_strategy_2") return [];
-  const sweepTime = flags.sweep?.closedBackAt ?? flags.sweep?.sweptAt;
+  const core = setup.coreEvidence ?? {};
+  const latestSweepEvent = Array.isArray(core.liquidityEvents) ? core.liquidityEvents[0] : null;
+  const latestBreak = Array.isArray(core.structureBreaks) ? core.structureBreaks[0] : null;
+  const sweepTime = flags.sweep?.closedBackAt ?? flags.sweep?.sweptAt ?? flags.sweep?.time ?? flags.sweep?.timestampUtc ?? latestSweepEvent?.occurred_at;
   const confirmedEntry = flags.mandatoryChecklistMatched === true || ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(String(setup.status));
   const labelPrefix = confirmedEntry ? "M2" : "M2 Candidate";
   if (sweepTime) {
@@ -903,7 +911,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       text: `${labelPrefix} Sweep`
     });
   }
-  const displacementTime = flags.displacement?.candle?.timestampUtc;
+  const displacementTime = flags.displacement?.candle?.timestampUtc ?? flags.displacement?.at;
   if (displacementTime) {
     markers.push({
       time: toChartTime(displacementTime),
@@ -913,7 +921,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       text: `${labelPrefix} Displacement`
     });
   }
-  const bosTime = flags.bos?.candle?.timestampUtc;
+  const bosTime = flags.bos?.candle?.timestampUtc ?? flags.bos?.at ?? latestBreak?.occurred_at;
   if (bosTime) {
     markers.push({
       time: toChartTime(bosTime),
@@ -923,7 +931,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
       text: `${labelPrefix} BOS`
     });
   }
-  const zoneTime = flags.entryZone?.createdAt;
+  const zoneTime = flags.entryZone?.createdAt ?? flags.entryZone?.created_at;
   if (zoneTime) {
     markers.push({
       time: toChartTime(zoneTime),
@@ -1050,6 +1058,7 @@ function buildPositionedOverlays(input: {
 
   if (input.setup?.module_code !== "high_probability_strategy_2" || !input.setup.scenario_flags) return overlays;
   const flags = input.setup.scenario_flags;
+  const core = input.setup.coreEvidence ?? {};
   const evidenceEnd = input.setup.detected_at ?? latestTime;
   const zone = flags.entryZone;
   if (zone?.low != null && zone?.high != null) {
@@ -1078,6 +1087,17 @@ function buildPositionedOverlays(input: {
       sweepLevel + pad
     );
   }
+  const liquidityLevels = Array.isArray(core.liquidityLevels) ? core.liquidityLevels.slice(0, 6) : [];
+  liquidityLevels.forEach((level: any, index: number) => {
+    const price = numberValue(level.price);
+    if (price == null) return;
+    addHorizontalLine(
+      `module2-liquidity-${level.id ?? index}`,
+      `${String(level.type ?? "Liquidity").replaceAll("_", " ")}`,
+      "sweep",
+      price
+    );
+  });
 
   const displacement = flags.displacement?.candle;
   if (displacement?.timestampUtc) {
