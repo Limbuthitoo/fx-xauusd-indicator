@@ -1060,6 +1060,50 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
   const direction = setup.direction;
   const isLong = direction === "LONG";
   const markers: SeriesMarker<Time>[] = [];
+  if (setup.module_code === "orb_max_options") {
+    const horizontal = flags.horizontalRangeObservation ?? flags.genericRangeEngine?.horizontal;
+    const range = horizontal?.range;
+    const breakout = horizontal?.breakout;
+    const retest = horizontal?.retest;
+    const decision = horizontal?.decision;
+    if (range?.lockedAt ?? range?.detectedAt) {
+      markers.push({
+        time: toChartTime(range.lockedAt ?? range.detectedAt),
+        position: "belowBar",
+        color: "#8b5cf6",
+        shape: "circle",
+        text: "M1 Range locked"
+      });
+    }
+    if (breakout?.status === "CONFIRMED" && setup.detected_at) {
+      markers.push({
+        time: toChartTime(setup.detected_at),
+        position: isLong ? "belowBar" : "aboveBar",
+        color: isLong ? "#16a46c" : "#e05252",
+        shape: isLong ? "arrowUp" : "arrowDown",
+        text: `M1 H ${isLong ? "BUY" : "SELL"} breakout`
+      });
+    }
+    if (retest?.status === "CONFIRMED" && setup.detected_at) {
+      markers.push({
+        time: toChartTime(setup.detected_at),
+        position: isLong ? "belowBar" : "aboveBar",
+        color: "#f0b429",
+        shape: "square",
+        text: "M1 H retest"
+      });
+    }
+    if (decision?.status === "EXPIRED" && setup.detected_at) {
+      markers.push({
+        time: toChartTime(setup.detected_at),
+        position: "aboveBar",
+        color: "#94a3b8",
+        shape: "circle",
+        text: "M1 H expired"
+      });
+    }
+    return markers;
+  }
   if (setup.module_code !== "high_probability_strategy_2") return [];
   const core = setup.coreEvidence ?? {};
   const latestSweepEvent = Array.isArray(core.liquidityEvents) ? core.liquidityEvents[0] : null;
@@ -1227,7 +1271,7 @@ function buildPositionedOverlays(input: {
         "NY horizontal breakout",
         "orderBlock",
         horizontalRange.startedAt ?? horizontalRange.detectedAt,
-        horizontalRange.lockedAt ?? horizontalRange.detectedAt ?? latestTime,
+        latestTime ?? horizontalRange.lockedAt ?? horizontalRange.detectedAt,
         horizontalRange.low,
         horizontalRange.high
       );

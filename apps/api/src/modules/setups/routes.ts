@@ -1,4 +1,13 @@
 import { calculateRisk } from "@orb-guide/risk-engine";
+import {
+  DEFAULT_HORIZONTAL_RANGE_CONFIG,
+  HorizontalRangeDetector,
+  RANGE_BREAKOUT_PROFILES,
+  RangeConflictResolver,
+  RangeDecisionEngine,
+  RetestEngine,
+  evaluateRangeBreakout
+} from "@orb-guide/range-engine";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import type { Candle } from "@orb-guide/shared-types";
 import type { FastifyInstance } from "fastify";
@@ -947,6 +956,71 @@ export async function setupRoutes(app: FastifyInstance) {
       );
     }
     const trade = await openModuleReplayPaperTrade(setup, auth.tenantId, "MODULE1_PRODUCTION_PROOF");
+    const horizontalProof = buildModule1HorizontalRangeProof(session);
+    const horizontalSetupResult = await query(
+      `INSERT INTO setup_candidates (
+        tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
+        expires_at, entry_price, stop_price, target_price, final_reason,
+        favorability_score, favorability_grade, favorability_reasons, scenario_flags
+      ) VALUES ($17,$1,$2,$3,'orb_max_options',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      RETURNING *`,
+      [
+        session.id,
+        session.strategy_version_id,
+        session.symbol,
+        horizontalProof.scenario,
+        horizontalProof.direction,
+        horizontalProof.status,
+        new Date().toISOString(),
+        session.signal_window_end_at,
+        horizontalProof.entryPrice,
+        horizontalProof.stopPrice,
+        horizontalProof.targetPrice,
+        `Module 1 horizontal range production proof: ${horizontalProof.reason}`,
+        horizontalProof.score,
+        "A",
+        JSON.stringify(horizontalProof.reasons),
+        JSON.stringify({
+          replay: true,
+          productionProof: true,
+          proofMode: true,
+          replayCase: "HORIZONTAL_RANGE_BREAKOUT",
+          mandatoryChecklistMatched: horizontalProof.ready,
+          fullChecklistMatched: horizontalProof.ready,
+          setupTier: "HORIZONTAL_RANGE",
+          selectedScenario: horizontalProof.scenario,
+          genericRangeEngine: horizontalProof.genericRangeEngine,
+          horizontalRangeObservation: horizontalProof.genericRangeEngine.horizontal,
+          tradingRange: horizontalProof.genericRangeEngine.horizontal.range,
+          matrix: {
+            autoEligible: horizontalProof.ready,
+            selectedScenario: horizontalProof.scenario,
+            selectedVariant: "HORIZONTAL_RANGE_BREAKOUT_RETEST",
+            mandatoryChecklistMatched: horizontalProof.ready
+          }
+        }),
+        auth.tenantId
+      ]
+    );
+    const horizontalSetup = horizontalSetupResult.rows[0];
+    for (const evaluation of horizontalProof.evaluations) {
+      await query(
+        `INSERT INTO setup_rule_evaluations (
+          setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
+        ) VALUES ($1,$2,$3,$4,$5,'AUTOMATIC',$6,$7,$8)`,
+        [
+          horizontalSetup.id,
+          evaluation.ruleCode,
+          evaluation.name,
+          evaluation.status,
+          evaluation.blocking,
+          evaluation.actualValue == null ? null : String(evaluation.actualValue),
+          evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
+          evaluation.explanation
+        ]
+      );
+    }
+    const horizontalTrade = await openModuleReplayPaperTrade(horizontalSetup, auth.tenantId, "MODULE1_HORIZONTAL_PRODUCTION_PROOF");
     const notificationResult = await query(
       `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
        VALUES ($1,$2,'MODULE1_PRODUCTION_PROOF',$3,$4,'HIGH',$5::jsonb)
@@ -976,6 +1050,36 @@ export async function setupRoutes(app: FastifyInstance) {
       ]
     );
     const notification = notificationResult.rows[0] ?? null;
+    const horizontalNotificationResult = await query(
+      `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
+       VALUES ($1,$2,'MODULE1_HORIZONTAL_PRODUCTION_PROOF',$3,$4,'HIGH',$5::jsonb)
+       ON CONFLICT (event_key) DO UPDATE SET
+         title = EXCLUDED.title,
+         body = EXCLUDED.body,
+         priority = EXCLUDED.priority,
+         data = EXCLUDED.data
+       RETURNING *`,
+      [
+        auth.tenantId,
+        `module1-horizontal-production-proof-${horizontalSetup.id}`,
+        "Module 1 horizontal range proof signal",
+        "Horizontal range proof created an active paper trade with entry, SL, TP, journal, and Python brain approval.",
+        JSON.stringify({
+          moduleCode: "orb_max_options",
+          setupCandidateId: horizontalSetup.id,
+          tradeId: horizontalTrade?.id ?? null,
+          action: horizontalSetup.direction === "LONG" ? "BUY" : "SELL",
+          direction: horizontalSetup.direction,
+          entry: horizontalSetup.entry_price,
+          stopLoss: horizontalSetup.stop_price,
+          takeProfit: horizontalSetup.target_price,
+          scenario: horizontalSetup.scenario,
+          proofMode: true,
+          rangePath: "HORIZONTAL_RANGE_BREAKOUT_RETEST"
+        })
+      ]
+    );
+    const horizontalNotification = horizontalNotificationResult.rows[0] ?? null;
     let brain: unknown = null;
     let brainError: string | null = null;
     try {
@@ -989,6 +1093,11 @@ export async function setupRoutes(app: FastifyInstance) {
       tradeCreated: Boolean(trade?.id),
       journalCreated: Boolean((await query("SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND setup_candidate_id = $2 LIMIT 1", [auth.tenantId, setup.id])).rows[0]),
       notificationCreated: Boolean(notification),
+      horizontalSetupCreated: Boolean(horizontalSetup?.id),
+      horizontalEntryReady: ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(String(horizontalSetup?.status ?? "")),
+      horizontalTradeCreated: Boolean(horizontalTrade?.id),
+      horizontalJournalCreated: Boolean((await query("SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND setup_candidate_id = $2 LIMIT 1", [auth.tenantId, horizontalSetup.id])).rows[0]),
+      horizontalNotificationCreated: Boolean(horizontalNotification),
       pythonBrainRan: Boolean(brain) && !brainError
     };
     const finalStatus = Object.values(checks).every(Boolean) ? "PASS" : "WARN";
@@ -999,10 +1108,25 @@ export async function setupRoutes(app: FastifyInstance) {
         finalStatus === "PASS" ? "INFO" : "WARN",
         auth.tenantId,
         `Module 1 production proof ${finalStatus}.`,
-        JSON.stringify({ checks, setupId: setup.id, tradeId: trade?.id ?? null, brain, brainError })
+        JSON.stringify({ checks, setupId: setup.id, tradeId: trade?.id ?? null, horizontalSetupId: horizontalSetup.id, horizontalTradeId: horizontalTrade?.id ?? null, brain, brainError })
       ]
     );
-    return { status: finalStatus, moduleCode: "orb_max_options", setup, trade, notification, brain, brainError, checks };
+    return {
+      status: finalStatus,
+      moduleCode: "orb_max_options",
+      setup,
+      trade,
+      notification,
+      horizontal: {
+        setup: horizontalSetup,
+        trade: horizontalTrade,
+        notification: horizontalNotification,
+        decision: horizontalProof.genericRangeEngine.horizontal.decision
+      },
+      brain,
+      brainError,
+      checks
+    };
   });
 
   app.get("/api/module1/launch-rehearsals", async (request) => {
@@ -2470,6 +2594,132 @@ function module2ReplayNotificationData(setup: any, replay: ReturnType<typeof bui
     entryZone: replay.flags.entryZone ?? null,
     mandatoryRules: MODULE2_STRICT_REQUIRED_RULES,
     finalReason: replay.finalReason
+  };
+}
+
+function buildModule1HorizontalRangeProof(session: any) {
+  const baseAt = new Date(session.session_start_at).getTime();
+  const at = (minutes: number) => new Date(baseAt + minutes * 60_000).toISOString();
+  const rangeCandles: Candle[] = [
+    replayCandle(at(0), 100.0, 101.0, 99.0, 100.2),
+    replayCandle(at(5), 100.2, 100.8, 99.2, 99.8),
+    replayCandle(at(10), 99.8, 100.9, 99.1, 100.3),
+    replayCandle(at(15), 100.3, 100.7, 99.3, 99.9),
+    replayCandle(at(20), 99.9, 101.1, 99.0, 100.4),
+    replayCandle(at(25), 100.4, 100.9, 99.2, 99.7),
+    replayCandle(at(30), 99.7, 100.8, 99.1, 100.1),
+    replayCandle(at(35), 100.1, 100.7, 99.2, 99.8),
+    replayCandle(at(40), 99.8, 101.0, 99.0, 100.2),
+    replayCandle(at(45), 100.2, 100.8, 99.1, 99.9),
+    replayCandle(at(50), 99.9, 100.9, 99.2, 100.3),
+    replayCandle(at(55), 100.3, 100.7, 99.1, 99.8)
+  ];
+  const breakoutCandle = replayCandle(at(60), 100.4, 102.1, 100.2, 101.8);
+  const retestCandle = replayCandle(at(65), 100.8, 102.2, 100.6, 101.7);
+  const detector = new HorizontalRangeDetector({
+    ...DEFAULT_HORIZONTAL_RANGE_CONFIG,
+    enabled: true,
+    observationOnly: false,
+    minimumRangeCandles: 12,
+    maximumRangeCandles: 12,
+    minimumQualityScore: 60,
+    maximumBoundarySlopeAtrPerBar: 0.2,
+    maximumEfficiencyRatio: 0.4,
+    minimumWidthAtr: 0.5
+  });
+  const context = {
+    symbol: session.symbol,
+    now: at(55),
+    timezone: "America/New_York",
+    candles5m: rangeCandles,
+    atr5m: 1.5,
+    activeRanges: [],
+    strategyVersion: String(session.strategy_version_id),
+    sessionContext: {
+      sessionName: "New York",
+      sessionTimezone: "America/New_York",
+      rangeStart: session.session_start_at,
+      rangeEnd: at(55),
+      signalWindowEnd: session.signal_window_end_at
+    }
+  };
+  const detection = detector.detect(context);
+  if (!detection.range) throw new Error("Module 1 horizontal proof range did not lock.");
+  const profile = RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION;
+  const breakout = evaluateRangeBreakout(detection.range, breakoutCandle, { ...profile, atr: 1.5 } as any);
+  const retest = breakout.direction ? new RetestEngine().evaluate(detection.range, breakout.direction, retestCandle, profile, [...rangeCandles, breakoutCandle]) : null;
+  const conflict = new RangeConflictResolver().resolve([detection.range], breakout.direction);
+  const decision = new RangeDecisionEngine().decide({
+    range: detection.range,
+    breakout,
+    retest,
+    conflict,
+    dataHealthy: true,
+    riskPermitted: true,
+    signalMode: "ACTIVE_SIGNAL"
+  });
+  const ready = decision.status === "BUY_READY" || decision.status === "SELL_READY";
+  const direction = breakout.direction === "SHORT" ? "SHORT" : "LONG";
+  const entry = retestCandle.close;
+  const atrBuffer = 1.5 * 0.08;
+  const stop = direction === "LONG" ? Math.min(retestCandle.low, detection.range.high) - atrBuffer : Math.max(retestCandle.high, detection.range.low) + atrBuffer;
+  const risk = Math.max(0.01, Math.abs(entry - stop));
+  const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const evaluations = [
+    module1ProofRule("HORIZONTAL_RANGE_LOCKED", "Horizontal range is locked", detection.status === "VALID", true, detection.range.state, "LOCKED", "A valid New York horizontal consolidation range was locked."),
+    module1ProofRule("HORIZONTAL_BREAKOUT_CONFIRMED", "Horizontal breakout confirmed", breakout.confirmed, true, breakout.status, "CONFIRMED", breakout.reason),
+    module1ProofRule("HORIZONTAL_RETEST_CONFIRMED", "Horizontal retest confirmed", retest?.confirmed === true, true, retest?.status ?? "NONE", "CONFIRMED", retest?.reason ?? "Retest missing."),
+    module1ProofRule("HORIZONTAL_CONFLICT_CLEAR", "Range conflict clear", conflict.status !== "CONFLICT", true, conflict.status, "CLEAR/ALIGNED", conflict.reason),
+    module1ProofRule("ENTRY_NOT_OVEREXTENDED", "Entry is not overextended", breakout.directEntryBlocked !== true, true, breakout.extensionRatio, "<= direct extension limit", breakout.reason),
+    module1ProofRule("RISK_PERMISSION", "Risk permission", true, true, "PERMITTED", "PERMITTED", "Proof risk gate is permitted."),
+    module1ProofRule("HORIZONTAL_QUALITY_SCORE", "Horizontal quality score", Number(detection.range.qualityScore ?? 0) >= 60, false, detection.range.qualityScore ?? null, 60, "Horizontal range quality meets production proof threshold.")
+  ];
+  return {
+    scenario: direction === "LONG" ? "HORIZONTAL_RANGE_BREAKOUT_BUY" : "HORIZONTAL_RANGE_BREAKOUT_SELL",
+    direction,
+    status: ready ? (direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY") : "WAIT",
+    entryPrice: entry,
+    stopPrice: stop,
+    targetPrice: target,
+    score: Number(detection.range.qualityScore ?? 80),
+    ready,
+    reason: decision.reason,
+    reasons: [
+      "Horizontal range production proof",
+      breakout.reason,
+      retest?.reason ?? "Retest not available",
+      conflict.reason,
+      decision.reason
+    ],
+    evaluations,
+    genericRangeEngine: {
+      version: "GENERIC_RANGE_ENGINE_V1",
+      authoritativeDetector: "HORIZONTAL_RANGE_DETECTOR",
+      horizontal: {
+        enabled: true,
+        status: detection.status,
+        signalMode: "ACTIVE_SIGNAL",
+        range: detection.range,
+        breakout,
+        falseBreakout: null,
+        retest,
+        conflict,
+        decision
+      }
+    }
+  };
+}
+
+function module1ProofRule(ruleCode: string, name: string, passed: boolean, blocking: boolean, actualValue: unknown, requiredValue: unknown, explanation: string) {
+  return {
+    ruleCode,
+    name,
+    status: passed ? "PASS" : "FAIL",
+    blocking,
+    source: "AUTOMATIC",
+    actualValue,
+    requiredValue,
+    explanation
   };
 }
 

@@ -124,6 +124,7 @@ const orbRangeResult = orbDetector.detect({
 });
 assert.equal(orbRangeResult.status, "VALID", "ORB adapter must produce a valid normalized TradingRange");
 assert.equal(orbRangeResult.range?.source, "MAX_OPTIONS_NY_ORB", "ORB adapter must preserve time-based ORB source");
+assert.equal(orbRangeResult.range?.detectorVersion, "ORB_ADAPTER_V1", "ORB adapter must keep the ORB detector version");
 assert.equal(orbRangeResult.range?.high, module1Range.high, "ORB adapter high must match old ORB");
 assert.equal(orbRangeResult.range?.low, module1Range.low, "ORB adapter low must match old ORB");
 assert.equal(orbRangeResult.range?.midpoint, module1Range.midpoint, "ORB adapter midpoint must match old ORB");
@@ -146,7 +147,8 @@ const horizontalCandles = [
   candle("2026-08-10T09:50:00Z", 99.9, 100.9, 99.2, 100.3),
   candle("2026-08-10T09:55:00Z", 100.3, 100.7, 99.1, 99.8)
 ];
-const horizontal = new HorizontalRangeDetector({ enabled: true, observationOnly: true, timeframe: "5min", minimumRangeCandles: 12, maximumRangeCandles: 12, minimumUpperTouches: 2, minimumLowerTouches: 2, minimumBarsBetweenTouches: 2, boundaryReactionCount: 3, boundaryToleranceAtr: 0.12, minimumContainmentRatio: 0.7, maximumEfficiencyRatio: 0.4, maximumBoundarySlopeAtrPerBar: 0.2, minimumWidthAtr: 0.5, maximumWidthAtr: 4, minimumMidpointCrosses: 2, minimumQualityScore: 60, lockAfterValidation: true, expireAfterCandles: 60 }).detect({
+const horizontalConfig = { enabled: true, observationOnly: true, timeframe: "5min" as const, minimumRangeCandles: 12, maximumRangeCandles: 12, minimumUpperTouches: 2, minimumLowerTouches: 2, minimumBarsBetweenTouches: 2, boundaryReactionCount: 3, boundaryToleranceAtr: 0.12, minimumContainmentRatio: 0.7, maximumEfficiencyRatio: 0.4, maximumBoundarySlopeAtrPerBar: 0.2, minimumWidthAtr: 0.5, maximumWidthAtr: 4, minimumMidpointCrosses: 2, minimumQualityScore: 60, lockAfterValidation: true, expireAfterCandles: 60 };
+const horizontal = new HorizontalRangeDetector(horizontalConfig).detect({
   symbol: "XAUUSD",
   now: horizontalCandles.at(-1)!.timestampUtc,
   timezone: "America/New_York",
@@ -156,15 +158,49 @@ const horizontal = new HorizontalRangeDetector({ enabled: true, observationOnly:
 });
 assert.equal(horizontal.status, "VALID", "Horizontal detector must identify valid rectangular consolidation in observation mode");
 assert.equal(horizontal.range?.formationMethod, "PRICE_BASED", "Horizontal range must remain price-based");
+assert.equal(horizontal.range?.detectorVersion, "HORIZONTAL_RANGE_DETECTOR_V1", "Horizontal range must use the active detector version");
+const trendingCandidate = new HorizontalRangeDetector(horizontalConfig).detect({
+  symbol: "XAUUSD",
+  now: "2026-08-10T10:00:00Z",
+  timezone: "America/New_York",
+  candles5m: Array.from({ length: 12 }, (_, index) => candle(at("2026-08-10T09:00:00Z", index), 100 + index * 0.4, 100.5 + index * 0.4, 99.8 + index * 0.4, 100.4 + index * 0.4)),
+  activeRanges: [],
+  strategyVersion: "horizontal-trend-rejection"
+});
+assert.equal(trendingCandidate.status, "NONE", "Horizontal detector must reject directional trends as non-horizontal structure");
+assert.equal(trendingCandidate.evidence.structureClassification, "ASCENDING_CHANNEL", "Rejected trend must be classified instead of silently ignored");
+assert.equal(trendingCandidate.failures.some((item) => item.ruleCode === "HORIZONTAL_STRUCTURE_CLASSIFICATION"), true, "Rejected horizontal candidates must expose a structure-classification rule");
+const acceptedBreakoutCandidate = new HorizontalRangeDetector(horizontalConfig).detect({
+  symbol: "XAUUSD",
+  now: "2026-08-10T10:00:00Z",
+  timezone: "America/New_York",
+  candles5m: [...horizontalCandles.slice(0, 11), candle("2026-08-10T09:55:00Z", 100.3, 102.0, 99.2, 101.8)],
+  activeRanges: [],
+  strategyVersion: "horizontal-accepted-breakout-rejection"
+});
+assert.equal(acceptedBreakoutCandidate.status, "NONE", "Horizontal detector must reject ranges that already accepted a breakout close");
 const wickFalseBreak = new FalseBreakoutEngine().evaluate(horizontal.range!, candle("2026-08-10T10:00:00Z", 100.2, horizontal.range!.high + 0.5, 99.8, horizontal.range!.high - 0.1));
 assert.equal(wickFalseBreak.falseBreakout, true, "False-breakout engine must reject wick-only boundary breaks");
 const retest = new RetestEngine().evaluate(horizontal.range!, "LONG", candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));
 assert.equal(retest.confirmed, true, "Retest engine must confirm a clean post-breakout boundary retest");
+const expiredRetest = new RetestEngine().evaluate(
+  horizontal.range!,
+  "LONG",
+  candle("2026-08-10T10:40:00Z", horizontal.range!.high + 1.6, horizontal.range!.high + 1.9, horizontal.range!.high + 1.4, horizontal.range!.high + 1.7),
+  undefined,
+  Array.from({ length: 8 }, (_, index) => candle(at("2026-08-10T10:00:00Z", index), horizontal.range!.high + 1.0, horizontal.range!.high + 1.4, horizontal.range!.high + 0.8, horizontal.range!.high + 1.2))
+);
+assert.equal(expiredRetest.status, "EXPIRED", "Horizontal breakout retest must expire after the configured candle limit");
 const horizontalBreakout = evaluateRangeBreakout(horizontal.range!, candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));
+const expiredDecision = new RangeDecisionEngine().decide({ range: horizontal.range!, breakout: { ...horizontalBreakout, directEntryBlocked: true }, retest: expiredRetest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" });
+assert.equal(expiredDecision.status, "EXPIRED", "Expired horizontal retest must stop the MVP entry path");
 const horizontalDecision = new RangeDecisionEngine().decide({ range: horizontal.range!, breakout: horizontalBreakout, retest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" });
 assert.equal(horizontalDecision.status, "BUY_READY", "Active horizontal range breakout/retest must be able to trigger the Module 1 MVP chain");
 const conflict = new RangeConflictResolver().resolve([orbRangeResult.range!, horizontal.range!], "LONG");
 assert.notEqual(conflict.status, "CONFLICT", "Aligned/same-direction range evidence must not block ORB");
+const oppositeHorizontal = { ...horizontal.range!, id: `${horizontal.range!.id}:opposite`, breakoutDirection: "SHORT" as const };
+const oppositeConflict = new RangeConflictResolver().resolve([{ ...horizontal.range!, breakoutDirection: "LONG" as const }, oppositeHorizontal], "LONG");
+assert.equal(oppositeConflict.status, "CONFLICT", "Opposite-direction locked horizontal ranges must block duplicate MVP entries");
 
 const module2Candles: Candle[] = Array.from({ length: 24 }, (_, index) => {
   const base = 103.6 + Math.sin(index / 2) * 0.35;

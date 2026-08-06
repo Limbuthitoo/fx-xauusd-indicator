@@ -39,11 +39,16 @@ export interface RangeEvidence {
   candleIds: string[];
   startCandleId: string | null;
   endCandleId: string | null;
+  structureClassification?: string;
   upperTouchCount?: number;
   lowerTouchCount?: number;
+  upperReactionCount?: number;
+  lowerReactionCount?: number;
   midpointCrossCount?: number;
   containmentRatio?: number;
   efficiencyRatio?: number;
+  balancedMidpointRatio?: number;
+  acceptedBreakoutCount?: number;
   upperSlopeAtrPerBar?: number;
   lowerSlopeAtrPerBar?: number;
   sessionName?: string;
@@ -147,6 +152,7 @@ export interface RangeBreakoutProfile {
   maximumOppositeWickRatio: number;
   minimumBreakDistanceAtr: number;
   maximumDirectEntryExtensionRatio: number;
+  maximumRetestCandles?: number;
   entryModel: "BREAKOUT_CLOSE" | "RETEST" | "SOURCE_SPECIFIC";
   stopModel: "OPPOSITE_RANGE_BOUNDARY" | "BREAKOUT_CANDLE" | "RETEST_SWING" | "SOURCE_SPECIFIC";
   targetModel: "FIXED_R" | "RANGE_PROJECTION" | "OPPOSING_LIQUIDITY" | "SOURCE_SPECIFIC";
@@ -177,9 +183,10 @@ export interface FalseBreakoutEvaluation {
 }
 
 export interface RetestEvaluation {
-  status: "WAITING" | "CONFIRMED" | "INVALIDATED";
+  status: "WAITING" | "CONFIRMED" | "INVALIDATED" | "EXPIRED";
   confirmed: boolean;
   invalidated: boolean;
+  expired?: boolean;
   inZone: boolean;
   deepInside: boolean;
   reason: string;
@@ -342,7 +349,7 @@ export class HorizontalRangeDetector implements RangeDetector {
     if (!this.config.enabled) return emptyResult(this.code, "NONE", "Horizontal range detector is disabled.");
     const candles = context.candles5m.slice(-this.config.maximumRangeCandles);
     const best = this.bestCandidate(context, candles);
-    if (!best) return emptyResult(this.code, "NONE", "No valid horizontal consolidation range detected.");
+    if (!best) return rejectedHorizontalStructureResult(this.code, context, candles, this.config);
     return {
       detectorCode: this.code,
       status: "VALID",
@@ -382,32 +389,55 @@ export class HorizontalRangeDetector implements RangeDetector {
     const atr = Math.max(Number(context.atr5m ?? medianTrueRange(candles) ?? 0), 0.00001);
     const highs = [...candles.map((candle) => candle.high)].sort((a, b) => b - a).slice(0, this.config.boundaryReactionCount);
     const lows = [...candles.map((candle) => candle.low)].sort((a, b) => a - b).slice(0, this.config.boundaryReactionCount);
-    const high = median(highs);
-    const low = median(lows);
+    let high = median(highs);
+    let low = median(lows);
     if (high == null || low == null || high <= low) return null;
-    const midpoint = (high + low) / 2;
-    const width = high - low;
-    const widthAtr = width / atr;
+    let midpoint = (high + low) / 2;
+    let width = high - low;
+    let widthAtr = width / atr;
     const tolerance = atr * this.config.boundaryToleranceAtr;
-    const upperZone = boundary(high, tolerance, "ATR", this.config.boundaryToleranceAtr);
-    const lowerZone = boundary(low, tolerance, "ATR", this.config.boundaryToleranceAtr);
-    const upperTouchCount = independentTouches(candles, (candle) => candle.high >= upperZone.lowerBound, this.config.minimumBarsBetweenTouches);
-    const lowerTouchCount = independentTouches(candles, (candle) => candle.low <= lowerZone.upperBound, this.config.minimumBarsBetweenTouches);
+    let upperZone = boundary(high, tolerance, "ATR", this.config.boundaryToleranceAtr);
+    let lowerZone = boundary(low, tolerance, "ATR", this.config.boundaryToleranceAtr);
+    let upperReactions = boundaryReactionPoints(candles, "UPPER", upperZone, midpoint, this.config.minimumBarsBetweenTouches);
+    let lowerReactions = boundaryReactionPoints(candles, "LOWER", lowerZone, midpoint, this.config.minimumBarsBetweenTouches);
+    if (upperReactions.length >= this.config.boundaryReactionCount && lowerReactions.length >= this.config.boundaryReactionCount) {
+      const reactionHigh = median(upperReactions.map((point) => point.price).sort((a, b) => b - a).slice(0, this.config.boundaryReactionCount));
+      const reactionLow = median(lowerReactions.map((point) => point.price).sort((a, b) => a - b).slice(0, this.config.boundaryReactionCount));
+      if (reactionHigh != null && reactionLow != null && reactionHigh > reactionLow) {
+        high = reactionHigh;
+        low = reactionLow;
+        midpoint = (high + low) / 2;
+        width = high - low;
+        widthAtr = width / atr;
+        upperZone = boundary(high, tolerance, "ATR", this.config.boundaryToleranceAtr);
+        lowerZone = boundary(low, tolerance, "ATR", this.config.boundaryToleranceAtr);
+        upperReactions = boundaryReactionPoints(candles, "UPPER", upperZone, midpoint, this.config.minimumBarsBetweenTouches);
+        lowerReactions = boundaryReactionPoints(candles, "LOWER", lowerZone, midpoint, this.config.minimumBarsBetweenTouches);
+      }
+    }
+    const upperTouchCount = upperReactions.length;
+    const lowerTouchCount = lowerReactions.length;
     const containmentRatio = candles.filter((candle) => candle.close <= upperZone.upperBound && candle.close >= lowerZone.lowerBound).length / candles.length;
+    const acceptedBreakoutCount = candles.filter((candle) => candle.close > upperZone.upperBound || candle.close < lowerZone.lowerBound).length;
     const efficiencyRatio = directionalEfficiency(candles);
     const midpointCrossCount = midpointCrosses(candles, midpoint);
-    const upperSlopeAtrPerBar = boundarySlopeAtrPerBar(candles.map((candle) => candle.high), atr);
-    const lowerSlopeAtrPerBar = boundarySlopeAtrPerBar(candles.map((candle) => candle.low), atr);
+    const balancedMidpointRatio = midpointBalanceRatio(candles, midpoint);
+    const upperSlopeAtrPerBar = reactionSlopeAtrPerBar(upperReactions, atr);
+    const lowerSlopeAtrPerBar = reactionSlopeAtrPerBar(lowerReactions, atr);
     const validationRules = [
       rule("HORIZONTAL_UPPER_TOUCHES", "Minimum upper touches", upperTouchCount >= this.config.minimumUpperTouches ? "PASS" : "FAIL", true, upperTouchCount, this.config.minimumUpperTouches),
       rule("HORIZONTAL_LOWER_TOUCHES", "Minimum lower touches", lowerTouchCount >= this.config.minimumLowerTouches ? "PASS" : "FAIL", true, lowerTouchCount, this.config.minimumLowerTouches),
+      rule("HORIZONTAL_UPPER_REJECTIONS", "Upper boundary rejection count", upperReactions.length >= this.config.minimumUpperTouches ? "PASS" : "FAIL", true, upperReactions.length, this.config.minimumUpperTouches),
+      rule("HORIZONTAL_LOWER_REJECTIONS", "Lower boundary rejection count", lowerReactions.length >= this.config.minimumLowerTouches ? "PASS" : "FAIL", true, lowerReactions.length, this.config.minimumLowerTouches),
       rule("HORIZONTAL_CONTAINMENT", "Containment ratio", containmentRatio >= this.config.minimumContainmentRatio ? "PASS" : "FAIL", true, Number(containmentRatio.toFixed(3)), this.config.minimumContainmentRatio),
+      rule("HORIZONTAL_NO_ACCEPTED_BREAKOUT", "No accepted close outside range", acceptedBreakoutCount === 0 ? "PASS" : "FAIL", true, acceptedBreakoutCount, 0),
       rule("HORIZONTAL_EFFICIENCY", "Directional efficiency", efficiencyRatio <= this.config.maximumEfficiencyRatio ? "PASS" : "FAIL", true, Number(efficiencyRatio.toFixed(3)), this.config.maximumEfficiencyRatio),
       rule("HORIZONTAL_BOUNDARY_SLOPE", "Boundary horizontality", upperSlopeAtrPerBar <= this.config.maximumBoundarySlopeAtrPerBar && lowerSlopeAtrPerBar <= this.config.maximumBoundarySlopeAtrPerBar ? "PASS" : "FAIL", true, `${upperSlopeAtrPerBar.toFixed(3)}/${lowerSlopeAtrPerBar.toFixed(3)}`, this.config.maximumBoundarySlopeAtrPerBar),
       rule("HORIZONTAL_WIDTH_ATR", "ATR-normalized width", widthAtr >= this.config.minimumWidthAtr && widthAtr <= this.config.maximumWidthAtr ? "PASS" : "FAIL", true, Number(widthAtr.toFixed(3)), `${this.config.minimumWidthAtr}-${this.config.maximumWidthAtr}`),
-      rule("HORIZONTAL_MIDPOINT_CROSSES", "Minimum midpoint crosses", midpointCrossCount >= this.config.minimumMidpointCrosses ? "PASS" : "FAIL", true, midpointCrossCount, this.config.minimumMidpointCrosses)
+      rule("HORIZONTAL_MIDPOINT_CROSSES", "Minimum midpoint crosses", midpointCrossCount >= this.config.minimumMidpointCrosses ? "PASS" : "FAIL", true, midpointCrossCount, this.config.minimumMidpointCrosses),
+      rule("HORIZONTAL_MIDPOINT_BALANCE", "Balanced time above and below midpoint", balancedMidpointRatio >= 0.35 ? "PASS" : "FAIL", true, Number(balancedMidpointRatio.toFixed(3)), 0.35)
     ];
-    const qualityScore = horizontalQualityScore({ upperTouchCount, lowerTouchCount, containmentRatio, efficiencyRatio, midpointCrossCount, upperSlopeAtrPerBar, lowerSlopeAtrPerBar, widthAtr, candleCount: candles.length, config: this.config });
+    const qualityScore = horizontalQualityScore({ upperTouchCount, lowerTouchCount, containmentRatio, efficiencyRatio, midpointCrossCount, balancedMidpointRatio, upperSlopeAtrPerBar, lowerSlopeAtrPerBar, widthAtr, candleCount: candles.length, config: this.config });
     validationRules.push(rule("HORIZONTAL_QUALITY_SCORE", "Horizontal range quality score", qualityScore >= this.config.minimumQualityScore ? "PASS" : "FAIL", true, qualityScore, this.config.minimumQualityScore));
     if (validationRules.some((item) => item.status !== "PASS")) return null;
     return tradingRangeFromBounds({
@@ -428,11 +458,16 @@ export class HorizontalRangeDetector implements RangeDetector {
         endCandleId: candleId(candles.at(-1)!),
         upperTouchCount,
         lowerTouchCount,
+        upperReactionCount: upperReactions.length,
+        lowerReactionCount: lowerReactions.length,
         midpointCrossCount,
         containmentRatio: Number(containmentRatio.toFixed(3)),
         efficiencyRatio: Number(efficiencyRatio.toFixed(3)),
+        balancedMidpointRatio: Number(balancedMidpointRatio.toFixed(3)),
+        acceptedBreakoutCount,
         upperSlopeAtrPerBar,
         lowerSlopeAtrPerBar,
+        structureClassification: "HORIZONTAL_CONSOLIDATION",
         validationRules
       }
     });
@@ -535,6 +570,7 @@ export const RANGE_BREAKOUT_PROFILES: Record<RangeSource, RangeBreakoutProfile> 
   HORIZONTAL_CONSOLIDATION: {
     ...DEFAULT_RANGE_BREAKOUT_PROFILE,
     source: "HORIZONTAL_CONSOLIDATION",
+    maximumRetestCandles: 6,
     entryModel: "RETEST",
     stopModel: "RETEST_SWING",
     targetModel: "FIXED_R"
@@ -616,8 +652,9 @@ export class FalseBreakoutEngine {
 }
 
 export class RetestEngine {
-  evaluate(range: TradingRange, direction: "LONG" | "SHORT", candle: Candle, profile: RangeBreakoutProfile = RANGE_BREAKOUT_PROFILES[range.source]) {
-    const tolerance = profile.source === "HORIZONTAL_CONSOLIDATION" ? Math.max(Number(range.widthAtr ?? range.width) * 0.08, range.width * 0.02) : range.width * 0.1;
+  evaluate(range: TradingRange, direction: "LONG" | "SHORT", candle: Candle, profile: RangeBreakoutProfile = RANGE_BREAKOUT_PROFILES[range.source], previousCandles: Candle[] = []) {
+    const estimatedAtr = Number(range.widthAtr) && Number(range.widthAtr) > 0 ? range.width / Number(range.widthAtr) : range.width;
+    const tolerance = profile.source === "HORIZONTAL_CONSOLIDATION" ? Math.max(estimatedAtr * 0.08, range.width * 0.02) : range.width * 0.1;
     const zone = direction === "LONG" ? boundary(range.high, tolerance, "ATR", 0.08) : boundary(range.low, tolerance, "ATR", 0.08);
     const inZone = direction === "LONG" ? candle.low <= zone.upperBound && candle.high >= zone.lowerBound : candle.high >= zone.lowerBound && candle.low <= zone.upperBound;
     const fullRange = Math.max(candle.high - candle.low, 0.00001);
@@ -626,6 +663,11 @@ export class RetestEngine {
     const bearish = candle.close < candle.open;
     const deepInside = direction === "LONG" ? candle.close < range.midpoint : candle.close > range.midpoint;
     const oppositeBroken = direction === "LONG" ? candle.close < range.low : candle.close > range.high;
+    const breakoutIndex = firstBreakoutIndex(previousCandles, range, direction);
+    const maximumRetestCandles = profile.maximumRetestCandles ?? 6;
+    if (breakoutIndex >= 0 && previousCandles.length - breakoutIndex > maximumRetestCandles && !inZone) {
+      return { status: "EXPIRED", confirmed: false, invalidated: false, expired: true, inZone, deepInside, reason: `Retest did not occur within ${maximumRetestCandles} candles.` } satisfies RetestEvaluation;
+    }
     if (oppositeBroken) return { status: "INVALIDATED", confirmed: false, invalidated: true, inZone, deepInside, reason: "Opposite range boundary broke before retest confirmed." } satisfies RetestEvaluation;
     if (!inZone) return { status: "WAITING", confirmed: false, invalidated: false, inZone, deepInside, reason: "Waiting for retest into boundary zone." } satisfies RetestEvaluation;
     const confirmed = direction === "LONG"
@@ -688,9 +730,10 @@ export class RangeDecisionEngine {
     if (input.falseBreakout?.falseBreakout) return decision("FALSE_BREAKOUT", input.falseBreakout.reason);
     if (!input.breakout || input.breakout.status === "NONE") return decision("WAITING_FOR_BREAKOUT", "Range locked; waiting for breakout.");
     if (input.breakout.status === "WICK_ONLY") return decision(input.breakout.direction === "LONG" ? "POTENTIAL_BUY" : "POTENTIAL_SELL", input.breakout.reason);
-    if (input.breakout.directEntryBlocked) return decision("WAITING_FOR_RETEST", input.breakout.reason);
+    if (input.retest?.status === "EXPIRED") return decision("EXPIRED", input.retest.reason);
     if (input.retest && input.retest.status === "WAITING") return decision("WAITING_FOR_RETEST", input.retest.reason);
     if (input.retest?.invalidated) return decision("INVALIDATED", input.retest.reason);
+    if (input.breakout.directEntryBlocked) return decision("WAITING_FOR_RETEST", input.breakout.reason);
     if (input.riskPermitted === false) return decision("BLOCKED", "Risk engine blocked the setup.");
     if (input.signalMode === "OBSERVATION_ONLY" || input.signalMode === "BACKTEST_ONLY" || input.signalMode === "DISABLED") return decision("RANGE_LOCKED", "Range signal mode is not active.");
     return decision(input.breakout.direction === "LONG" ? "BUY_READY" : "SELL_READY", "Range breakout setup is ready.");
@@ -720,7 +763,7 @@ function tradingRangeFromBounds(input: {
     symbol: input.context.symbol,
     source: input.source,
     formationMethod: input.formationMethod,
-    detectorVersion: input.source === "MAX_OPTIONS_ORB" ? "ORB_ADAPTER_V1" : "HORIZONTAL_RANGE_OBSERVATION_V1",
+    detectorVersion: input.source === "MAX_OPTIONS_ORB" || input.source === "MAX_OPTIONS_NY_ORB" ? "ORB_ADAPTER_V1" : input.source === "HORIZONTAL_CONSOLIDATION" ? "HORIZONTAL_RANGE_DETECTOR_V1" : "RANGE_DETECTOR_V1",
     strategyVersion: input.context.strategyVersion,
     timeframe: "5min",
     startedAt: input.startedAt,
@@ -783,6 +826,53 @@ function emptyResult(detectorCode: string, status: RangeDetectionResult["status"
   };
 }
 
+function rejectedHorizontalStructureResult(detectorCode: string, context: RangeDetectionContext, candles: Candle[], config: HorizontalRangeConfig): RangeDetectionResult {
+  if (candles.length < config.minimumRangeCandles) return emptyResult(detectorCode, "NONE", "No valid horizontal consolidation range detected.");
+  const atr = Math.max(Number(context.atr5m ?? medianTrueRange(candles) ?? 0), 0.00001);
+  const highSlope = signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.high), atr);
+  const lowSlope = signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.low), atr);
+  const flatThreshold = Math.max(config.maximumBoundarySlopeAtrPerBar, 0.02);
+  const classification = classifyRejectedStructure(highSlope, lowSlope, flatThreshold);
+  const evaluation = rule(
+    "HORIZONTAL_STRUCTURE_CLASSIFICATION",
+    `Rejected non-horizontal structure: ${classification}`,
+    "FAIL",
+    true,
+    `${highSlope.toFixed(3)}/${lowSlope.toFixed(3)}`,
+    `both slopes <= ${flatThreshold}`
+  );
+  return {
+    detectorCode,
+    status: "NONE",
+    evidence: {
+      candleIds: candles.map(candleId),
+      startCandleId: candles[0] ? candleId(candles[0]) : null,
+      endCandleId: candles.at(-1) ? candleId(candles.at(-1)!) : null,
+      structureClassification: classification,
+      upperSlopeAtrPerBar: Number(Math.abs(highSlope).toFixed(3)),
+      lowerSlopeAtrPerBar: Number(Math.abs(lowSlope).toFixed(3)),
+      validationRules: [evaluation]
+    },
+    failures: [evaluation],
+    warnings: []
+  };
+}
+
+function classifyRejectedStructure(highSlopeAtrPerBar: number, lowSlopeAtrPerBar: number, flatThreshold: number) {
+  const highUp = highSlopeAtrPerBar > flatThreshold;
+  const highDown = highSlopeAtrPerBar < -flatThreshold;
+  const lowUp = lowSlopeAtrPerBar > flatThreshold;
+  const lowDown = lowSlopeAtrPerBar < -flatThreshold;
+  const highFlat = Math.abs(highSlopeAtrPerBar) <= flatThreshold;
+  const lowFlat = Math.abs(lowSlopeAtrPerBar) <= flatThreshold;
+  if (highUp && lowUp) return "ASCENDING_CHANNEL";
+  if (highDown && lowDown) return "DESCENDING_CHANNEL";
+  if (highFlat && lowUp) return "ASCENDING_TRIANGLE";
+  if (lowFlat && highDown) return "DESCENDING_TRIANGLE";
+  if (highDown && lowUp) return "SYMMETRICAL_TRIANGLE";
+  return "UNKNOWN_NON_HORIZONTAL";
+}
+
 function boundary(center: number, tolerance: number, toleranceMethod: RangeBoundaryZone["toleranceMethod"], toleranceValue: number): RangeBoundaryZone {
   return { center, lowerBound: center - tolerance, upperBound: center + tolerance, toleranceMethod, toleranceValue };
 }
@@ -833,6 +923,28 @@ function independentTouches(candles: Candle[], predicate: (candle: Candle) => bo
   return touches;
 }
 
+function boundaryReactionPoints(candles: Candle[], side: "UPPER" | "LOWER", zone: RangeBoundaryZone, midpoint: number, minimumBarsBetweenTouches: number) {
+  const points: Array<{ index: number; price: number }> = [];
+  let lastTouchIndex = -Infinity;
+  let visitedOppositeHalf = true;
+  for (let index = 0; index < candles.length; index += 1) {
+    const candle = candles[index];
+    const oppositeHalf = side === "UPPER" ? candle.close < midpoint : candle.close > midpoint;
+    if (oppositeHalf) visitedOppositeHalf = true;
+    const rejectedBoundary = side === "UPPER"
+      ? candle.high >= zone.lowerBound && candle.close <= zone.upperBound
+      : candle.low <= zone.upperBound && candle.close >= zone.lowerBound;
+    if (!rejectedBoundary) continue;
+    const independent = index - lastTouchIndex >= minimumBarsBetweenTouches || visitedOppositeHalf;
+    if (independent) {
+      points.push({ index, price: side === "UPPER" ? candle.high : candle.low });
+      visitedOppositeHalf = false;
+    }
+    lastTouchIndex = index;
+  }
+  return points;
+}
+
 function directionalEfficiency(candles: Candle[]) {
   if (candles.length < 2) return 1;
   const netMove = Math.abs(candles.at(-1)!.close - candles[0].close);
@@ -852,11 +964,41 @@ function midpointCrosses(candles: Candle[], midpoint: number) {
   return crosses;
 }
 
+function midpointBalanceRatio(candles: Candle[], midpoint: number) {
+  if (candles.length === 0) return 0;
+  const above = candles.filter((candle) => candle.close >= midpoint).length;
+  const below = candles.length - above;
+  return 1 - Math.abs(above - below) / candles.length;
+}
+
 function boundarySlopeAtrPerBar(values: number[], atr: number) {
   if (values.length < 2) return 0;
   const first = values[0];
   const last = values.at(-1)!;
   return Number((Math.abs((last - first) / (values.length - 1)) / Math.max(atr, 0.00001)).toFixed(3));
+}
+
+function signedBoundarySlopeAtrPerBar(values: number[], atr: number) {
+  if (values.length < 2) return 0;
+  const first = values[0];
+  const last = values.at(-1)!;
+  return Number((((last - first) / (values.length - 1)) / Math.max(atr, 0.00001)).toFixed(3));
+}
+
+function reactionSlopeAtrPerBar(points: Array<{ index: number; price: number }>, atr: number) {
+  if (points.length < 2) return 0;
+  const count = points.length;
+  const meanX = points.reduce((sum, point) => sum + point.index, 0) / count;
+  const meanY = points.reduce((sum, point) => sum + point.price, 0) / count;
+  const varianceX = points.reduce((sum, point) => sum + (point.index - meanX) ** 2, 0);
+  if (varianceX <= 0) return 0;
+  const covariance = points.reduce((sum, point) => sum + (point.index - meanX) * (point.price - meanY), 0);
+  const slope = covariance / varianceX;
+  return Number((Math.abs(slope) / Math.max(atr, 0.00001)).toFixed(3));
+}
+
+function firstBreakoutIndex(candles: Candle[], range: TradingRange, direction: "LONG" | "SHORT") {
+  return candles.findIndex((candle) => direction === "LONG" ? candle.close > range.upperZone.upperBound : candle.close < range.lowerZone.lowerBound);
 }
 
 function horizontalQualityScore(input: {
@@ -865,6 +1007,7 @@ function horizontalQualityScore(input: {
   containmentRatio: number;
   efficiencyRatio: number;
   midpointCrossCount: number;
+  balancedMidpointRatio: number;
   upperSlopeAtrPerBar: number;
   lowerSlopeAtrPerBar: number;
   widthAtr: number;
@@ -876,9 +1019,9 @@ function horizontalQualityScore(input: {
   const horizontality = Math.max(0, 1 - (input.upperSlopeAtrPerBar + input.lowerSlopeAtrPerBar) / Math.max(input.config.maximumBoundarySlopeAtrPerBar * 2, 0.00001)) * 15;
   const duration = Math.min(input.candleCount / input.config.maximumRangeCandles, 1) * 10;
   const midpoint = Math.min(input.midpointCrossCount / input.config.minimumMidpointCrosses, 1) * 10;
-  const efficiency = Math.max(0, 1 - input.efficiencyRatio / Math.max(input.config.maximumEfficiencyRatio, 0.00001)) * 10;
+  const balance = Math.min(input.balancedMidpointRatio / 0.6, 1) * 10;
   const widthOk = input.widthAtr >= input.config.minimumWidthAtr && input.widthAtr <= input.config.maximumWidthAtr ? 10 : 0;
-  return Math.round(touchScore + containment + horizontality + duration + midpoint + efficiency + widthOk);
+  return Math.round(touchScore + containment + horizontality + duration + midpoint + balance + widthOk);
 }
 
 function withLifecycleReason(range: TradingRange, reason: string): TradingRange {

@@ -3171,6 +3171,7 @@ function LiveStrategyCenterPanel({
   const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
   const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
   const missing = firstMissingRule(rows);
+  const module1Path = moduleCode === "orb_max_options" ? module1ActivePath(setup) : null;
   return (
     <Panel icon={<ShieldCheck />} title="Strategy Center">
       <div className={`live-signal-summary ${signal.tone}`}>
@@ -3180,6 +3181,13 @@ function LiveStrategyCenterPanel({
         </div>
         <em>{setup?.scenario ? formatScenario(setup.scenario) : "Waiting for valid setup"}</em>
       </div>
+      {module1Path ? (
+        <div className="live-missing-rule">
+          <span>Active Module 1 Path</span>
+          <strong>{module1Path}</strong>
+          <em>{setup?.final_reason ?? "ORB is primary. Horizontal Range Breakout can take over only after its breakout/retest path is valid."}</em>
+        </div>
+      ) : null}
       <div className="live-trade-plan">
         <Metric label="Direction" value={trade?.direction ?? setup?.direction ?? "--"} />
         <Metric label="Entry" value={formatPriceValue(entry)} />
@@ -3194,6 +3202,13 @@ function LiveStrategyCenterPanel({
           <em>{missing?.explanation ?? setup?.final_reason ?? "Waiting for a valid Module 2 evidence chain."}</em>
         </div>
       ) : null}
+      {moduleCode === "orb_max_options" ? (
+        <div className="live-missing-rule">
+          <span>{missing ? "Next Missing Rule" : "Entry Gate"}</span>
+          <strong>{missing ? missing.name ?? formatScenario(missing.rule_code ?? missing.ruleCode) : "Ready when checklist remains valid"}</strong>
+          <em>{missing?.explanation ?? setup?.final_reason ?? "Waiting for a valid Module 1 ORB or horizontal range path."}</em>
+        </div>
+      ) : null}
       <div className="live-check-summary">
         {sections.map((section) => (
           <div key={section.title}>
@@ -3206,6 +3221,15 @@ function LiveStrategyCenterPanel({
   );
 }
 
+function module1ActivePath(setup?: any) {
+  const scenario = String(setup?.scenario ?? "");
+  if (scenario.startsWith("HORIZONTAL_RANGE_")) return "Horizontal Range Breakout";
+  if (scenario.includes("SWEEP")) return "ORB Sweep Reversal / Sweep Continuation";
+  if (scenario.includes("RETEST")) return "ORB Breakout Retest";
+  if (scenario.includes("BREAKOUT")) return "ORB Breakout";
+  return "Waiting: ORB primary, horizontal range standby";
+}
+
 function RangeEnginePanel({ setup }: { setup?: any }) {
   const engine = setup?.scenario_flags?.genericRangeEngine ?? {};
   const tradingRange = setup?.scenario_flags?.tradingRange ?? engine?.orb?.range ?? {};
@@ -3214,6 +3238,12 @@ function RangeEnginePanel({ setup }: { setup?: any }) {
   const falseBreakout = engine?.falseBreakout ?? {};
   const retest = engine?.retest ?? {};
   const decision = engine?.decision ?? {};
+  const horizontalRange = horizontal?.range ?? {};
+  const horizontalEvidence = horizontalRange?.sourceEvidence ?? {};
+  const horizontalDecision = horizontal?.decision ?? {};
+  const horizontalBreakout = horizontal?.breakout ?? {};
+  const horizontalRetest = horizontal?.retest ?? {};
+  const conflict = engine?.conflict ?? horizontal?.conflict ?? {};
   return (
     <Panel icon={<Layers />} title="Range Engine">
       <div className="live-side-metrics">
@@ -3227,12 +3257,23 @@ function RangeEnginePanel({ setup }: { setup?: any }) {
         <Metric label="Retest" value={retest.status ?? "--"} />
         <Metric label="Decision" value={decision.status ?? "--"} />
         <Metric label="Horizontal" value={horizontal.enabled ? `${horizontal.status ?? "WAIT"} · active signal` : "Disabled"} />
+        <Metric label="H decision" value={horizontalDecision.status ?? "--"} />
+        <Metric label="H breakout" value={horizontalBreakout.status ? `${horizontalBreakout.status}${horizontalBreakout.direction ? ` ${horizontalBreakout.direction}` : ""}` : "--"} />
+        <Metric label="H retest" value={horizontalRetest.status ?? "--"} />
+        <Metric label="Conflict" value={conflict.status ?? "--"} />
       </div>
       <p className="reason">{decision.reason ?? "ORB remains first priority. Horizontal range breakout can trigger the MVP flow when its breakout, retest, conflict, and risk gates pass."}</p>
       {horizontal?.range ? (
         <div className="live-range-observation">
           <strong>Horizontal breakout profile</strong>
           <span>{Number(horizontal.range.low).toFixed(2)} - {Number(horizontal.range.high).toFixed(2)} · quality {horizontal.range.qualityScore ?? "--"}</span>
+          <div className="range-evidence-grid">
+            <span>Structure {horizontalEvidence.structureClassification ?? "HORIZONTAL_CONSOLIDATION"}</span>
+            <span>Touches {horizontalEvidence.upperTouchCount ?? "--"}/{horizontalEvidence.lowerTouchCount ?? "--"}</span>
+            <span>Containment {horizontalEvidence.containmentRatio == null ? "--" : `${Math.round(Number(horizontalEvidence.containmentRatio) * 100)}%`}</span>
+            <span>Balance {horizontalEvidence.balancedMidpointRatio == null ? "--" : `${Math.round(Number(horizontalEvidence.balancedMidpointRatio) * 100)}%`}</span>
+            <span>Accepted breaks {horizontalEvidence.acceptedBreakoutCount ?? 0}</span>
+          </div>
         </div>
       ) : null}
     </Panel>
@@ -7624,6 +7665,11 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
           ? `Active horizontal range detected from ${formatPriceValue(horizontal.range.low)} to ${formatPriceValue(horizontal.range.high)}. A confirmed breakout/retest can create predictions, BUY/SELL signals, and paper trades.`
           : "NY-only horizontal breakout profile is active, waiting for a valid consolidation range."
     },
+    checklistRow(byCode, "HORIZONTAL_RANGE_LOCKED", "Horizontal range is locked", horizontal?.range ? "PASS" : horizontal?.enabled ? "WAITING" : "NOT_APPLICABLE", horizontal?.range ? "A valid consolidation range is locked for Module 1." : "Waiting for a valid NY horizontal consolidation range."),
+    checklistRow(byCode, "HORIZONTAL_BREAKOUT_CONFIRMED", "Horizontal breakout confirmed", horizontal?.breakout?.confirmed ? "PASS" : horizontal?.range ? "WAITING" : "NOT_APPLICABLE", horizontal?.breakout?.reason ?? "Waiting for a completed candle to close outside the horizontal range."),
+    checklistRow(byCode, "HORIZONTAL_RETEST_CONFIRMED", "Horizontal retest confirmed", horizontal?.retest?.confirmed ? "PASS" : horizontal?.breakout?.confirmed ? "WAITING" : "NOT_APPLICABLE", horizontal?.retest?.reason ?? "Waiting for a clean retest/rejection after breakout."),
+    checklistRow(byCode, "HORIZONTAL_CONFLICT_CLEAR", "Horizontal conflict clear", horizontal?.conflict?.status === "CONFLICT" ? "FAIL" : horizontal?.range ? "PASS" : "NOT_APPLICABLE", horizontal?.conflict?.reason ?? "No opposite active range conflict detected."),
+    checklistRow(byCode, "HORIZONTAL_QUALITY_SCORE", "Horizontal quality score", horizontal?.range?.qualityScore == null ? "NOT_APPLICABLE" : Number(horizontal.range.qualityScore) >= 60 ? "PASS" : "FAIL", horizontal?.range?.qualityScore == null ? "Waiting for horizontal quality score." : `Horizontal range quality is ${horizontal.range.qualityScore}.`),
     {
       rule_code: "STRICT_CHECKLIST",
       name: "Strict checklist gate",
