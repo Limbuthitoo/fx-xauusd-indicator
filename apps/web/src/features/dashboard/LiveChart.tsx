@@ -96,6 +96,7 @@ export type TwelveDataChartProps = {
     openingRangeEndAt?: string | null;
   }>;
   setup?: {
+    id?: string;
     module_code?: string | null;
     status?: string;
     direction?: string;
@@ -105,6 +106,7 @@ export type TwelveDataChartProps = {
     stop_price?: number | string | null;
     target_price?: number | string | null;
     scenario_flags?: any;
+    evaluations?: any[];
     coreEvidence?: any;
   } | null;
   priceLines?: ChartPriceLine[];
@@ -162,7 +164,21 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [chartLoading, setChartLoading] = useState(true);
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
   const [evidenceSetup, setEvidenceSetup] = useState<TwelveDataChartProps["setup"] | null>(null);
-  const activeEvidenceSetup = moduleCode === "high_probability_strategy_2" ? activeSetup ?? evidenceSetup : activeSetup;
+  const activeEvidenceSetup = useMemo(() => {
+    if (moduleCode !== "high_probability_strategy_2") return activeSetup;
+    if (!activeSetup) return evidenceSetup;
+    if (!evidenceSetup || evidenceSetup.id !== activeSetup.id) return activeSetup;
+    return {
+      ...activeSetup,
+      ...evidenceSetup,
+      scenario_flags: {
+        ...(activeSetup.scenario_flags ?? {}),
+        ...(evidenceSetup.scenario_flags ?? {})
+      },
+      evaluations: evidenceSetup.evaluations ?? activeSetup.evaluations,
+      coreEvidence: evidenceSetup.coreEvidence ?? activeSetup.coreEvidence
+    };
+  }, [moduleCode, activeSetup, evidenceSetup]);
   const orbRangeState = useMemo(
     () => moduleCode === "orb_max_options" ? module1OrbRangeState(openingRange, candles, session) : null,
     [moduleCode, openingRange, candles, session]
