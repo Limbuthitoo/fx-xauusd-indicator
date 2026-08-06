@@ -290,7 +290,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     [moduleCode, orbRangeState, openingRange]
   );
   const effectiveOrbRanges = useMemo(
-    () => moduleCode === "orb_max_options" ? normalizeOrbRanges(orbRanges, effectiveOpeningRange) : [],
+    () => moduleCode === "orb_max_options" ? module1VisibleOrbRanges(orbRanges, effectiveOpeningRange) : [],
     [moduleCode, orbRanges, effectiveOpeningRange]
   );
 
@@ -569,9 +569,8 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
     ];
-    const orbLines = effectiveShowOrbSessionLevels ? effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index)) : [];
     const lines = moduleCode === "orb_max_options"
-      ? [...orbLines, ...defaultLines]
+      ? defaultLines
       : priceLines?.length
         ? priceLines
             .filter((line) => shouldShowPriceLine(moduleCode, line, indicatorVisibility))
@@ -857,16 +856,20 @@ function normalizeOrbRanges(
   return [];
 }
 
-function sessionOrbPriceLines(range: ReturnType<typeof normalizeOrbRanges>[number], index: number) {
-  const colors = index === 0
-    ? { high: "#1f7a8c", mid: "#f0b429", low: "#e05252" }
-    : { high: "#38bdf8", mid: "#d9a520", low: "#ff7a7a" };
-  const label = range.shortLabel ?? "ORB";
-  return [
-    { title: `${label} ORB High`, price: numberValue(range.high), color: colors.high },
-    { title: `${label} ORB Mid`, price: numberValue(range.midpoint), color: colors.mid },
-    { title: `${label} ORB Low`, price: numberValue(range.low), color: colors.low }
-  ];
+function module1VisibleOrbRanges(
+  ranges: NonNullable<TwelveDataChartProps["orbRanges"]>,
+  fallback: TwelveDataChartProps["openingRange"]
+) {
+  const normalized = normalizeOrbRanges(ranges, fallback);
+  const newYorkRanges = normalized
+    .filter((range) => sessionShortLabel(range.session_preset) === "NY" || range.shortLabel === "NY")
+    .filter((range) => range.session_start_at);
+  if (newYorkRanges.length > 0) {
+    const latest = newYorkRanges
+      .sort((left, right) => new Date(right.session_start_at ?? 0).getTime() - new Date(left.session_start_at ?? 0).getTime())[0];
+    return latest ? [latest] : [];
+  }
+  return normalized.slice(0, 1).filter((range) => range.session_start_at);
 }
 
 function sessionShortLabel(preset?: string | null) {
@@ -1196,7 +1199,7 @@ function buildPositionedOverlays(input: {
   const sessionLow = Math.min(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.low));
   if (input.moduleCode === "orb_max_options") {
     if (input.showOrbSessionLevels !== false) {
-      const ranges = input.orbRanges?.length ? input.orbRanges : normalizeOrbRanges([], input.openingRange);
+      const ranges = input.orbRanges?.length ? input.orbRanges.filter((range) => range.session_start_at) : [];
       ranges.forEach((range, index) => {
         const prefix = range.shortLabel ?? "ORB";
         addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.session_start_at, range.high);
