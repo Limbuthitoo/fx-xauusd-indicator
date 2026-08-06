@@ -685,7 +685,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
               ) : (
                 <span><i style={{ background: "#56616b" }} />NY ORB levels hidden</span>
               )}
-              <span><i style={{ background: "#8b5cf6" }} />NY horizontal observation</span>
+              <span><i style={{ background: "#8b5cf6" }} />NY horizontal breakout</span>
             </>
           )}
         </div>
@@ -1223,8 +1223,8 @@ function buildPositionedOverlays(input: {
     const horizontalRange = horizontal?.range;
     if (input.indicatorVisibility?.horizontalRange !== false && horizontal?.enabled === true && horizontalRange?.low != null && horizontalRange?.high != null) {
       addBox(
-        "module1-horizontal-observation",
-        "NY horizontal observation",
+        "module1-horizontal-breakout",
+        "NY horizontal breakout",
         "orderBlock",
         horizontalRange.startedAt ?? horizontalRange.detectedAt,
         horizontalRange.lockedAt ?? horizontalRange.detectedAt ?? latestTime,

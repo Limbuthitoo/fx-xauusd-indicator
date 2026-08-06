@@ -3877,7 +3877,16 @@ function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
   const byCode = new Map(evaluations.map((evaluation: any) => [evaluation.ruleCode ?? evaluation.rule_code, evaluation.status]));
   if (moduleCode === "orb_max_options") {
     const closePassed = byCode.get("CLOSE_ABOVE_ORB_HIGH") === "PASS" || byCode.get("CLOSE_BELOW_ORB_LOW") === "PASS";
-    return closePassed && required.every((code) => byCode.get(code) === "PASS");
+    const orbPassed = closePassed && required.every((code) => byCode.get(code) === "PASS");
+    const horizontalPassed = [
+      "HORIZONTAL_RANGE_LOCKED",
+      "HORIZONTAL_BREAKOUT_CONFIRMED",
+      "HORIZONTAL_RETEST_CONFIRMED",
+      "HORIZONTAL_CONFLICT_CLEAR",
+      "ENTRY_NOT_OVEREXTENDED",
+      "RISK_PERMISSION"
+    ].every((code) => byCode.get(code) === "PASS");
+    return orbPassed || horizontalPassed;
   }
   if (moduleCode === "high_probability_strategy_2") {
     return required.every((code) => byCode.get(code) === "PASS");
@@ -3923,6 +3932,15 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
       ruleCode === "CLOSE_ABOVE_ORB_HIGH" || ruleCode === "CLOSE_BELOW_ORB_LOW"
         ? true
         : false;
+    const horizontalMandatory = new Set([
+      "HORIZONTAL_RANGE_LOCKED",
+      "HORIZONTAL_BREAKOUT_CONFIRMED",
+      "HORIZONTAL_RETEST_CONFIRMED",
+      "HORIZONTAL_CONFLICT_CLEAR"
+    ]);
+    const horizontalConfirmation = new Set(["HORIZONTAL_QUALITY_SCORE"]);
+    if (horizontalMandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+    if (horizontalConfirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
     if (mandatory.includes(ruleCode) || breakoutRule) return { ruleLayer: "MANDATORY", requiredForEntry: true };
     if (module1Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
     if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
@@ -4656,11 +4674,18 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext)),
     rangeEngineMetadata
   );
+  const horizontalDecision = buildHorizontalRangeSetupDecision(rangeEngineMetadata, currentCandle, session);
+  const usingHorizontalDecision = Boolean(horizontalDecision && !["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status)));
+  if (horizontalDecision && !["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status))) {
+    decision = withModule1RangeMetadata(range, withChecklistMetadata("orb_max_options", horizontalDecision), rangeEngineMetadata);
+  }
   let risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? initialRisk;
   if (risk.status !== initialRisk.status) {
     decision = withModule1RangeMetadata(
       range,
-      withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status })),
+      withChecklistMetadata("orb_max_options", usingHorizontalDecision && horizontalDecision
+        ? horizontalDecision
+        : evaluateSetup({ ...ruleContext, riskStatus: risk.status })),
       rangeEngineMetadata
     );
     risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? risk;
@@ -4729,7 +4754,7 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
     ...DEFAULT_HORIZONTAL_RANGE_CONFIG,
     ...horizontalInput,
     enabled: activeNewYorkRange && horizontalInput.enabled === true,
-    observationOnly: true
+    observationOnly: false
   };
   const context = {
     symbol: session.symbol,
@@ -4799,13 +4824,39 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
     riskPermitted: true,
     signalMode: "ACTIVE_SIGNAL"
   });
+  const horizontalRange = horizontalResult.range ?? null;
+  const horizontalProfile = RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION;
+  const horizontalBreakout = horizontalRange
+    ? evaluateRangeBreakout(horizontalRange as any, currentCandle, { ...horizontalProfile, atr: calculateSimpleAtr(candles5m, 14) } as any)
+    : null;
+  const horizontalFalseBreakout = horizontalRange
+    ? new FalseBreakoutEngine().evaluate(horizontalRange as any, currentCandle, previousCandles)
+    : null;
+  const horizontalRetest = horizontalRange && horizontalBreakout?.direction
+    ? new RetestEngine().evaluate(horizontalRange as any, horizontalBreakout.direction, currentCandle, horizontalProfile)
+    : null;
+  const horizontalConflict = horizontalRange
+    ? new RangeConflictResolver().resolve([horizontalRange as any], horizontalBreakout?.direction)
+    : null;
+  const horizontalDecision = horizontalRange
+    ? new RangeDecisionEngine().decide({
+        range: horizontalRange as any,
+        breakout: horizontalBreakout,
+        falseBreakout: horizontalFalseBreakout,
+        retest: horizontalRetest,
+        conflict: horizontalConflict,
+        dataHealthy: session.data_status !== "MISSING_CANDLES" && session.data_status !== "INVALID",
+        riskPermitted: true,
+        signalMode: "ACTIVE_SIGNAL"
+      })
+    : null;
 
   return {
     version: "GENERIC_RANGE_ENGINE_V1",
     authoritativeDetector: "MAX_OPTIONS_NY_ORB",
     authoritativeFormationMethod: "TIME_BASED",
     behaviorPreserved: true,
-    horizontalObservationOnly: true,
+    horizontalObservationOnly: false,
     activeSessionPreset: range.module1RangeSessionPreset ?? session.session_preset,
     nyOnly: true,
     breakout,
@@ -4825,11 +4876,104 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
       status: horizontalResult.status,
       enabled: horizontalConfig.enabled,
       nyOnly: true,
-      observationOnly: true,
-      range: horizontalResult.range ?? null,
+      observationOnly: false,
+      signalMode: "ACTIVE_SIGNAL",
+      range: horizontalRange,
+      breakout: horizontalBreakout,
+      falseBreakout: horizontalFalseBreakout,
+      retest: horizontalRetest,
+      conflict: horizontalConflict,
+      decision: horizontalDecision,
       failures: horizontalResult.failures,
       warnings: horizontalResult.warnings
     }
+  };
+}
+
+function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCandle: Candle, session: any) {
+  const horizontal = rangeEngineMetadata?.horizontal;
+  const range = horizontal?.range;
+  const breakout = horizontal?.breakout;
+  const retest = horizontal?.retest;
+  const decision = horizontal?.decision;
+  if (!horizontal?.enabled || !range || !["BUY_READY", "SELL_READY"].includes(String(decision?.status))) return null;
+  const direction = decision.status === "BUY_READY" ? "LONG" : "SHORT";
+  const entry = currentCandle.close;
+  const buffer = Math.max(Number(range.width ?? 0) * 0.08, 0.1);
+  const stop = direction === "LONG"
+    ? Math.min(Number(range.low), currentCandle.low) - buffer
+    : Math.max(Number(range.high), currentCandle.high) + buffer;
+  const riskDistance = Math.max(Math.abs(entry - stop), 0.00001);
+  const target = direction === "LONG" ? entry + riskDistance * 2 : entry - riskDistance * 2;
+  const score = Math.min(95, Math.max(70, Math.round(Number(range.qualityScore ?? 70) + (retest?.confirmed ? 10 : 0) + (breakout?.confirmed ? 8 : 0))));
+  const evaluations = [
+    module1RangeRule("HORIZONTAL_RANGE_LOCKED", "Horizontal range is locked", true, true, range.state, "LOCKED", "A valid consolidation range is locked for Module 1."),
+    module1RangeRule("HORIZONTAL_BREAKOUT_CONFIRMED", "Horizontal breakout confirmed", Boolean(breakout?.confirmed), true, breakout?.status, "CONFIRMED", breakout?.reason ?? "Waiting for a completed horizontal breakout candle."),
+    module1RangeRule("HORIZONTAL_RETEST_CONFIRMED", "Horizontal retest confirmed", Boolean(retest?.confirmed), true, retest?.status, "CONFIRMED", retest?.reason ?? "Waiting for breakout retest confirmation."),
+    module1RangeRule("HORIZONTAL_CONFLICT_CLEAR", "No horizontal range conflict", horizontal?.conflict?.status !== "CONFLICT", true, horizontal?.conflict?.status ?? "CLEAR", "CLEAR/ALIGNED", horizontal?.conflict?.reason ?? "No conflicting range evidence."),
+    module1RangeRule("ENTRY_NOT_OVEREXTENDED", "Entry is not overextended", breakout?.directEntryBlocked !== true, true, breakout?.extensionRatio ?? null, "within profile limit", breakout?.directEntryBlocked ? "Horizontal breakout is overextended; wait for retest." : "Horizontal entry is within the configured extension profile."),
+    module1RangeRule("RISK_PERMISSION", "Risk engine permits the trade", true, true, "PERMITTED", "PERMITTED", "Initial risk pass; final risk engine gate runs before paper trade."),
+    module1RangeRule("HORIZONTAL_QUALITY_SCORE", "Horizontal range quality", score >= 70, false, score, ">= 70", `Horizontal range quality score is ${score}/100.`)
+  ];
+  return {
+    scenario: direction === "LONG" ? "HORIZONTAL_RANGE_BREAKOUT_BUY" : "HORIZONTAL_RANGE_BREAKOUT_SELL",
+    direction,
+    status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
+    entryPrice: Number(entry.toFixed(5)),
+    stopPrice: Number(stop.toFixed(5)),
+    targetPrice: Number(target.toFixed(5)),
+    finalReason: `${direction === "LONG" ? "BUY" : "SELL"} horizontal range breakout/retest passed. Module 1 is using horizontal range as an active MVP signal profile because ORB is not currently ready.`,
+    evaluations,
+    scenarioFlags: {
+      setupTier: "HORIZONTAL",
+      fullChecklistMatched: true,
+      mandatoryChecklistMatched: true,
+      horizontalRangeSignal: {
+        range,
+        breakout,
+        retest,
+        decision,
+        tradePlan: {
+          entry: Number(entry.toFixed(5)),
+          stop: Number(stop.toFixed(5)),
+          target: Number(target.toFixed(5)),
+          rewardToRisk: 2,
+          entryLogic: "Entry uses the completed horizontal range breakout/retest confirmation candle.",
+          stopLogic: "Stop is placed beyond the opposite horizontal range boundary or retest candle extreme.",
+          targetLogic: "Target is fixed at 2R from the horizontal range risk distance."
+        }
+      },
+      matrix: {
+        priority: 72,
+        autoEligible: true,
+        checklistMatched: true,
+        mandatoryChecklistMatched: true,
+        setupTier: "HORIZONTAL",
+        selectedScenario: direction === "LONG" ? "HORIZONTAL_RANGE_BREAKOUT_BUY" : "HORIZONTAL_RANGE_BREAKOUT_SELL",
+        tags: ["horizontal-range", "breakout", "retest", "mvp-signal"]
+      }
+    },
+    favorabilityScore: score,
+    favorabilityGrade: score >= 85 ? "A" : "B",
+    favorabilityReasons: [
+      `Horizontal range quality ${score}/100`,
+      breakout?.reason ?? "Breakout confirmed",
+      retest?.reason ?? "Retest confirmed",
+      "Horizontal profile promoted to Module 1 MVP signal path"
+    ]
+  };
+}
+
+function module1RangeRule(ruleCode: string, name: string, passed: boolean, blocking: boolean, actualValue: unknown, requiredValue: unknown, explanation: string) {
+  return {
+    ruleCode,
+    name,
+    status: passed ? "PASS" : "FAIL",
+    blocking,
+    source: "AUTOMATIC",
+    actualValue,
+    requiredValue,
+    explanation
   };
 }
 
@@ -4852,9 +4996,12 @@ async function persistGenericRangeEngineEvidence(session: any, setup: any, metad
   }
   const relationships = Array.isArray(metadata.conflict?.relationships) ? metadata.conflict.relationships : [];
   for (const relationship of relationships) await persistRangeRelationship(session.tenant_id, relationship);
-  const range = metadata.orb.range;
-  const breakout = metadata.breakout;
-  const falseBreakout = metadata.falseBreakout ?? new FalseBreakoutEngine().evaluate(range, currentCandle, previousCandles);
+  const horizontalSetup = String(setup.scenario ?? "").startsWith("HORIZONTAL_RANGE_");
+  const range = horizontalSetup && metadata.horizontal?.range ? metadata.horizontal.range : metadata.orb.range;
+  const breakout = horizontalSetup ? metadata.horizontal?.breakout : metadata.breakout;
+  const falseBreakout = horizontalSetup
+    ? metadata.horizontal?.falseBreakout
+    : metadata.falseBreakout ?? new FalseBreakoutEngine().evaluate(range, currentCandle, previousCandles);
   const state = setup.status === "LONG SETUP READY" || setup.status === "SHORT SETUP READY"
     ? "ENTRY_READY"
     : falseBreakout?.falseBreakout

@@ -3226,12 +3226,12 @@ function RangeEnginePanel({ setup }: { setup?: any }) {
         <Metric label="False break" value={falseBreakout.status ?? "--"} />
         <Metric label="Retest" value={retest.status ?? "--"} />
         <Metric label="Decision" value={decision.status ?? "--"} />
-        <Metric label="Horizontal" value={horizontal.enabled ? `${horizontal.status ?? "WAIT"} · observation` : "Disabled"} />
+        <Metric label="Horizontal" value={horizontal.enabled ? `${horizontal.status ?? "WAIT"} · active signal` : "Disabled"} />
       </div>
-      <p className="reason">{decision.reason ?? "ORB remains authoritative. Horizontal ranges are observation-only until validation gates pass."}</p>
+      <p className="reason">{decision.reason ?? "ORB remains first priority. Horizontal range breakout can trigger the MVP flow when its breakout, retest, conflict, and risk gates pass."}</p>
       {horizontal?.range ? (
         <div className="live-range-observation">
-          <strong>Horizontal observation</strong>
+          <strong>Horizontal breakout profile</strong>
           <span>{Number(horizontal.range.low).toFixed(2)} - {Number(horizontal.range.high).toFixed(2)} · quality {horizontal.range.qualityScore ?? "--"}</span>
         </div>
       ) : null}
@@ -7091,12 +7091,12 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
           <strong>liquiditySweep.strategy</strong>
           <span>{setting?.description ?? "XAUUSD Ultimate Liquidity Sweep thresholds."}</span>
           <em>{setting?.updated_at ? `Updated ${formatNepalTime(setting.updated_at)}` : "Using Module 2 defaults"}</em>
-          <p className="reason">Settings are locked during the live NY window. Any change requires a fresh launch rehearsal before trusting Module 2 signals.</p>
+          <p className="reason">Settings are locked during an active strategy window. Any change requires a fresh launch rehearsal before trusting Module 2 signals.</p>
         </div>
         <div className="setting-fields strategy-fields">
-          <label>NY start<input type="time" value={draft?.newYorkStartTime ?? "09:30"} onChange={(event) => patch("newYorkStartTime", event.target.value)} /></label>
-          <label>NY end<input type="time" value={draft?.newYorkEndTime ?? "12:00"} onChange={(event) => patch("newYorkEndTime", event.target.value)} /></label>
-          <label>NY premarket<input type="time" value={draft?.nyPremarketStartTime ?? "08:00"} onChange={(event) => patch("nyPremarketStartTime", event.target.value)} /></label>
+          <label>Cycle start<input type="time" value={draft?.newYorkStartTime ?? "09:30"} onChange={(event) => patch("newYorkStartTime", event.target.value)} /></label>
+          <label>Cycle end<input type="time" value={draft?.newYorkEndTime ?? "12:00"} onChange={(event) => patch("newYorkEndTime", event.target.value)} /></label>
+          <label>Context start<input type="time" value={draft?.nyPremarketStartTime ?? "08:00"} onChange={(event) => patch("nyPremarketStartTime", event.target.value)} /></label>
           <label>ORB start<input type="time" value={draft?.orbStartTime ?? "09:30"} onChange={(event) => patch("orbStartTime", event.target.value)} /></label>
           <label>ORB end<input type="time" value={draft?.orbEndTime ?? "09:45"} onChange={(event) => patch("orbEndTime", event.target.value)} /></label>
           <label>Min sweep ATR<input type="number" min="0.01" max="5" step="0.01" value={draft?.minimumSweepDistanceATR ?? 0.1} onChange={(event) => patch("minimumSweepDistanceATR", Number(event.target.value))} /></label>
@@ -7365,19 +7365,26 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         codes: ["SCENARIO_SELECTED"]
       },
       {
-        title: "Mandatory Entry Checklist",
-        description: "These rules must pass before Module 1 can produce a paper BUY/SELL.",
+        title: "ORB Mandatory Entry Checklist",
+        description: "A completed ORB breakout, retest, sweep reversal, or mandatory breakout path can produce a Module 1 paper BUY/SELL.",
         codes: ["SESSION_READY", "ORB_LOCKED", "AUTO_ELIGIBLE", "CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW"]
       },
       {
-        title: "Breakout Confirmation Checklist",
-        description: "Quality confirmation for a completed ORB breakout candle.",
+        title: "ORB Confirmation Checklist",
+        description: "Quality evidence for the ORB path. Mandatory-only setups may still trigger while full confirmation continues.",
         codes: ["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]
       },
       {
-        title: "NY Horizontal Observation",
-        description: "Observation-only range evidence. This can support review, but cannot create Module 1 paper trades.",
-        codes: ["HORIZONTAL_RANGE_OBSERVATION"]
+        title: "NY Horizontal Range Signal Path",
+        description: "Independent Module 1 path. When breakout, retest, conflict, extension, and risk gates pass, it can create predictions, BUY/SELL, paper trades, journal, and notifications.",
+        codes: [
+          "HORIZONTAL_RANGE_OBSERVATION",
+          "HORIZONTAL_RANGE_LOCKED",
+          "HORIZONTAL_BREAKOUT_CONFIRMED",
+          "HORIZONTAL_RETEST_CONFIRMED",
+          "HORIZONTAL_CONFLICT_CLEAR",
+          "HORIZONTAL_QUALITY_SCORE"
+        ]
       },
       {
         title: "Risk & Quality Filters",
@@ -7609,13 +7616,13 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
     },
     {
       rule_code: "HORIZONTAL_RANGE_OBSERVATION",
-      name: "NY horizontal range observation",
+      name: "NY horizontal range breakout profile",
       status: horizontal?.enabled !== true ? "NOT_APPLICABLE" : horizontal?.range ? "PASS" : "WAITING",
       explanation: horizontal?.enabled !== true
-        ? "Horizontal observation is only active for the New York Module 1 session."
+        ? "Horizontal range breakout is only active for the New York Module 1 session."
         : horizontal?.range
-          ? `Observation-only range detected from ${formatPriceValue(horizontal.range.low)} to ${formatPriceValue(horizontal.range.high)}. It does not create paper trades.`
-          : "NY-only horizontal observation is active, waiting for a valid consolidation range."
+          ? `Active horizontal range detected from ${formatPriceValue(horizontal.range.low)} to ${formatPriceValue(horizontal.range.high)}. A confirmed breakout/retest can create predictions, BUY/SELL signals, and paper trades.`
+          : "NY-only horizontal breakout profile is active, waiting for a valid consolidation range."
     },
     {
       rule_code: "STRICT_CHECKLIST",

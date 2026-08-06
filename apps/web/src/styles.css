@@ -3462,14 +3462,23 @@ button:hover,
 }
 
 .strategy-setting-row {
-  grid-template-columns: minmax(190px, 0.32fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(220px, 0.34fr) minmax(0, 1fr);
+  gap: 14px;
 }
 
-.strategy-fields {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.strategy-setting-row > button {
+  grid-column: 2;
+  justify-self: end;
+  min-width: 170px;
+}
+
+.setting-row .strategy-fields {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-content: start;
 }
 
 .manual-level-editor {
+  grid-column: 2;
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -3498,6 +3507,10 @@ button:hover,
 .manual-level-row input,
 .manual-level-row select {
   min-width: 0;
+}
+
+.manual-level-row button {
+  min-width: 92px;
 }
 
 .setting-row textarea {
@@ -4580,6 +4593,16 @@ aside {
   }
 
   .setting-row {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-setting-row > button,
+  .manual-level-editor {
+    grid-column: 1;
+    width: 100%;
+  }
+
+  .manual-level-row {
     grid-template-columns: 1fr;
   }
 

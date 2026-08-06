@@ -28,7 +28,8 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
         should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         tier = setup_tier(flags, checklist)
-        reason = f"Module 1 {tier} ORB setup passed. {action} plan is ready with entry, SL, and TP."
+        profile = "Horizontal Range" if is_horizontal_setup(setup) else "ORB"
+        reason = f"Module 1 {tier} {profile} setup passed. {action} plan is ready with entry, SL, and TP."
         return payload("ORB_PAPER_ENTRY_READY" if should_open else "ORB_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
@@ -45,29 +46,55 @@ def required_rules() -> list[str]:
     return ["ORB_LOCKED", "INSIDE_SIGNAL_WINDOW", "ENTRY_NOT_OVEREXTENDED", "RISK_PERMISSION"]
 
 
+def horizontal_required_rules() -> list[str]:
+    return [
+        "HORIZONTAL_RANGE_LOCKED",
+        "HORIZONTAL_BREAKOUT_CONFIRMED",
+        "HORIZONTAL_RETEST_CONFIRMED",
+        "HORIZONTAL_CONFLICT_CLEAR",
+        "ENTRY_NOT_OVEREXTENDED",
+        "RISK_PERMISSION",
+    ]
+
+
 def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
     statuses = {code(row): str(row.get("status")) for row in evaluations}
     close_passed = statuses.get("CLOSE_ABOVE_ORB_HIGH") == "PASS" or statuses.get("CLOSE_BELOW_ORB_LOW") == "PASS"
-    mandatory = close_passed and all(statuses.get(item) == "PASS" for item in required_rules())
+    orb_mandatory = close_passed and all(statuses.get(item) == "PASS" for item in required_rules())
+    horizontal_mandatory = all(statuses.get(item) == "PASS" for item in horizontal_required_rules())
+    mandatory = orb_mandatory or horizontal_mandatory
     rows = [
         {
             "ruleCode": code(row),
             "name": row.get("name"),
             "status": row.get("status"),
             "blocking": bool(row.get("blocking")),
-            "requiredForEntry": code(row) in required_rules() or code(row) in ("CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW"),
+            "requiredForEntry": code(row) in required_rules()
+            or code(row) in horizontal_required_rules()
+            or code(row) in ("CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW"),
         }
         for row in evaluations
     ]
     return {
         "moduleCode": MODULE_CODE,
         "requiredRules": [*required_rules(), "CLOSE_ABOVE_ORB_HIGH_OR_BELOW_ORB_LOW"],
+        "horizontalRequiredRules": horizontal_required_rules(),
         "mandatoryPassed": mandatory,
+        "orbMandatoryPassed": orb_mandatory,
+        "horizontalMandatoryPassed": horizontal_mandatory,
         "requiredPassed": sum(1 for row in rows if row["requiredForEntry"] and row["status"] == "PASS"),
         "requiredTotal": len([row for row in rows if row["requiredForEntry"]]),
         "blockingFailures": [row for row in rows if row["blocking"] and row["status"] != "PASS"],
         "rows": rows,
     }
+
+
+def is_horizontal_setup(setup: dict[str, Any] | None) -> bool:
+    if not setup:
+        return False
+    scenario = str(setup.get("scenario") or "")
+    flags = setup.get("scenario_flags") or {}
+    return scenario.startswith("HORIZONTAL_RANGE_") or bool(flags.get("horizontalRangeSignal"))
 
 
 def payload(decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_open: bool) -> dict[str, Any]:

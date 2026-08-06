@@ -160,6 +160,9 @@ const wickFalseBreak = new FalseBreakoutEngine().evaluate(horizontal.range!, can
 assert.equal(wickFalseBreak.falseBreakout, true, "False-breakout engine must reject wick-only boundary breaks");
 const retest = new RetestEngine().evaluate(horizontal.range!, "LONG", candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));
 assert.equal(retest.confirmed, true, "Retest engine must confirm a clean post-breakout boundary retest");
+const horizontalBreakout = evaluateRangeBreakout(horizontal.range!, candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));
+const horizontalDecision = new RangeDecisionEngine().decide({ range: horizontal.range!, breakout: horizontalBreakout, retest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" });
+assert.equal(horizontalDecision.status, "BUY_READY", "Active horizontal range breakout/retest must be able to trigger the Module 1 MVP chain");
 const conflict = new RangeConflictResolver().resolve([orbRangeResult.range!, horizontal.range!], "LONG");
 assert.notEqual(conflict.status, "CONFLICT", "Aligned/same-direction range evidence must not block ORB");
 
