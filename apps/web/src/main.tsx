@@ -7319,8 +7319,30 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Mandatory Entry Checklist",
-        description: "The institutional sequence must complete in order: NY session, sweep, displacement, BOS/CHoCH, zone, retrace, entry candle.",
-        codes: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE"]
+        description: "The complete engine sequence must pass before Module 2 can produce a production paper BUY/SELL.",
+        codes: [
+          "DATA_HEALTHY",
+          "MARKET_CONTEXT_READY",
+          "MARKET_REGIME_CLASSIFIED",
+          "NY_SESSION_ACTIVE",
+          "DAILY_TRADE_LIMIT",
+          "ACTIVE_SETUP_CONFLICT_CLEAR",
+          "NO_ACTIVE_TRADE_CONFLICT",
+          "RISK_LIMITS_CLEAR",
+          "MANUAL_CONFIRMATION_COMPLETED",
+          "LIQUIDITY_LEVEL_IDENTIFIED",
+          "LIQUIDITY_SWEEP_CONFIRMED",
+          "SWEEP_REJECTION_CONFIRMED",
+          "SWEEP_ACCEPTANCE_BLOCK",
+          "PROTECTED_POINT_CONFIDENCE",
+          "BOS_CHOCH_CONFIRMED",
+          "MSS_STRENGTH",
+          "ENTRY_ZONE_READY",
+          "ENTRY_ZONE_RETRACE",
+          "CONFIRM_ENTRY_CANDLE",
+          "DIRECTIONAL_CONFLICT_CLEAR",
+          "RISK_OK"
+        ]
       },
       {
         title: "Confirmation Checklist",

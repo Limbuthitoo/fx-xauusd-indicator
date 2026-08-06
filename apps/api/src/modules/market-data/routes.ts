@@ -14,6 +14,7 @@ import { requireAdmin, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
+import { recentOrbRangesForTenant } from "../sessions/routes.js";
 
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
@@ -2511,7 +2512,8 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
            LIMIT 100`,
           [symbol, timeframe, session.opening_range_end_at, current.timestamp_utc]
         );
-  const saved = await evaluateAndSaveSetup(session, range, current, previousResult.rows);
+  const evaluationRange = await selectModule1EvaluationRange(session, current, range);
+  const saved = await evaluateAndSaveSetup(session, evaluationRange, current, previousResult.rows);
   const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options");
   let paperTrade = null;
   const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
@@ -4399,6 +4401,54 @@ async function calculateCanonicalOrbRange(session: any) {
   return buildOpeningRange(candles, 0.01, ORB_RANGE_SOURCE_CANDLES);
 }
 
+async function selectModule1EvaluationRange(session: any, currentRow: any, fallbackRange: any) {
+  const recentRanges = await recentOrbRangesForTenant(session.tenant_id, 2).catch(() => []);
+  const candidates = (Array.isArray(recentRanges) ? recentRanges : [])
+    .map((range: any) => module1EvaluationRangeFromRecent(range))
+    .filter((range: any) => range?.status === "LOCKED" && Number.isFinite(Number(range.high)) && Number.isFinite(Number(range.low)));
+  const fallback = {
+    ...fallbackRange,
+    module1RangeLabel: orbSessionLabel(session.session_preset),
+    module1RangeShortLabel: orbSessionShortLabel(session.session_preset),
+    module1RangeSessionPreset: session.session_preset,
+    module1RangeSessionStartAt: session.session_start_at,
+    module1RangeOpeningRangeEndAt: session.opening_range_end_at
+  };
+  const allCandidates = candidates.length > 0 ? candidates : [fallback];
+  const close = Number(currentRow.close);
+  const breakout = allCandidates.find((range: any) => close > Number(range.high) || close < Number(range.low));
+  return breakout ?? allCandidates[0] ?? fallback;
+}
+
+function module1EvaluationRangeFromRecent(range: any) {
+  if (!range) return null;
+  return {
+    status: range.status ?? "LOCKED",
+    high: range.high,
+    low: range.low,
+    midpoint: range.midpoint,
+    width: range.width ?? Math.abs(Number(range.high) - Number(range.low)),
+    width_ticks: range.width_ticks ?? range.widthTicks ?? null,
+    source_candle_count: range.source_candle_count ?? range.sourceCandleCount ?? ORB_RANGE_SOURCE_CANDLES,
+    data_quality_status: range.data_quality_status ?? range.dataQualityStatus ?? "VALID",
+    module1RangeLabel: range.label ?? orbSessionLabel(range.session_preset),
+    module1RangeShortLabel: range.shortLabel ?? orbSessionShortLabel(range.session_preset),
+    module1RangeSessionPreset: range.session_preset,
+    module1RangeSessionDate: range.session_date,
+    module1RangeSessionStartAt: range.session_start_at ?? range.sessionStartAt ?? null,
+    module1RangeOpeningRangeEndAt: range.opening_range_end_at ?? range.openingRangeEndAt ?? null,
+    module1RangeCalculated: range.calculated === true
+  };
+}
+
+function orbSessionShortLabel(preset?: string | null) {
+  if (preset === "SYDNEY_ORB") return "SY";
+  if (preset === "TOKYO_ORB") return "TY";
+  if (preset === "LONDON_ORB") return "LN";
+  if (preset === "NEW_YORK_ORB" || preset === "NY_0915" || preset === "NY_0930") return "NY";
+  return "ORB";
+}
+
 function nearlyEqual(left: unknown, right: unknown, tolerance = 0.00001) {
   const a = Number(left);
   const b = Number(right);
@@ -4474,10 +4524,16 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     riskStatus: initialRisk.status,
     configuration: configuration as any
   };
-  let decision = withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext));
+  let decision = withModule1RangeMetadata(
+    range,
+    withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext))
+  );
   let risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? initialRisk;
   if (risk.status !== initialRisk.status) {
-    decision = withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status }));
+    decision = withModule1RangeMetadata(
+      range,
+      withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status }))
+    );
     risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? risk;
   }
 	  const saved = await query(
@@ -4532,6 +4588,27 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   ]);
   await query("UPDATE strategy_versions SET generated_signal_count = generated_signal_count + 1 WHERE id = $1", [session.strategy_version_id]);
   return { setup: saved.rows[0], decision, risk };
+}
+
+function withModule1RangeMetadata(range: any, decision: any) {
+  return {
+    ...decision,
+    scenarioFlags: {
+      ...(decision.scenarioFlags ?? {}),
+      module1OrbRange: {
+        label: range.module1RangeLabel ?? "ORB",
+        shortLabel: range.module1RangeShortLabel ?? "ORB",
+        sessionPreset: range.module1RangeSessionPreset ?? null,
+        sessionDate: range.module1RangeSessionDate ?? null,
+        sessionStartAt: range.module1RangeSessionStartAt ?? null,
+        openingRangeEndAt: range.module1RangeOpeningRangeEndAt ?? null,
+        high: Number(range.high),
+        midpoint: Number(range.midpoint),
+        low: Number(range.low),
+        calculated: range.module1RangeCalculated === true
+      }
+    }
+  };
 }
 
 async function saveModuleDecision(session: any, moduleCode: string, decision: any, currentRow: any) {
