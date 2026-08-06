@@ -59,6 +59,28 @@ module1 = decide_module1(
     HEALTH,
 )
 
+module1_horizontal_rules = [
+    "HORIZONTAL_RANGE_LOCKED",
+    "HORIZONTAL_BREAKOUT_CONFIRMED",
+    "HORIZONTAL_RETEST_CONFIRMED",
+    "HORIZONTAL_CONFLICT_CLEAR",
+    "ENTRY_NOT_OVEREXTENDED",
+    "RISK_PERMISSION",
+]
+module1_horizontal = decide_module1(
+    {
+        **setup(
+            "orb_max_options",
+            "SHORT",
+            module1_horizontal_rules,
+            {"mandatoryChecklistMatched": True, "setupTier": "HORIZONTAL", "horizontalRangeSignal": True},
+        ),
+        "scenario": "HORIZONTAL_RANGE_BREAKOUT_SELL",
+    },
+    None,
+    HEALTH,
+)
+
 module2_rules = [
     *MODULE2_MANDATORY,
     *[code for code in MODULE2_CONFIRMATIONS if code != "CONFIRMATION_COUNT"][:3],
@@ -69,7 +91,51 @@ module2 = decide_module2(
         "high_probability_strategy_2",
         "SHORT",
         module2_rules,
-        {"mandatoryChecklistMatched": True, "fullChecklistMatched": True, "setupTier": "FULL"},
+        {
+            "mandatoryChecklistMatched": True,
+            "fullChecklistMatched": True,
+            "setupTier": "FULL",
+            "module2Variant": {
+                "code": "SWEEP_MSS_RETEST",
+                "name": "F. Sweep + MSS + Retest",
+                "paperEligible": True,
+                "approvalStatus": "PRODUCTION_APPROVED",
+            },
+        },
+    ),
+    None,
+    HEALTH,
+)
+
+module2_flexible_variant = decide_module2(
+    setup(
+        "high_probability_strategy_2",
+        "LONG",
+        [
+            "DATA_HEALTHY",
+            "ACTIVE_SETUP_CONFLICT_CLEAR",
+            "NO_ACTIVE_TRADE_CONFLICT",
+            "RISK_LIMITS_CLEAR",
+            "MANUAL_CONFIRMATION_COMPLETED",
+            "LIQUIDITY_LEVEL_IDENTIFIED",
+            "LIQUIDITY_SWEEP_CONFIRMED",
+            "SWEEP_REJECTION_CONFIRMED",
+            "SWEEP_ACCEPTANCE_BLOCK",
+            "RISK_OK",
+            "SIGNAL_SCORE",
+            "VARIANT_SELECTED",
+        ],
+        {
+            "mandatoryChecklistMatched": True,
+            "fullChecklistMatched": False,
+            "setupTier": "MANDATORY",
+            "module2Variant": {
+                "code": "SWEEP_CLOSE_BACK_INSIDE",
+                "name": "A. Sweep + Close Back Inside",
+                "paperEligible": True,
+                "approvalStatus": "PAPER_APPROVED",
+            },
+        },
     ),
     None,
     HEALTH,
@@ -91,11 +157,15 @@ legacy_active = decide_module1(
     HEALTH,
 )
 
-assert module1["shouldOpenPaperTrade"] and module1["action"] == "BUY"
-assert module2["shouldOpenPaperTrade"] and module2["action"] == "SELL"
+assert module1["shouldEmitSignal"] and module1["shouldTrackPaperTrade"] and module1["action"] == "BUY"
+assert module1_horizontal["shouldEmitSignal"] and module1_horizontal["shouldTrackPaperTrade"] and module1_horizontal["action"] == "SELL"
+assert module1_horizontal["checklist"]["horizontalMandatoryPassed"]
+assert module2["shouldEmitSignal"] and module2["shouldTrackPaperTrade"] and module2["action"] == "SELL"
+assert module2_flexible_variant["shouldEmitSignal"] and module2_flexible_variant["shouldTrackPaperTrade"] and module2_flexible_variant["action"] == "BUY"
+assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_VARIANT_SIGNAL_READY"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
-assert not module1_incomplete["shouldOpenPaperTrade"]
-assert not module2_incomplete["shouldOpenPaperTrade"]
+assert not module1_incomplete["shouldEmitSignal"] and not module1_incomplete["shouldTrackPaperTrade"]
+assert not module2_incomplete["shouldEmitSignal"] and not module2_incomplete["shouldTrackPaperTrade"]
 assert legacy_active["decisionType"] == "ACTIVE_TRADE_CHECKLIST_MISMATCH"
 
 print(
@@ -103,7 +173,10 @@ print(
         {
             "status": "PASS",
             "module1": module1["decisionType"],
+            "module1Horizontal": module1_horizontal["decisionType"],
             "module2": module2["decisionType"],
+            "module2FlexibleVariant": module2_flexible_variant["decisionType"],
+            "mvpPriority": module2["mvpPriority"],
             "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], legacy_active["decisionType"]],
         },
         indent=2,

@@ -1688,7 +1688,7 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
         <Text style={styles.noticeTime}>{formatTime(trade.opened_at ?? trade.detected_at ?? "")}</Text>
         <Text style={styles.noticeTime}>{module.shortName} · {variant ? `${variant} · ` : ""}Grade {trade.favorability_grade ?? "--"} · Score {trade.favorability_score ?? "--"}</Text>
       </View>
-      <Text style={styles.ruleExplanation}>{trade.final_reason ?? "Automatic paper trade recorded from module checklist validation."}</Text>
+      <Text style={styles.ruleExplanation}>{trade.final_reason ?? "Paper tracking recorded this validated BUY/SELL signal for win-rate measurement."}</Text>
     </View>
   );
 }
@@ -2372,7 +2372,7 @@ function PushSettingsScreen({
       <View style={styles.moreMenuGroup}>
         <PushToggleRow title="NY pre-session reminder" subtitle="Notify before New York monitoring starts." value={preferences.nyPreSession} onValueChange={(value) => update("nyPreSession", value)} />
         <PushToggleRow title="Valid buy/sell entries" subtitle="Notify only when a module has a valid setup." value={preferences.validEntries} onValueChange={(value) => update("validEntries", value)} />
-        <PushToggleRow title="Paper trade opened" subtitle="Notify when the system opens a paper trade." value={preferences.paperTradeOpened} onValueChange={(value) => update("paperTradeOpened", value)} />
+        <PushToggleRow title="Signal tracking started" subtitle="Notify when paper tracking starts for a valid BUY/SELL signal." value={preferences.paperTradeOpened} onValueChange={(value) => update("paperTradeOpened", value)} />
         <PushToggleRow title="TP / SL closeouts" subtitle="Notify when paper trades close by target or stop." value={preferences.takeProfitStopLoss} onValueChange={(value) => update("takeProfitStopLoss", value)} />
         <PushToggleRow title="Daily reports" subtitle="Daily module summary after session close." value={preferences.dailyReports} onValueChange={(value) => update("dailyReports", value)} />
         <PushToggleRow title="Weekly / monthly reports" subtitle="Win-rate and performance summaries." value={preferences.weeklyMonthlyReports} onValueChange={(value) => update("weeklyMonthlyReports", value)} />
@@ -2883,7 +2883,7 @@ function setupProbability(setup: any) {
 function signalLabel(module: ModuleRow) {
   const trade = module.currentTrade;
   const setup = module.currentSetup;
-  if (trade?.outcome === "ACTIVE") return { label: trade.direction === "SHORT" ? "SELL ACTIVE" : "BUY ACTIVE", tone: trade.direction === "SHORT" ? "bad" : "good", reason: "Active paper trade is open." };
+  if (trade?.outcome === "ACTIVE") return { label: trade.direction === "SHORT" ? "SELL ACTIVE" : "BUY ACTIVE", tone: trade.direction === "SHORT" ? "bad" : "good", reason: "Signal is active; paper tracking is recording win-rate and TP/SL outcome." };
   if (setup?.status === "LONG SETUP READY" || setup?.status === "PAPER_TRADE_OPENED") return { label: "BUY", tone: "good", reason: setup.final_reason ?? "Valid long setup." };
   if (setup?.status === "SHORT SETUP READY") return { label: "SELL", tone: "bad", reason: setup.final_reason ?? "Valid short setup." };
   if (setup?.status === "NO TRADE" || setup?.status === "BLOCKED") return { label: "NO TRADE", tone: "bad", reason: setup.final_reason ?? "Conditions blocked." };

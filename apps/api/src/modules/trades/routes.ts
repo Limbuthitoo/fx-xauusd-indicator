@@ -6,14 +6,21 @@ export async function tradeRoutes(app: FastifyInstance) {
   app.get("/api/trades/paper", async (request) => {
     const auth = requirePermission(request, "signals.view");
     if (!auth.tenantId) return { summary: emptyPaperTradeSummary(), trades: [] };
-    const search = request.query as { limit?: string; status?: string; moduleCode?: string };
+    const search = request.query as { limit?: string; status?: string; moduleCode?: string; includeProof?: string };
     const limit = Math.min(Math.max(Number(search.limit ?? 200), 1), 500);
     const status = String(search.status ?? "ALL").toUpperCase();
     const moduleCode = String(search.moduleCode ?? "ALL");
-    await settleOpenPaperTrades(auth.tenantId, moduleCode);
+    const includeProof = search.includeProof === "true";
+    await settleOpenPaperTrades(auth.tenantId, moduleCode, includeProof);
     const params: unknown[] = [auth.tenantId];
     const statusFilter = status !== "ALL" ? `AND t.outcome = $${params.push(status)}` : "";
     const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    const productionFilter = includeProof
+      ? ""
+      : `AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'`;
     params.push(limit);
     const { rows } = await query(
       `SELECT
@@ -59,6 +66,7 @@ export async function tradeRoutes(app: FastifyInstance) {
        WHERE sc.tenant_id = $1
          ${statusFilter}
          ${moduleFilter}
+         ${productionFilter}
        ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END,
          COALESCE(t.opened_at, t.closed_at) DESC
        LIMIT $${params.length}`,
@@ -645,9 +653,15 @@ function summarizePaperTrades(trades: any[]) {
   };
 }
 
-async function settleOpenPaperTrades(tenantId: string, moduleCode: string) {
+async function settleOpenPaperTrades(tenantId: string, moduleCode: string, includeProof = false) {
   const params: unknown[] = [tenantId];
   const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+  const productionFilter = includeProof
+    ? ""
+    : `AND sc.scenario <> 'QA_TEST_SIGNAL'
+       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'`;
   const active = await query(
     `SELECT
        t.*,
@@ -666,6 +680,7 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string) {
        AND t.outcome = 'ACTIVE'
        AND t.opened_at IS NOT NULL
        ${moduleFilter}
+       ${productionFilter}
      ORDER BY t.opened_at ASC`,
     params
   );
@@ -728,6 +743,10 @@ function paperTradeView(row: any) {
   const target = Number(row.actual_target);
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const stopDistance = Math.abs(entry - stop);
+  const entryDistanceFromCurrent = currentPrice == null ? null : Math.abs(currentPrice - entry);
+  const staleMarketDistance = currentPrice != null && stopDistance > 0 && entryDistanceFromCurrent != null
+    ? entryDistanceFromCurrent > Math.max(stopDistance * 3, 10)
+    : false;
   const multiplier = direction === "SHORT" ? -1 : 1;
   const unrealizedR = row.outcome === "ACTIVE" && currentPrice != null && stopDistance > 0
     ? ((currentPrice - entry) * multiplier) / stopDistance
@@ -745,6 +764,13 @@ function paperTradeView(row: any) {
     takeProfit: target,
     currentPrice,
     currentPriceAt: row.current_price_at,
+    entryDistanceFromCurrent,
+    staleMarketDistance,
+    marketContext: staleMarketDistance
+      ? "HISTORICAL_PRICE_CONTEXT"
+      : row.outcome === "ACTIVE"
+        ? "LIVE_PRICE_CONTEXT"
+        : "NORMAL_HISTORY",
     lot: row.actual_lot == null ? null : Number(row.actual_lot),
     rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
     plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),

@@ -37,7 +37,8 @@ def run_main_brain(database_url: str, tenant_id: str, module_code: str | None = 
                 "buySignals": sum(1 for item in decisions if item["action"] == "BUY"),
                 "sellSignals": sum(1 for item in decisions if item["action"] == "SELL"),
                 "activeTrades": sum(1 for item in decisions if item["decisionType"] == "TRADE_ACTIVE"),
-                "paperEntriesNeeded": sum(1 for item in decisions if item.get("shouldOpenPaperTrade")),
+                "signalsReady": sum(1 for item in decisions if item.get("shouldEmitSignal")),
+                "paperTrackingNeeded": sum(1 for item in decisions if item.get("shouldTrackPaperTrade") or item.get("shouldOpenPaperTrade")),
                 "warnings": sum(1 for item in decisions if item["severity"] in ("WARN", "ERROR", "CRITICAL")),
             }
             result = {
@@ -112,7 +113,10 @@ def decide_module(cur, tenant_id: str, module_code: str, candles: dict[str, Any]
         "direction": None,
         "severity": "ERROR",
         "reason": f"No Python strategy brain is registered for module {module_code}.",
+        "shouldEmitSignal": False,
+        "shouldTrackPaperTrade": False,
         "shouldOpenPaperTrade": False,
+        "mvpPriority": "SIGNAL_FIRST",
         "entry": None,
         "stop": None,
         "target": None,

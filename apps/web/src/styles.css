@@ -1842,6 +1842,24 @@ button:hover,
   background: rgba(240, 180, 41, 0.08);
 }
 
+.status-pill.live {
+  color: #42f0a6;
+  border-color: rgba(35, 196, 131, 0.45);
+  background: rgba(35, 196, 131, 0.08);
+}
+
+.status-pill.history {
+  color: #aeb8b2;
+  border-color: rgba(145, 160, 151, 0.35);
+  background: rgba(145, 160, 151, 0.08);
+}
+
+.status-pill.stale {
+  color: #f0b429;
+  border-color: rgba(240, 180, 41, 0.45);
+  background: rgba(240, 180, 41, 0.08);
+}
+
 .admin-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2819,6 +2837,39 @@ button:hover,
   font-size: 13px;
 }
 
+.signal-freshness-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(35, 196, 131, 0.35);
+  border-radius: 5px;
+  background: rgba(35, 196, 131, 0.07);
+}
+
+.signal-freshness-strip.stale {
+  border-color: rgba(240, 180, 41, 0.45);
+  background: rgba(240, 180, 41, 0.08);
+}
+
+.signal-freshness-strip span,
+.signal-freshness-strip em {
+  color: #91a097;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.signal-freshness-strip strong {
+  color: #edf4ef;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.signal-freshness-strip em {
+  grid-column: 1 / -1;
+}
+
 .trade-signal-checks {
   display: flex;
   flex-wrap: wrap;
@@ -2961,6 +3012,34 @@ button:hover,
 
 .signal-empty-state strong {
   color: #c7d1ca;
+}
+
+.why-no-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px;
+  width: min(760px, 100%);
+  margin-top: 12px;
+}
+
+.why-no-signal-grid div {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+  border: 1px solid #253027;
+  border-radius: 6px;
+  background: #101612;
+  text-align: left;
+}
+
+.why-no-signal-grid b {
+  color: #edf4ef;
+}
+
+.why-no-signal-grid span {
+  color: #91a097;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .signal-detail-toolbar {
@@ -3479,30 +3558,45 @@ button:hover,
 }
 
 .strategy-setting-row {
-  grid-template-columns: minmax(240px, 320px) minmax(560px, 1fr);
-  gap: 14px;
-  overflow-x: auto;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.strategy-setting-row > div:first-child {
+  display: grid;
+  gap: 6px;
+  max-width: 860px;
 }
 
 .strategy-setting-row > button {
-  grid-column: 2;
+  grid-column: 1;
   justify-self: end;
   min-width: 170px;
 }
 
 .setting-row .strategy-fields {
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   align-content: start;
+  width: 100%;
+  min-width: 0;
 }
 
 .strategy-fields label {
+  display: grid;
+  gap: 5px;
   min-width: 0;
   word-break: normal;
   overflow-wrap: normal;
 }
 
+.strategy-fields label:has(input[type="checkbox"]) {
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
 .manual-level-editor {
-  grid-column: 2;
+  grid-column: 1;
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -3523,7 +3617,7 @@ button:hover,
 
 .manual-level-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.2fr) minmax(90px, 0.8fr) minmax(100px, 0.8fr) minmax(90px, 0.7fr) auto;
+  grid-template-columns: minmax(140px, 1.3fr) minmax(110px, 0.8fr) minmax(120px, 0.8fr) minmax(100px, 0.7fr) auto;
   gap: 8px;
   align-items: center;
 }

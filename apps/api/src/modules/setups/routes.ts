@@ -168,6 +168,7 @@ export async function setupRoutes(app: FastifyInstance) {
       ? "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'"
       : `AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
          AND COALESCE(t.outcome, '') <> 'ACTIVE'
          AND sc.detected_at >= latest.timestamp_utc - interval '${MAX_LIVE_PREDICTION_AGE_MINUTES} minutes'`;
     params.push(limit);
@@ -261,8 +262,8 @@ export async function setupRoutes(app: FastifyInstance) {
       ? "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'"
       : `AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
-         AND t.id IS NOT NULL
-         AND t.outcome = 'ACTIVE'`;
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
+         AND (t.outcome = 'ACTIVE' OR sc.detected_at >= latest.timestamp_utc - interval '${MAX_LIVE_PREDICTION_AGE_MINUTES} minutes')`;
     params.push(limit);
     const setups = await query(
       `SELECT
@@ -327,7 +328,9 @@ export async function setupRoutes(app: FastifyInstance) {
       rows.push(evaluation);
       evaluationsBySetup.set(evaluation.setup_candidate_id, rows);
     }
-    const signals = setups.rows.map((row: any) => signalSetupView(row, evaluationsBySetup.get(row.id) ?? []));
+    const signals = setups.rows
+      .map((row: any) => signalSetupView(row, evaluationsBySetup.get(row.id) ?? []))
+      .filter((signal) => includeProof || isLiveSignal(signal));
     return { summary: summarizeSignals(signals), signals };
   });
 
@@ -1539,6 +1542,7 @@ function signalSetupView(row: any, evaluations: any[]) {
   const riskDistance = Math.abs(entry - stopLoss);
   const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(entry + multiplier * pips * XAUUSD_PIP_SIZE));
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
+  const freshness = liveSetupFreshness(row.detected_at, row.current_price_at, currentPrice, entry, stopLoss, false);
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   const checklistTotal = evaluations.length;
   const mandatoryRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "mandatory");
@@ -1546,7 +1550,7 @@ function signalSetupView(row: any, evaluations: any[]) {
   const confirmationRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "confirmation");
   const qualityRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "quality");
   const missingRules = evaluations
-    .filter((evaluation) => evaluation.status !== "PASS" && evaluation.blocking)
+    .filter((evaluation) => evaluation.status !== "PASS" && isSignalHardBlocker(row.module_code, evaluation))
     .slice(0, 6)
     .map((evaluation) => ({
       code: evaluation.rule_code ?? evaluation.ruleCode,
@@ -1555,8 +1559,9 @@ function signalSetupView(row: any, evaluations: any[]) {
       explanation: evaluation.explanation
     }));
   const fullChecklistValid = checklistTotal > 0 && checklistPassed === checklistTotal;
+  const profileApproved = Boolean(flags.mandatoryChecklistMatched) || ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(String(row.status));
   const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
-  const chance = signalChanceScore(confidence, checklistPassed, checklistTotal, Boolean(flags.fullChecklistMatched), direction);
+  const chance = signalChanceScore(confidence, checklistPassed, checklistTotal, Boolean(flags.fullChecklistMatched), direction, profileApproved);
   const variant = flags.module2Variant ?? null;
   return {
     id: row.id,
@@ -1584,7 +1589,8 @@ function signalSetupView(row: any, evaluations: any[]) {
       missingRules
     },
     fullChecklistValid,
-    longChecklistBoost: direction === "LONG" && fullChecklistValid,
+    profileApproved,
+    longChecklistBoost: direction === "LONG" && profileApproved,
     moduleSignal: `${row.module_name} ${direction === "LONG" ? "BUY" : "SELL"} signal`,
     detectedAt: row.detected_at,
     expiresAt: row.expires_at,
@@ -1604,13 +1610,13 @@ function signalSetupView(row: any, evaluations: any[]) {
       { label: "TP3", pips: DAY_TRADING_TARGET_PIPS[2], price: tp3 }
     ],
     longTradePlan: {
-      label: "Full checklist trade",
+      label: "Profile-approved trade",
       targetLabel: "TP",
       targetPrice: roundSignalPrice(paperTarget),
-      eligible: fullChecklistValid,
-      reason: fullChecklistValid
-        ? `${row.module_name} has a full checklist ${direction === "LONG" ? "BUY" : "SELL"} setup with ${chance}% chance score.`
-        : "Long setup waits until every checklist rule is valid."
+      eligible: profileApproved,
+      reason: profileApproved
+        ? `${row.module_name} has a profile-approved ${direction === "LONG" ? "BUY" : "SELL"} setup with ${chance}% chance score.`
+        : "Long setup waits until one valid module profile is approved."
     },
     pipSize: XAUUSD_PIP_SIZE,
     tradeHorizon: DAY_TRADING_HOLD_WINDOW,
@@ -1619,6 +1625,12 @@ function signalSetupView(row: any, evaluations: any[]) {
     rewardToRisk: row.reward_to_risk == null ? (riskDistance > 0 ? targetDistance / riskDistance : null) : Number(row.reward_to_risk),
     currentPrice,
     currentPriceAt: row.current_price_at,
+    detectedAgeMinutes: freshness.detectedAgeMinutes,
+    entryDistanceFromCurrent: freshness.entryDistanceFromCurrent,
+    maxLiveEntryDistance: freshness.maxLiveEntryDistance,
+    isNearLivePrice: freshness.isNearLivePrice,
+    isFreshSignal: freshness.isFreshSignal,
+    livePriceStatus: freshness.livePriceStatus,
     trade: row.trade_id ? {
       id: row.trade_id,
       status: row.trade_outcome,
@@ -1634,6 +1646,44 @@ function signalSetupView(row: any, evaluations: any[]) {
     },
     reason: row.final_reason
   };
+}
+
+function isSignalHardBlocker(moduleCode: string, evaluation: any) {
+  const code = String(evaluation.rule_code ?? evaluation.ruleCode ?? "");
+  const required = evaluation.required_for_entry ?? evaluation.requiredForEntry;
+  if (required === true) return true;
+  if (moduleCode === "high_probability_strategy_2") {
+    return [
+      "DATA_HEALTHY",
+      "DAILY_TRADE_LIMIT",
+      "ACTIVE_SETUP_CONFLICT_CLEAR",
+      "NO_ACTIVE_TRADE_CONFLICT",
+      "RISK_LIMITS_CLEAR",
+      "MANUAL_CONFIRMATION_COMPLETED",
+      "LIQUIDITY_LEVEL_IDENTIFIED",
+      "LIQUIDITY_SWEEP_CONFIRMED",
+      "SWEEP_REJECTION_CONFIRMED",
+      "SWEEP_ACCEPTANCE_BLOCK",
+      "RISK_OK",
+      "SIGNAL_SCORE",
+      "VARIANT_SELECTED"
+    ].includes(code);
+  }
+  if (moduleCode === "orb_max_options") {
+    return [
+      "ORB_LOCKED",
+      "INSIDE_SIGNAL_WINDOW",
+      "CLOSE_ABOVE_ORB_HIGH",
+      "CLOSE_BELOW_ORB_LOW",
+      "HORIZONTAL_RANGE_LOCKED",
+      "HORIZONTAL_BREAKOUT_CONFIRMED",
+      "HORIZONTAL_RETEST_CONFIRMED",
+      "HORIZONTAL_CONFLICT_CLEAR",
+      "ENTRY_NOT_OVEREXTENDED",
+      "RISK_PERMISSION"
+    ].includes(code);
+  }
+  return Boolean(evaluation.blocking);
 }
 
 function signalRuleSummary(rows: any[]) {
@@ -1716,6 +1766,8 @@ function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
   const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
   const probability = predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched, brain);
   const status = predictionStatus(row, mandatoryMatched, fullChecklistMatched, brain);
+  const currentPrice = row.current_price == null ? null : Number(row.current_price);
+  const freshness = liveSetupFreshness(row.detected_at, row.current_price_at, currentPrice, entry, stopLoss, true);
   const rr = entry != null && stopLoss != null && target != null
     ? Math.abs(Number(target) - Number(entry)) / Math.max(0.00001, Math.abs(Number(entry) - Number(stopLoss)))
     : null;
@@ -1746,8 +1798,14 @@ function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
     grade: row.favorability_grade ?? flags.tradeGrade ?? null,
     brainPrediction: brainPredictionView(brain),
     brainApprovedPrediction: brainApprovesPrediction(brain),
-    currentPrice: row.current_price == null ? null : Number(row.current_price),
+    currentPrice,
     currentPriceAt: row.current_price_at,
+    detectedAgeMinutes: freshness.detectedAgeMinutes,
+    entryDistanceFromCurrent: freshness.entryDistanceFromCurrent,
+    maxLiveEntryDistance: freshness.maxLiveEntryDistance,
+    isNearLivePrice: freshness.isNearLivePrice,
+    isFreshSignal: freshness.isFreshSignal,
+    livePriceStatus: freshness.livePriceStatus,
     trade: row.trade_id ? { id: row.trade_id, status: row.trade_outcome, openedAt: row.opened_at } : null,
     checklist: {
       passed,
@@ -1954,13 +2012,14 @@ function roundSignalPrice(value: number) {
   return Number(value.toFixed(2));
 }
 
-function signalChanceScore(confidence: unknown, checklistPassed: number, checklistTotal: number, fullChecklistMatched: boolean, direction: "LONG" | "SHORT") {
+function signalChanceScore(confidence: unknown, checklistPassed: number, checklistTotal: number, fullChecklistMatched: boolean, direction: "LONG" | "SHORT", profileApproved = false) {
   const numericConfidence = Number(confidence);
-  if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence)));
+  if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence + (profileApproved ? 2 : 0))));
   const checklistScore = checklistTotal > 0 ? (checklistPassed / checklistTotal) * 100 : 0;
   const fullBonus = fullChecklistMatched ? 5 : 0;
+  const profileBonus = profileApproved ? 8 : 0;
   const longValidationBonus = direction === "LONG" && checklistTotal > 0 && checklistPassed === checklistTotal ? 3 : 0;
-  return Math.min(99, Math.max(1, Math.round(checklistScore + fullBonus + longValidationBonus)));
+  return Math.min(99, Math.max(1, Math.round(checklistScore + fullBonus + profileBonus + longValidationBonus)));
 }
 
 function summarizeSignals(signals: any[]) {
@@ -2010,6 +2069,54 @@ function isUpcomingPrediction(prediction: any) {
   const riskDistance = stopLoss == null ? 0 : Math.abs(entry - stopLoss);
   const maxDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance * 1.5);
   return Math.abs(currentPrice - entry) <= maxDistance;
+}
+
+function isLiveSignal(signal: any) {
+  if (!signal || !["BUY", "SELL"].includes(String(signal.action))) return false;
+  const detectedAt = new Date(signal.detectedAt).getTime();
+  const latestAt = signal.currentPriceAt ? new Date(signal.currentPriceAt).getTime() : Date.now();
+  if (!Number.isFinite(detectedAt) || !Number.isFinite(latestAt)) return false;
+  const ageMinutes = (latestAt - detectedAt) / 60000;
+  if (ageMinutes < -5 || ageMinutes > MAX_LIVE_PREDICTION_AGE_MINUTES) return false;
+  const currentPrice = numericOrNull(signal.currentPrice);
+  const entry = numericOrNull(signal.entry ?? signal.entryRange?.midpoint);
+  if (currentPrice == null || entry == null) return false;
+  const stopLoss = numericOrNull(signal.stopLoss);
+  const riskDistance = stopLoss == null ? 0 : Math.abs(entry - stopLoss);
+  const maxDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance);
+  return Math.abs(currentPrice - entry) <= maxDistance;
+}
+
+function liveSetupFreshness(
+  detectedAtValue: unknown,
+  currentPriceAtValue: unknown,
+  currentPrice: number | null,
+  entry: number | null,
+  stopLoss: number | null,
+  predictionMode: boolean
+) {
+  const detectedAt = new Date(String(detectedAtValue ?? "")).getTime();
+  const latestAt = currentPriceAtValue ? new Date(String(currentPriceAtValue)).getTime() : Date.now();
+  const detectedAgeMinutes = Number.isFinite(detectedAt) && Number.isFinite(latestAt)
+    ? Number(((latestAt - detectedAt) / 60000).toFixed(1))
+    : null;
+  const riskDistance = entry == null || stopLoss == null ? 0 : Math.abs(entry - stopLoss);
+  const maxLiveEntryDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance * (predictionMode ? 1.5 : 1));
+  const entryDistanceFromCurrent = currentPrice == null || entry == null ? null : Number(Math.abs(currentPrice - entry).toFixed(2));
+  const isNearLivePrice = entryDistanceFromCurrent == null ? false : entryDistanceFromCurrent <= maxLiveEntryDistance;
+  const isFreshAge = detectedAgeMinutes != null && detectedAgeMinutes >= -5 && detectedAgeMinutes <= MAX_LIVE_PREDICTION_AGE_MINUTES;
+  return {
+    detectedAgeMinutes,
+    entryDistanceFromCurrent,
+    maxLiveEntryDistance: Number(maxLiveEntryDistance.toFixed(2)),
+    isNearLivePrice,
+    isFreshSignal: isFreshAge && isNearLivePrice,
+    livePriceStatus: !isFreshAge
+      ? "STALE_TIME"
+      : isNearLivePrice
+        ? "LIVE_PRICE_CONTEXT"
+        : "ENTRY_PRICE_TOO_FAR_FROM_LIVE_MARKET"
+  };
 }
 
 function setupRecommendation(setup: any) {

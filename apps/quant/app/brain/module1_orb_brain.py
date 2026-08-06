@@ -13,10 +13,10 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if trade and trade.get("outcome") == "ACTIVE":
         setup_status = str(setup.get("status") or "") if setup else ""
         if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 1 has an active legacy paper trade whose originating setup is not a valid opened ORB checklist. Do not use it as learning evidence.", False)
-        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 paper trade is active. Monitor TP/SL lifecycle.", False)
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 1 has an active legacy paper-tracking row whose originating setup is not a valid opened ORB checklist. Do not use it as learning evidence.", False)
+        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 signal is active. Paper tracking is monitoring TP/SL for win-rate measurement.", False)
     if not setup:
-        return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed session ORB signal candle.", False)
+        return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed session ORB or horizontal-range signal candle.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
@@ -26,11 +26,11 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
-        should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
+        should_track = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         tier = setup_tier(flags, checklist)
         profile = "Horizontal Range" if is_horizontal_setup(setup) else "ORB"
         reason = f"Module 1 {tier} {profile} setup passed. {action} plan is ready with entry, SL, and TP."
-        return payload("ORB_PAPER_ENTRY_READY" if should_open else "ORB_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
+        return payload("ORB_SIGNAL_READY" if should_track else "ORB_SIGNAL_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_track else "INFO", reason, should_track)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
         return payload("ORB_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 1 setup is marked ready but ORB mandatory checklist is not fully passed.", False)
@@ -97,16 +97,17 @@ def is_horizontal_setup(setup: dict[str, Any] | None) -> bool:
     return scenario.startswith("HORIZONTAL_RANGE_") or bool(flags.get("horizontalRangeSignal"))
 
 
-def payload(decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_open: bool) -> dict[str, Any]:
-    return base_payload(MODULE_CODE, MODULE_NAME, decision_type, action, direction, setup, trade, checklist, candle_health, severity, reason, should_open)
+def payload(decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_track: bool) -> dict[str, Any]:
+    return base_payload(MODULE_CODE, MODULE_NAME, decision_type, action, direction, setup, trade, checklist, candle_health, severity, reason, should_track)
 
 
-def base_payload(module_code: str, module_name: str, decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_open: bool) -> dict[str, Any]:
+def base_payload(module_code: str, module_name: str, decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_track: bool) -> dict[str, Any]:
     entry = number(setup.get("entry_price")) if setup else None
     stop = number(setup.get("stop_price")) if setup else None
     target = number(setup.get("target_price")) if setup else None
     setup_tier_value = setup_tier(setup.get("scenario_flags") or {}, checklist) if setup else None
     title_action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else action
+    emits_signal = action in ("BUY", "SELL") and checklist.get("mandatoryPassed") and entry is not None and stop is not None and target is not None
     return {
         "moduleCode": module_code,
         "moduleName": module_name,
@@ -115,7 +116,11 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
         "direction": direction,
         "severity": severity,
         "reason": reason,
-        "shouldOpenPaperTrade": should_open,
+        "shouldEmitSignal": bool(emits_signal),
+        "shouldTrackPaperTrade": should_track,
+        "shouldOpenPaperTrade": should_track,
+        "mvpPriority": "SIGNAL_FIRST",
+        "paperTrackingPurpose": "WIN_RATE_MEASUREMENT",
         "entry": entry,
         "stop": stop,
         "target": target,

@@ -106,7 +106,7 @@ function App() {
   const currentPath = window.location.pathname;
   const isPlatformAdminRoute = currentPath === "/platform" || currentPath.startsWith("/platform/") || currentPath === "/platform-admin" || currentPath.startsWith("/platform-admin/");
   const [state, setState] = useState<PanelState>({ strategies: [] });
-  const [message, setMessage] = useState("Automatic paper trading is ready.");
+  const [message, setMessage] = useState("Automatic BUY/SELL signals are ready.");
   const [activeSection, setActiveSection] = useState<ActiveSection>("live");
   const [activeModuleCode, setActiveModuleCodeState] = useState(() => window.localStorage.getItem("orb_active_module_code") ?? "orb_max_options");
   const [selectedModule2TradeId, setSelectedModule2TradeId] = useState<string | null>(null);
@@ -1158,7 +1158,7 @@ function App() {
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 orbRanges={selectedModuleCode === "orb_max_options" ? state.orbRanges ?? [] : []}
                 setup={currentModuleSetup}
-                priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, orb)}
+                priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, chartIndicatorDefaults)}
                 showEma={selectedModuleCode !== "orb_max_options"}
                 showOrbSessionLevels={showModule1OrbSessionLevels}
                 indicatorDefaults={chartIndicatorDefaults}
@@ -3465,7 +3465,7 @@ function Module2CandidateMonitorPanel({ setup, trade }: { setup?: any; trade?: a
       <div className="module2-live-missing">
         <span>Why no trade?</span>
         <strong>{paperReady ? "Paper trade is active." : signalReady ? "Signal is ready." : blocker?.name ?? setup?.final_reason ?? "Waiting for liquidity sweep + MSS retest evidence."}</strong>
-        <em>{blocker?.explanation ?? "BUY & SELL cards appear only after a valid setup creates an active paper trade."}</em>
+        <em>{blocker?.explanation ?? "BUY & SELL cards appear when a valid recent setup has entry, SL, TP, and current price is still close enough. Paper trading mirrors the signal for win-rate tracking."}</em>
       </div>
       <div className="module2-sequence">
         {stages.map((stage) => (
@@ -4206,7 +4206,7 @@ function moduleReadinessLabel(state: PanelState, moduleCode: string) {
 
 function commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confidence }: { setup?: any; trade?: any; rehearsalStatus: string; auditStatus: string; confidence?: any }) {
   if (trade?.outcome === "ACTIVE") return "Monitor active paper trade and let TP/SL lifecycle record outcome.";
-  if (setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY") return `${setup.direction === "SHORT" ? "SELL" : "BUY"} paper setup ready; review checklist and chart marker.`;
+  if (setup?.status === "LONG SETUP READY" || setup?.status === "SHORT SETUP READY") return `${setup.direction === "SHORT" ? "SELL" : "BUY"} signal ready; review checklist and chart marker.`;
   if (rehearsalStatus !== "GO") return "Run GO / NO-GO rehearsal.";
   if (auditStatus !== "PASS") return "Resolve production audit before trusting signals.";
   if (!confidence?.confidence?.trust) return "Feature-ready. Collect non-QA paper/backtest samples for trust.";
@@ -5398,7 +5398,7 @@ function Module2JournalPanel({
       </div>
       <div className="evidence-notes">
         <strong>Learning notes</strong>
-        <span>{setup?.final_reason ?? "Module 2 journal will populate after a replay or real automatic paper setup."}</span>
+        <span>{setup?.final_reason ?? "Module 2 journal will populate after a replay or real automatic signal-tracking setup."}</span>
       </div>
       <div className="admin-actions lifecycle-actions">
         <button onClick={() => onLifecycle("ENTRY_HIT", selectedTradeId, setup?.id).catch(() => undefined)}>Entry Hit</button>
@@ -5946,10 +5946,10 @@ function module2MissedSetupInstruction(row: any) {
   if (missing.has("DISPLACEMENT_CONFIRMED")) return "Wait for a strong displacement candle after sweep before considering entry.";
   if (missing.has("BOS_CHOCH_CONFIRMED")) return "Wait for candle-body BOS/CHoCH beyond the protected structure point.";
   if (missing.has("ENTRY_ZONE_RETRACE")) return "Wait for price to retrace into the fresh FVG/order-block entry zone.";
-  if (missing.has("CONFIRM_ENTRY_CANDLE")) return "Wait for a confirmation candle in the entry zone before paper entry.";
+  if (missing.has("CONFIRM_ENTRY_CANDLE")) return "Wait for a confirmation candle in the entry zone before BUY/SELL signal.";
   if (missing.has("CONFIRMATION_COUNT")) return "Require at least 3 confirmation rules before trusting this setup.";
   if (missing.has("QUALITY_FILTER_COUNT")) return "Require at least 3 quality filters, including RR/spread/news safety.";
-  return "Review the missing checklist rules before allowing this variant into paper entry.";
+  return "Review the missing checklist rules before allowing this variant into BUY/SELL output.";
 }
 
 function MiniVariantBreakdown({ title, rows }: { title: string; rows?: Record<string, any> }) {
@@ -7316,7 +7316,7 @@ function getSignal(setup?: any, trade?: any) {
     return {
       label: trade.direction === "SHORT" ? "SELL ACTIVE" : "BUY ACTIVE",
       tone: trade.direction === "SHORT" ? "bad" : "good",
-      reason: "A valid paper trade is open. The system will close it automatically at TP or SL."
+      reason: "A valid BUY/SELL signal is active. Paper tracking is open for win-rate and TP/SL measurement."
     };
   }
   if (setup?.status === "LONG SETUP READY" || setup?.status === "PAPER_TRADE_OPENED") {
@@ -7392,9 +7392,9 @@ function RuleList({ evaluations, setup, session, moduleCode = "orb_max_options" 
 function ruleLayerLabel(item: any) {
   const layer = item.ruleLayer ?? item.rule_layer;
   const required = item.requiredForEntry ?? item.required_for_entry;
-  if (!layer) return required ? "Required for automatic paper entry" : "Strategy evidence";
+  if (!layer) return required ? "Required for BUY/SELL signal" : "Strategy evidence";
   const label = String(layer).replaceAll("_", " ").toLowerCase();
-  return required ? `${label} · required for paper entry` : label;
+  return required ? `${label} · required for signal` : label;
 }
 
 function groupedChecklistSections(moduleCode: string, rows: any[]) {
@@ -7407,7 +7407,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "ORB Mandatory Entry Checklist",
-        description: "A completed ORB breakout, retest, sweep reversal, or mandatory breakout path can produce a Module 1 paper BUY/SELL.",
+        description: "A completed ORB breakout, retest, sweep reversal, or mandatory breakout path can produce a Module 1 BUY/SELL signal. Paper tracking mirrors it for performance only.",
         codes: ["SESSION_READY", "ORB_LOCKED", "AUTO_ELIGIBLE", "CLOSE_ABOVE_ORB_HIGH", "CLOSE_BELOW_ORB_LOW"]
       },
       {
@@ -7417,7 +7417,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "NY Horizontal Range Signal Path",
-        description: "Independent Module 1 path. When breakout, retest, conflict, extension, and risk gates pass, it can create predictions, BUY/SELL, paper trades, journal, and notifications.",
+        description: "Independent Module 1 path. When breakout, retest, conflict, extension, and risk gates pass, it can create predictions, BUY/SELL signals, notifications, and paper-trade tracking.",
         codes: [
           "HORIZONTAL_RANGE_OBSERVATION",
           "HORIZONTAL_RANGE_LOCKED",
@@ -7434,7 +7434,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Final Automation Gate",
-        description: "The final strict checklist gate before automatic paper trading.",
+        description: "The final strict checklist gate before Module 1 emits a trusted BUY/SELL signal.",
         codes: ["STRICT_CHECKLIST", "REPLAY_MATCH"]
       }
     ]);
@@ -7447,13 +7447,10 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         codes: ["MODULE2_STATE"]
       },
       {
-        title: "Mandatory Entry Checklist",
-        description: "Base market, liquidity, and risk conditions required before any Module 2 confirmation profile can produce a production paper BUY/SELL.",
+        title: "Base Safety Gates",
+        description: "Only these safety and sweep gates are hard blockers before a selected Module 2 profile can produce predictions and BUY/SELL signals. Paper tracking is secondary.",
         codes: [
           "DATA_HEALTHY",
-          "MARKET_CONTEXT_READY",
-          "MARKET_REGIME_CLASSIFIED",
-          "NY_SESSION_ACTIVE",
           "DAILY_TRADE_LIMIT",
           "ACTIVE_SETUP_CONFLICT_CLEAR",
           "NO_ACTIVE_TRADE_CONFLICT",
@@ -7467,8 +7464,18 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         ]
       },
       {
+        title: "Context Evidence",
+        description: "Context improves confidence and explanation. It should not block every valid selected profile by itself.",
+        codes: [
+          "MARKET_CONTEXT_READY",
+          "MARKET_REGIME_CLASSIFIED",
+          "NY_SESSION_ACTIVE",
+          "STRATEGY_CYCLE_ACTIVE"
+        ]
+      },
+      {
         title: "Selected Variant Profile",
-        description: "Variants are independent confirmation profiles. One valid paper-approved profile is enough for a Module 2 entry signal.",
+        description: "A-I are independent strategies after a sweep. One valid signal-approved profile is enough for Module 2 MVP output.",
         codes: [
           "VARIANT_SELECTED",
           "PROTECTED_POINT_CONFIDENCE",
@@ -7481,18 +7488,18 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         ]
       },
       {
-        title: "Confirmation Checklist",
-        description: "At least 3 of 5 confirmation rules must pass for a valid Module 2 signal.",
+        title: "Confidence Evidence",
+        description: "These rows increase chance/grade. Missing optional evidence should explain caution, not block a selected signal-approved profile.",
         codes: ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]
       },
       {
         title: "Risk & Quality Filters",
-        description: "At least 3 quality filters plus required risk controls must pass.",
+        description: "Quality filters protect execution. Hard risk remains required; optional quality rows tune chance and learning.",
         codes: ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]
       },
       {
         title: "Final Automation Gate",
-        description: "Minimum confidence required before automatic paper trading.",
+        description: "The selected profile, risk engine, and Python brain decide whether the MVP fires now.",
         codes: ["SIGNAL_SCORE"]
       }
     ]);
@@ -7545,7 +7552,8 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
   const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
     ["NY_SESSION_ACTIVE", "Strategy cycle active", "Module 2 evaluates during the configured all-session strategy cycle."],
-    ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of paper trades can trigger per session."],
+    ["STRATEGY_CYCLE_ACTIVE", "All-session cycle active", "Module 2 is not NY-only; it can evaluate London, New York, Tokyo, and Sydney when the shared feed is healthy."],
+    ["DAILY_TRADE_LIMIT", "Daily signal limit not reached", "Only the configured number of signal-tracked entries can trigger per session."],
     ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "Previous week/day, Asian, London, NY premarket, ORB, swing, equal, round-number, or manual liquidity must be available."],
     ["LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", "Price must sweep liquidity and close back through the level."],
     ["SWEEP_REJECTION_CONFIRMED", "Sweep rejection confirmed", "Close-back, wick rejection, delayed reclaim, or deep-sweep rejection must be objectively detected."],
@@ -7554,7 +7562,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["PROTECTED_POINT_CONFIDENCE", "Protected point confidence", "The protected high/low must meet the configured confidence threshold."],
     ["BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed", "A candle body must close beyond internal structure."],
     ["ENTRY_ZONE_READY", "Fresh entry zone ready", "A fresh FVG or order-block zone must exist after BOS/CHoCH."],
-    ["ENTRY_ZONE_RETRACE", "Entry zone retrace", "Price must return into the fresh FVG/order-block zone before paper entry."],
+    ["ENTRY_ZONE_RETRACE", "Entry zone retrace", "Price must return into the fresh FVG/order-block zone before BUY/SELL signal."],
     ["CONFIRM_EMA_200", "Confirmation: 200 EMA alignment", "Scored confirmation worth 15 points."],
     ["CONFIRM_VWAP", "Confirmation: VWAP alignment", "Scored confirmation worth 10 points."],
     ["CONFIRM_FRESH_FVG", "Confirmation: fresh FVG", "Scored confirmation worth 15 points."],
@@ -7565,18 +7573,18 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["CONFIRM_DOJI_REJECTION", "Confirmation: doji rejection", "Candle-pattern confirmation used for research and scoring."],
     ["CONFIRM_VOLUME_EXPANSION", "Confirmation: volume expansion", "Provider-volume evidence is recorded conservatively."],
     ["CONFIRM_ENTRY_CANDLE", "Entry confirmation candle", "Mandatory entry trigger and scored confirmation worth 10 points."],
-    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 confirmation rules must pass."],
+    ["CONFIRMATION_COUNT", "Confirmation layer score", "Confirmation count improves confidence. A selected signal-approved variant can still be valid without every optional confirmation row."],
     ["QUALITY_ATR_VOLATILITY", "Quality: ATR volatility", "Optimization quality filter."],
     ["QUALITY_SPREAD", "Quality: spread", "Optimization quality filter."],
     ["QUALITY_NEWS", "Quality: no high-impact news", "Optimization quality filter."],
     ["QUALITY_RR", "Quality: RR >= 2:1", "Optimization quality filter."],
     ["QUALITY_STOP_SIZE", "Quality: stop size", "Optimization quality filter."],
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Optimization quality filter."],
-    ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."],
+    ["QUALITY_FILTER_COUNT", "Quality layer score", "Quality count improves confidence and learning. Hard risk controls still decide whether a signal can become actionable."],
     ["EMA_FILTER_MODE", "EMA filter mode", "OFF, record-only, warning, alignment-required, or countertrend-required mode is respected."],
     ["VOLUME_FILTER_MODE", "Volume filter mode", "OFF, record-only, warning, or expansion-required mode is respected."],
-    ["VARIANT_SELECTED", "Paper-approved variant selected", "Variants are independent. One paper-approved confirmation profile can open an automatic paper trade after risk approval."],
-    ["SIGNAL_SCORE", "Minimum signal score", "The final Module 2 confidence score must pass the configured threshold."]
+    ["VARIANT_SELECTED", "Signal-approved variant selected", "Variants are independent. One signal-approved confirmation profile can produce BUY/SELL after risk approval."],
+    ["SIGNAL_SCORE", "Minimum signal score", "The selected variant profile must pass the configured confidence score before MVP output fires."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
   rows.unshift({
@@ -7641,19 +7649,19 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
       rule_code: "AUTO_ELIGIBLE",
       name: "Automatic paper eligibility",
       status: matrix.autoEligible ? "PASS" : "NOT_APPLICABLE",
-      explanation: matrix.autoEligible ? "This scenario can trigger automatic paper entry." : "This scenario is tracked, but it is not an automatic entry scenario."
+      explanation: matrix.autoEligible ? "This scenario can trigger automatic BUY/SELL output." : "This scenario is tracked, but it is not an automatic entry scenario."
     },
     checklistRow(byCode, setup?.direction === "SHORT" ? "CLOSE_BELOW_ORB_LOW" : "CLOSE_ABOVE_ORB_HIGH", "Completed candle closes outside ORB", outsideClose ? "PASS" : setup?.scenario ? "FAIL" : "WAITING", outsideClose ? "The signal candle closed outside the ORB boundary." : "No valid completed outside-close breakout for automatic entry."),
     checklistRow(byCode, "BREAKOUT_BODY_RATIO", "Breakout candle body ratio", ratioStatus(bodyRatio, 0.55, setup), bodyRatio == null ? "Waiting for a scored breakout candle." : `Body ratio is ${formatRatio(bodyRatio)}. Required: 55% or higher.`),
     checklistRow(byCode, "CLOSE_LOCATION_RATIO", "Breakout close location", ratioStatus(closeLocationRatio, 0.65, setup), closeLocationRatio == null ? "Waiting for a scored breakout candle." : `Close location is ${formatRatio(closeLocationRatio)}. Required: 65% or higher.`),
     checklistRow(byCode, "ENTRY_NOT_OVEREXTENDED", "Entry is not overextended", extension == null || !outsideClose ? "NOT_APPLICABLE" : extension <= 0.25 ? "PASS" : "FAIL", extension == null || !outsideClose ? "Only applies after a completed outside-close breakout." : `Extension is ${formatRatio(extension)} of ORB range. Maximum: 25%.`),
     checklistRow(byCode, "NEWS_FILTER", "No blocked USD news", "NOT_APPLICABLE", "News filter is disabled or no backend news evaluation is attached to this candidate."),
-    checklistRow(byCode, "RISK_PERMISSION", "Risk engine permits the trade", automaticReady ? "PASS" : "NOT_APPLICABLE", automaticReady ? "Risk checks permitted this automatic paper setup." : "Risk permission is required only when the setup reaches automatic entry readiness."),
+    checklistRow(byCode, "RISK_PERMISSION", "Risk engine permits the signal", automaticReady ? "PASS" : "NOT_APPLICABLE", automaticReady ? "Risk checks permitted this automatic BUY/SELL setup." : "Risk permission is required only when the setup reaches automatic signal readiness."),
     {
       rule_code: "FAVORABILITY_SCORE",
       name: "Favorability threshold",
       status: setup?.favorability_score == null ? "WAITING" : Number(setup.favorability_score) >= 70 ? "PASS" : "FAIL",
-      explanation: setup?.favorability_score == null ? "Waiting for favorability scoring." : `Score is ${setup.favorability_score}/100. Required: 70/100 or higher for automatic paper trading.`
+      explanation: setup?.favorability_score == null ? "Waiting for favorability scoring." : `Score is ${setup.favorability_score}/100. Required: 70/100 or higher for automatic BUY/SELL signal.`
     },
     {
       rule_code: "HORIZONTAL_RANGE_OBSERVATION",
@@ -7672,9 +7680,9 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
     checklistRow(byCode, "HORIZONTAL_QUALITY_SCORE", "Horizontal quality score", horizontal?.range?.qualityScore == null ? "NOT_APPLICABLE" : Number(horizontal.range.qualityScore) >= 60 ? "PASS" : "FAIL", horizontal?.range?.qualityScore == null ? "Waiting for horizontal quality score." : `Horizontal range quality is ${horizontal.range.qualityScore}.`),
     {
       rule_code: "STRICT_CHECKLIST",
-      name: "Strict checklist gate",
+      name: "Automation profile gate",
       status: automaticReady || matrix.checklistMatched ? "PASS" : unmatchedRules.length > 0 ? "FAIL" : "NOT_APPLICABLE",
-      explanation: automaticReady || matrix.checklistMatched ? "Every automatic-entry checklist rule matched." : unmatchedRules.length > 0 ? `Blocked by: ${unmatchedRules.join(", ")}.` : "Current scenario is being tracked, not traded automatically."
+      explanation: automaticReady || matrix.checklistMatched ? "A Module 1 MVP profile is valid for an automatic BUY/SELL signal." : unmatchedRules.length > 0 ? `Profile is waiting on: ${unmatchedRules.join(", ")}.` : "Current scenario is observation-only until ORB or horizontal profile completes."
     }
   ];
 
@@ -7825,6 +7833,8 @@ function TradeSignalsWorkspace({
             <Metric label="Direction" value={selected.direction} />
             <Metric label="Variant" value={selected.variantName ?? selected.variantCode ?? "--"} />
             <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
+            <Metric label="Live status" value={signalFreshnessLabel(selected)} />
+            <Metric label="Entry distance" value={signalEntryDistanceLabel(selected)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
             <Metric label="Chance" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
@@ -7835,7 +7845,7 @@ function TradeSignalsWorkspace({
             <Metric label="Entry type" value={formatEntryKind(selected.entryRange?.kind)} />
             <Metric label="Trade horizon" value={longMode ? "Long · one TP" : tradeHorizonLabel(selected.tradeHorizon)} />
             <Metric label="Valid until" value={selected.expiresAt ? formatNepalTime(selected.expiresAt) : "Until invalidated"} />
-            <Metric label="Paper status" value={selected.trade?.status ?? "Awaiting paper entry"} />
+            <Metric label="Tracking status" value={selected.trade?.status ?? "Awaiting tracking"} />
           </aside>
         </div>
         <SignalMissingRulesPanel signal={selected} />
@@ -7886,7 +7896,7 @@ function TradeSignalsWorkspace({
 
       <div className="trade-horizon-note">
         <strong>{horizonFilter === "LONG" ? "Long setup" : "Short setup"}</strong>
-        <span>{horizonFilter === "LONG" ? "Shows only the strongest full-checklist module trade with one TP." : "Intraday setup uses TP1 50 pips, TP2 100 pips, and TP3 150 pips."}</span>
+        <span>{horizonFilter === "LONG" ? "Shows the strongest profile-approved module trade with one TP." : "Intraday setup uses TP1 50 pips, TP2 100 pips, and TP3 150 pips."}</span>
       </div>
 
       <div className="trade-signal-grid">
@@ -7914,12 +7924,17 @@ function TradeSignalsWorkspace({
             ) : signal.longChecklistBoost ? (
               <div className="trade-long-boost">
                 <CheckCircle2 size={16} />
-                <span>{moduleShortName(signal.moduleCode, signal.moduleName)} confirmed all BUY checklist rules.</span>
+                <span>{moduleShortName(signal.moduleCode, signal.moduleName)} confirmed a profile-approved BUY path.</span>
               </div>
             ) : null}
             <div className="trade-signal-entry">
               <span>Entry range</span>
               <strong>{formatSignalRange(signal.entryRange)}</strong>
+            </div>
+            <div className={`signal-freshness-strip ${signal.isNearLivePrice === false ? "stale" : "fresh"}`}>
+              <span>{signalFreshnessLabel(signal)}</span>
+              <strong>Live {formatPriceValue(signal.currentPrice)}</strong>
+              <em>{signalEntryDistanceLabel(signal)}</em>
             </div>
             {signal.variantName || signal.variantCode ? (
               <div className="trade-signal-entry compact">
@@ -7956,7 +7971,17 @@ function TradeSignalsWorkspace({
           </button>
         ))}
       </div>
-      {visibleSignals.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No valid {horizonFilter === "LONG" ? "long" : "short"} setups</strong><span>{horizonFilter === "LONG" ? "Long cards appear after a module has one full-checklist setup." : "Cards appear automatically after an assigned module validates a BUY or SELL entry."}</span></div> : null}
+      {visibleSignals.length === 0 ? (
+        <div className="signal-empty-state">
+          <Target size={24} />
+          <strong>No fresh {horizonFilter === "LONG" ? "long" : "short"} BUY/SELL setup</strong>
+          <span>{horizonFilter === "LONG" ? "Long cards appear after a module has one profile-approved setup near live price." : "Cards appear only when a module validates entry, SL, TP, and current XAUUSD is still close enough to the entry."}</span>
+          <div className="why-no-signal-grid">
+            <div><b>Module 1</b><span>Needs active NY ORB or horizontal breakout/retest path near live price.</span></div>
+            <div><b>Module 2</b><span>Any eligible sweep variant can trigger, but stale or far entries are hidden.</span></div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -7992,6 +8017,22 @@ function signalChecklistSummaryLabel(signal: any, key: "mandatory" | "confirmati
   const row = signal.checklistSummary?.[key];
   if (!row) return "--";
   return `${row.passed ?? 0}/${row.total ?? 0}`;
+}
+
+function signalFreshnessLabel(signal: any) {
+  if (!signal) return "Unknown";
+  if (signal.isNearLivePrice === false) return "Too far from live price";
+  if (signal.livePriceStatus === "STALE_TIME") return "Stale time";
+  if (signal.isFreshSignal === true || signal.livePriceStatus === "LIVE_PRICE_CONTEXT") return "Fresh live setup";
+  return signal.livePriceStatus ? formatScenario(signal.livePriceStatus) : "Live status pending";
+}
+
+function signalEntryDistanceLabel(signal: any) {
+  const distance = Number(signal?.entryDistanceFromCurrent);
+  const limit = Number(signal?.maxLiveEntryDistance);
+  if (!Number.isFinite(distance)) return "Distance --";
+  if (!Number.isFinite(limit)) return `${formatPriceValue(distance)} from entry`;
+  return `${formatPriceValue(distance)} / ${formatPriceValue(limit)} max`;
 }
 
 function SignalPrice({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
@@ -8270,13 +8311,15 @@ function PaperTradingWorkspace({
 }) {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [moduleFilter, setModuleFilter] = useState("ALL");
+  const [marketFilter, setMarketFilter] = useState("LIVE");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const loading = data == null;
   const trades = data?.trades ?? [];
   const summary = data?.summary ?? {};
   const filtered = trades.filter((trade) =>
     (statusFilter === "ALL" || trade.status === statusFilter) &&
-    (moduleFilter === "ALL" || trade.moduleCode === moduleFilter)
+    (moduleFilter === "ALL" || trade.moduleCode === moduleFilter) &&
+    (marketFilter === "ALL" || paperMarketBucket(trade) === marketFilter)
   );
   const selected = filtered.find((trade) => trade.id === selectedId) ?? filtered[0] ?? null;
 
@@ -8305,6 +8348,16 @@ function PaperTradingWorkspace({
             <button key={status} className={statusFilter === status ? "active" : ""} onClick={() => setStatusFilter(status)}>{status}</button>
           ))}
         </div>
+        <div className="paper-segmented" aria-label="Trade market context filter">
+          {[
+            ["LIVE", "Live"],
+            ["HISTORY", "History"],
+            ["STALE", "Stale"],
+            ["ALL", "All"]
+          ].map(([value, label]) => (
+            <button key={value} className={marketFilter === value ? "active" : ""} onClick={() => setMarketFilter(value)}>{label}</button>
+          ))}
+        </div>
         <label>
           <span>Strategy</span>
           <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
@@ -8320,6 +8373,7 @@ function PaperTradingWorkspace({
             <span>{moduleShortName(selected.moduleCode)}</span>
             <strong className={selected.action === "SELL" ? "trade-sell" : "trade-buy"}>{selected.action} {selected.symbol}</strong>
             <span className={`status-pill ${paperTradeTone(selected.status, selected.condition)}`}>{selected.condition}</span>
+            <span className={`status-pill ${paperMarketBucket(selected).toLowerCase()}`}>{paperMarketLabel(selected)}</span>
           </div>
           <div className="paper-focus-metrics">
             <Metric label="Entry" value={formatPriceValue(selected.entry)} />
@@ -8352,6 +8406,7 @@ function PaperTradingWorkspace({
               <th>TP</th>
               <th>RR</th>
               <th>Condition</th>
+              <th>Market</th>
               <th>Status</th>
               <th>Result</th>
             </tr>
@@ -8376,11 +8431,12 @@ function PaperTradingWorkspace({
                 <td>{formatPriceValue(trade.takeProfit)}</td>
                 <td>{trade.rewardToRisk == null ? "--" : `${Number(trade.rewardToRisk).toFixed(2)}R`}</td>
                 <td><span className={`status-pill ${paperTradeTone(trade.status, trade.condition)}`}>{trade.condition}</span></td>
+                <td><span className={`status-pill ${paperMarketBucket(trade).toLowerCase()}`}>{paperMarketLabel(trade)}</span></td>
                 <td>{trade.status}</td>
                 <td>{formatR(trade.status === "ACTIVE" ? trade.unrealizedR : trade.resultR)}R</td>
               </tr>
             ))}
-            {filtered.length === 0 ? <tr><td colSpan={11}>{loading ? "Loading paper trades..." : "No paper trades match this filter. Valid strategy entries will appear here automatically."}</td></tr> : null}
+            {filtered.length === 0 ? <tr><td colSpan={12}>{loading ? "Loading paper trades..." : "No paper trades match this filter. Valid strategy entries will appear here automatically."}</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -8393,6 +8449,19 @@ function paperTradeTone(status: string, condition: string) {
   if (status === "LOSS" || condition === "NEAR STOP") return "bad";
   if (condition === "IN DRAWDOWN") return "warn";
   return "";
+}
+
+function paperMarketBucket(trade: any) {
+  if (trade?.staleMarketDistance === true || trade?.marketContext === "HISTORICAL_PRICE_CONTEXT") return "STALE";
+  if (trade?.status === "ACTIVE" || trade?.marketContext === "LIVE_PRICE_CONTEXT") return "LIVE";
+  return "HISTORY";
+}
+
+function paperMarketLabel(trade: any) {
+  const bucket = paperMarketBucket(trade);
+  if (bucket === "STALE") return "Stale price";
+  if (bucket === "LIVE") return "Live market";
+  return "History";
 }
 
 function sectionTitle(section: ActiveSection) {
@@ -8417,7 +8486,7 @@ function sectionTitle(section: ActiveSection) {
 function sectionSubtitle(section: ActiveSection) {
   const subtitles: Record<ActiveSection, string> = {
     command: "One operational view for all enabled XAUUSD strategy modules, paper trades, confidence, and rehearsals.",
-    live: "Realtime XAUUSD candles, live indicators, and automatic paper-trade signal state.",
+    live: "Realtime XAUUSD candles, live indicators, predictions, and BUY/SELL signal state.",
     predictions: "Candidate BUY and SELL entry predictions with module reasoning, checklist blockers, invalidation, and projected TP/SL.",
     signals: "Live validated BUY and SELL setups with entry range, stop loss, tiered targets, and checklist evidence.",
     paper: "Monitor simulated entries, current conditions, risk-to-reward, TP/SL, and completed outcomes across assigned modules.",
@@ -8590,7 +8659,7 @@ function module2CockpitState(state: PanelState, setup?: any, trade?: any) {
     checklists: [
       {
         title: "Before Strategy Cycle",
-        items: ["Run launch rehearsal", "Confirm Twelve Data feed", "Confirm paper trading", "Review pending learning items"]
+        items: ["Run launch rehearsal", "Confirm Twelve Data feed", "Confirm BUY/SELL signal flow", "Review pending learning items"]
       },
       {
         title: "During NY Session",
@@ -8637,7 +8706,7 @@ function module2BacktestMetricMap(rows: any[]) {
   }, {});
 }
 
-function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: any): ChartPriceLine[] | undefined {
+function moduleChartPriceLines(moduleCode: string, setup?: any, visibility?: ChartIndicatorVisibility): ChartPriceLine[] | undefined {
   if (moduleCode === "orb_max_options") return undefined;
   const moduleSetup = setup?.module_code === moduleCode ? setup : null;
   if (!moduleSetup) return [];
@@ -8662,12 +8731,14 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
       }))
     : [];
   return [
-    ...levelLines,
-    { title: "Liquidity", price: sweepPrice, color: "#f0b429" },
-    { title: "BOS", price: bosLevel, color: "#38bdf8" },
-    { title: "Zone High", price: zone.high, color: "#a78bfa" },
-    { title: "Zone 50%", price: zone.midpoint, color: "#c4b5fd" },
-    { title: "Zone Low", price: zone.low, color: "#a78bfa" },
+    ...(visibility?.liquidity === false ? [] : levelLines),
+    ...(visibility?.liquidity === false || visibility?.sweep === false ? [] : [{ title: "Liquidity", price: sweepPrice, color: "#f0b429" }]),
+    ...(visibility?.bos === false ? [] : [{ title: "BOS", price: bosLevel, color: "#38bdf8" }]),
+    ...(visibility?.entryZone === false ? [] : [
+      { title: "Zone High", price: zone.high, color: "#a78bfa" },
+      { title: "Zone 50%", price: zone.midpoint, color: "#c4b5fd" },
+      { title: "Zone Low", price: zone.low, color: "#a78bfa" }
+    ]),
     { title: "Entry", price: moduleSetup.entry_price, color: "#16a46c" },
     { title: "Stop", price: moduleSetup.stop_price, color: "#e05252" },
     { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" }

@@ -26,6 +26,29 @@ MANDATORY_RULES = [
     "VARIANT_SELECTED",
 ]
 
+CORE_SETUP_RULES = [
+    "LIQUIDITY_LEVEL_IDENTIFIED",
+    "LIQUIDITY_SWEEP_CONFIRMED",
+    "SWEEP_REJECTION_CONFIRMED",
+    "SWEEP_ACCEPTANCE_BLOCK",
+]
+
+CORE_SAFETY_RULES = [
+    "DATA_HEALTHY",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT",
+    "RISK_LIMITS_CLEAR",
+    "MANUAL_CONFIRMATION_COMPLETED",
+    "RISK_OK",
+    "SIGNAL_SCORE",
+]
+
+SIGNAL_BLOCKING_RULES = [
+    *CORE_SETUP_RULES,
+    *CORE_SAFETY_RULES,
+    "VARIANT_SELECTED",
+]
+
 CONFIRMATION_RULES = [
     "CONFIRM_EMA_200",
     "CONFIRM_VWAP",
@@ -56,52 +79,62 @@ QUALITY_RULES = [
 
 def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_health: dict[str, Any]) -> dict[str, Any]:
     evaluations = setup.get("evaluations", []) if setup else []
-    checklist = checklist_summary(evaluations)
+    flags = setup.get("scenario_flags") if setup else {}
+    checklist = checklist_summary(evaluations, flags if isinstance(flags, dict) else {})
     if trade and trade.get("outcome") == "ACTIVE":
         setup_status = str(setup.get("status") or "") if setup else ""
         if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper trade whose originating setup did not pass the selected liquidity-sweep variant checklist.", False)
-        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 paper trade is active. Manage the TP/SL lifecycle.", False)
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper-tracking row whose originating setup did not pass the selected liquidity-sweep variant checklist.", False)
+        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 signal is active. Paper tracking is monitoring TP/SL for win-rate measurement.", False)
     if not setup:
-        return payload("WAITING_FOR_LIQUIDITY_SWEEP_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for an all-session liquidity sweep plus one paper-approved confirmation profile.", False)
+        return payload("WAITING_FOR_LIQUIDITY_SWEEP_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for an all-session liquidity sweep plus one signal-approved confirmation profile.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
     status = str(setup.get("status") or "")
-    flags = setup.get("scenario_flags") or {}
     mandatory = checklist["mandatoryPassed"]
     full = checklist["fullPassed"]
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
-        should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
+        should_track = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         setup_tier = "FULL" if full else "MANDATORY"
         selected_variant = selected_variant_name(flags)
-        decision_type = "LIQUIDITY_SWEEP_FULL_ENTRY_READY" if full else "LIQUIDITY_SWEEP_VARIANT_ENTRY_READY"
+        decision_type = "LIQUIDITY_SWEEP_FULL_SIGNAL_READY" if full else "LIQUIDITY_SWEEP_VARIANT_SIGNAL_READY"
         reason = (
             f"Module 2 {setup_tier} setup passed through {selected_variant}. {action} plan is ready from "
             "liquidity sweep, close-back rejection, selected profile confirmation, and risk approval."
         )
-        return payload(decision_type if should_open else "LIQUIDITY_SWEEP_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
+        return payload(decision_type if should_track else "LIQUIDITY_SWEEP_SIGNAL_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_track else "INFO", reason, should_track)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
         return payload("LIQUIDITY_SWEEP_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the selected liquidity-sweep variant checklist is not fully passed.", False)
 
     blocker = first_blocker(checklist)
-    reason = setup.get("final_reason") or "Module 2 is waiting for a selected paper-approved liquidity-sweep profile."
+    reason = setup.get("final_reason") or "Module 2 is waiting for a selected signal-approved liquidity-sweep profile."
     if blocker:
         reason = f"{reason} Current blocker: {blocker['ruleCode']}."
     return payload("LIQUIDITY_SWEEP_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
 
 
-def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
+def checklist_summary(evaluations: list[dict[str, Any]], flags: dict[str, Any] | None = None) -> dict[str, Any]:
+    flags = flags or {}
     statuses = {code(row): str(row.get("status")) for row in evaluations}
-    mandatory = all(statuses.get(item) == "PASS" for item in MANDATORY_RULES)
+    selected_variant = selected_variant_data(flags)
+    paper_variant_selected = (
+        bool(selected_variant.get("variantCode"))
+        and selected_variant.get("variantCode") != "SWEEP_NO_CONFIRMATION"
+        and selected_variant.get("variantPaperEligible") is not False
+    )
+    core_setup_passed = all(statuses.get(item) == "PASS" for item in CORE_SETUP_RULES)
+    safety_passed = all(statuses.get(item) == "PASS" for item in CORE_SAFETY_RULES)
+    flag_approved = bool(flags.get("mandatoryChecklistMatched")) and paper_variant_selected
+    mandatory = flag_approved or (core_setup_passed and safety_passed and paper_variant_selected)
     confirmation_rows = [statuses.get(item) == "PASS" for item in CONFIRMATION_RULES if item != "CONFIRMATION_COUNT"]
     quality_rows = [statuses.get(item) == "PASS" for item in QUALITY_RULES if item != "QUALITY_FILTER_COUNT"]
     confirmation_count = sum(1 for item in confirmation_rows if item)
     quality_count = sum(1 for item in quality_rows if item)
-    full = mandatory and confirmation_count >= 3 and quality_count >= 3
+    full = mandatory and (bool(flags.get("fullChecklistMatched")) or (confirmation_count >= 3 and quality_count >= 3))
     rows = []
     for row in evaluations:
         rule_code = code(row)
@@ -112,13 +145,18 @@ def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
                 "status": row.get("status"),
                 "blocking": bool(row.get("blocking")),
                 "ruleLayer": rule_layer(rule_code),
-                "requiredForEntry": rule_code in MANDATORY_RULES,
+        "requiredForEntry": rule_code in SIGNAL_BLOCKING_RULES,
             }
         )
     return {
         "moduleCode": MODULE_CODE,
-        "requiredRules": MANDATORY_RULES,
+        "requiredRules": SIGNAL_BLOCKING_RULES,
+        "legacyMandatoryRules": MANDATORY_RULES,
         "mandatoryPassed": mandatory,
+        "coreSetupPassed": core_setup_passed,
+        "safetyPassed": safety_passed,
+        "paperVariantSelected": paper_variant_selected,
+        "selectedVariant": selected_variant,
         "fullPassed": full,
         "confirmationPassed": confirmation_count,
         "confirmationRequired": 3,
@@ -126,7 +164,11 @@ def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
         "qualityRequired": 3,
         "requiredPassed": sum(1 for row in rows if row["requiredForEntry"] and row["status"] == "PASS"),
         "requiredTotal": len([row for row in rows if row["requiredForEntry"]]),
-        "blockingFailures": [row for row in rows if row["blocking"] and row["status"] != "PASS"],
+        "blockingFailures": [
+            row
+            for row in rows
+            if row["requiredForEntry"] and row["status"] not in ("PASS", "NOT_APPLICABLE")
+        ],
         "rows": rows,
     }
 
@@ -159,11 +201,11 @@ def rule_layer(rule_code: str) -> str:
     return "EVIDENCE"
 
 
-def payload(decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_open: bool) -> dict[str, Any]:
-    return base_payload(MODULE_CODE, MODULE_NAME, decision_type, action, direction, setup, trade, checklist, candle_health, severity, reason, should_open)
+def payload(decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_track: bool) -> dict[str, Any]:
+    return base_payload(MODULE_CODE, MODULE_NAME, decision_type, action, direction, setup, trade, checklist, candle_health, severity, reason, should_track)
 
 
-def base_payload(module_code: str, module_name: str, decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_open: bool) -> dict[str, Any]:
+def base_payload(module_code: str, module_name: str, decision_type: str, action: str, direction: str | None, setup: dict[str, Any] | None, trade: dict[str, Any] | None, checklist: dict[str, Any], candle_health: dict[str, Any], severity: str, reason: str, should_track: bool) -> dict[str, Any]:
     entry = number(setup.get("entry_price")) if setup else None
     stop = number(setup.get("stop_price")) if setup else None
     target = number(setup.get("target_price")) if setup else None
@@ -171,6 +213,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
     variant_data = selected_variant_data(flags if isinstance(flags, dict) else {})
     setup_tier = flags.get("setupTier") or ("FULL" if checklist.get("fullPassed") else "MANDATORY" if checklist.get("mandatoryPassed") else "WATCH")
     title_action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else action
+    emits_signal = action in ("BUY", "SELL") and checklist.get("mandatoryPassed") and entry is not None and stop is not None and target is not None
     return {
         "moduleCode": module_code,
         "moduleName": module_name,
@@ -179,7 +222,11 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
         "direction": direction,
         "severity": severity,
         "reason": reason,
-        "shouldOpenPaperTrade": should_open,
+        "shouldEmitSignal": bool(emits_signal),
+        "shouldTrackPaperTrade": should_track,
+        "shouldOpenPaperTrade": should_track,
+        "mvpPriority": "SIGNAL_FIRST",
+        "paperTrackingPurpose": "WIN_RATE_MEASUREMENT",
         "entry": entry,
         "stop": stop,
         "target": target,

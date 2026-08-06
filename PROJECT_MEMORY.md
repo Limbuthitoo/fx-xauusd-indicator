@@ -4,7 +4,7 @@ Last updated: 2026-08-05
 
 ## Product Goal
 
-XAUUSD Signal is a production-ready trading indicator and paper-trading system for user accounts. It uses one shared XAUUSD market feed from Twelve Data, stores candles in PostgreSQL, evaluates assigned strategy modules, generates BUY/SELL setup cards, opens automatic paper trades, sends web/mobile notifications, and keeps journal/report/learning records.
+XAUUSD Signal is a production-ready trading indicator and signal system for user accounts. It uses one shared XAUUSD market feed from Twelve Data, stores candles in PostgreSQL, evaluates assigned strategy modules, generates predictions and BUY/SELL setup cards, sends web/mobile notifications, opens paper-trade tracking rows for win-rate measurement, and keeps journal/report/learning records.
 
 The system does not execute broker orders. All broker/MT5 behavior has been removed or deprecated. Users execute manually if they choose; the platform only gives signals and paper-trade tracking.
 
@@ -72,7 +72,7 @@ Expected daily usage target:
 - Module 1 live chart indicators are module-owned: ORB levels and horizontal range can be toggled independently. They must not leak into Module 2.
 - Module 1 live chart should render only the latest/current New York ORB High/Mid/Low until the next New York ORB replaces it. Do not draw previous NY ORB ranges, duplicate NY ranges, or full-width ORB price-line indicators.
 - Module 1 ORB High/Mid/Low remain visible while ORB is the active structure. When a horizontal range breakout setup becomes valid/locked, the live chart hides ORB levels and prioritizes the horizontal range display to prevent crowding. ORB calculations remain available, but the horizontal setup can drive the MVP trade flow when its mandatory rules pass.
-- Paper trade opens only when module rules pass.
+- Paper-trade tracking opens only to measure validated module signals; predictions and BUY/SELL are the main MVP outputs.
 
 ### Module 2: Ultimate Liquidity Sweep
 
@@ -95,15 +95,15 @@ Expected daily usage target:
 - Module 2 live chart indicators are module-owned: EMA, liquidity, sweep, FVG/entry zone, displacement, and MSS/BOS can be toggled independently. ORB-derived liquidity/labels must be filtered out of Module 2 chart overlays and price labels.
 - Module 2 must not render ORB High/Mid/Low, ORB-derived sweep levels, or ORB-derived liquidity labels on its live chart, including during zoom/scale redraws.
   - Risk validation.
-  - Trade decision and automatic paper trade when setup-ready.
+  - Trade decision, BUY/SELL signal, notification, and secondary paper-trade tracking when setup-ready.
 - Module 2 variant-driven production model:
   - Variant version is stored as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
   - Current variant metadata is persisted in `setup_candidates.scenario_flags.module2Variant`, plus `variantCode` and `variantVersion`.
   - Variants are independent confirmation profiles evaluated after base liquidity sweep conditions.
-  - Sweep-only/no-confirmation is research/control only and must not open automatic paper trades.
-  - Paper-approved variants can open automatic paper trades when their own mandatory profile passes with risk approval, signal score, and Python brain approval.
+  - Sweep-only/no-confirmation is research/control only and must not emit actionable BUY/SELL signals.
+  - Signal-approved variants can emit BUY/SELL signals when their own mandatory profile passes with risk approval, signal score, and Python brain approval. Paper-trade tracking mirrors the signal for win-rate measurement.
   - `VARIANT_SELECTED` means one selected independent profile passed; it does not mean every variant must pass.
-  - Required live base path: healthy data, active strategy cycle, valid ranked liquidity, sweep, close-back rejection, no acceptance, risk approval, signal score, and a selected paper-approved variant.
+  - Required live base path: healthy data, active strategy cycle, valid ranked liquidity, sweep, close-back rejection, no acceptance, risk approval, signal score, and a selected signal-approved variant.
   - Web and mobile notification/details should show the selected variant name/code/version when available.
 - Terms must be explicit and versioned. Use `POTENTIAL_LIQUIDITY_LEVELS`, not confirmed institutional liquidity.
 - `CHoCH` is a UI alias for structure shift; internally classify reversal confirmation as `REVERSAL_MSS`.
@@ -207,7 +207,7 @@ Expected daily usage target:
   - Enter at break close or wait for retest.
   - Calculate entry, stop, TP, RR.
   - Apply spread/news/session/risk checks.
-  - Output short setup ready, open paper trade, notify user.
+  - Output short setup ready, notify user, and open paper-trade tracking for measurement.
 - Main long flow mirrors short using sell-side liquidity, reclaim, protected high, bullish MSS/BOS, long entry, SL, TP.
 - Recommended baseline config:
   - Context `15min`, setup `5min`, entry `5min`.
@@ -267,7 +267,7 @@ Rules:
 - Predictions do not call Twelve Data.
 - Module 2 prediction flow is: liquidity level -> sweep close-back -> displacement -> BOS/CHoCH -> FVG/order-block entry zone -> confirmation.
 - Prediction cards show BUY/SELL bias, predicted entry zone, SL, TP, probability, evidence, missing blockers, invalidation, and next action.
-- Predictions are not guaranteed entries. Paper trades and BUY/SELL cards require the module rules to pass.
+- Predictions are early candidate entries. BUY/SELL cards require the module rules to pass and current price to remain near the planned entry. Paper trades are secondary tracking rows for win-rate, journal, report, and learning calculations.
 
 ## BUY & SELL Page
 
@@ -373,7 +373,7 @@ Platform admin should not log into tenant dashboard as a tenant.
 - Mobile chart reads backend cached candles/websocket only and must not call chart sync or Twelve Data directly.
 - Mobile chart focuses on the latest candles on first load and uses compact module legends.
 - Mobile chart overlays:
-  - Module 1: 15M ORB High/Mid/Low plus paper entry/SL/TP levels.
+  - Module 1: 15M ORB High/Mid/Low plus BUY/SELL entry/SL/TP levels.
   - Module 2: liquidity sweep, sweep high/low, BOS/CHoCH, displacement, FVG/OB entry zone, entry/SL/TP.
 - Mobile app uses app icon/logo assets from the project.
 - APK builds should auto-increase version when using the project build script.
@@ -484,10 +484,10 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Sydney/Tokyo/London/New York ORB evaluation all use the same shared 5-minute candle cadence to protect the 800/day Twelve Data credit budget.
 - Module 2 remains separate and now uses the Ultimate Liquidity Sweep + MSS + Retest production model, not the old `Liquidity Sweep + BOS` strategy.
 - Module 2 profile evidence is registry-backed in `module2_strategy_variants` and versioned as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
-- Module 2 evidence profiles can be tracked for backtesting, but live paper trading is not a profile comparison system.
-- Module 2 actionable live profiles are independent confirmation profiles. One paper-approved variant plus risk, score, and Python brain approval can generate a BUY/SELL signal and paper trade.
-- Module 2 sweep + no-confirmation remains research/control only. Paper-approved independent profiles are exactly A-I: A sweep close-back, B sweep + BOS, C sweep + MSS, D sweep + engulfing, E sweep + BOS + retest, F sweep + MSS + retest, G sweep + EMA alignment, H sweep + volume expansion, and I sweep + MSS + displacement + retest.
-- Module 2 paper trades require closed 5M candles, valid base sweep conditions, a selected paper-approved variant, risk guardrails, minimum confidence, and Python brain approval.
+- Module 2 evidence profiles can be tracked for backtesting, but live BUY/SELL output is not a profile comparison system.
+- Module 2 actionable live profiles are independent confirmation profiles. One signal-approved variant plus risk, score, and Python brain approval can generate a BUY/SELL signal, notification, and secondary paper tracking.
+- Module 2 sweep + no-confirmation remains research/control only. Signal-approved independent profiles are exactly A-I: A sweep close-back, B sweep + BOS, C sweep + MSS, D sweep + engulfing, E sweep + BOS + retest, F sweep + MSS + retest, G sweep + EMA alignment, H sweep + volume expansion, and I sweep + MSS + displacement + retest.
+- Module 2 BUY/SELL signals require closed 5M candles, valid base sweep conditions, a selected signal-approved variant, risk guardrails, minimum confidence, Python brain approval, and near-current entry validation. Paper tracking mirrors that signal for performance measurement.
 - Module 2 liquidity selection now includes previous week high/low, previous day high/low, Asian high/low, London high/low, NY premarket high/low, ORB high/low, equal high/low, swing high/low, round numbers, and optional manual levels.
 - Module 2 confirmation layer currently tracks 10 plugins: 15M/EMA alignment, VWAP, fresh FVG, order-block retest, engulfing candle, pin-bar rejection, inside-bar break, doji rejection, volume expansion, and entry confirmation candle. Volume expansion remains record-only by default because XAUUSD provider volume may be incomplete.
 - Module 2 tenant settings include EMA mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_ALIGNMENT`, `REQUIRE_COUNTERTREND`) and volume mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_EXPANSION`), plus NY premarket, ORB, round-number, and manual liquidity-level controls.
@@ -505,9 +505,9 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Latest Module 2 final contract implemented from `LIQUIDITY SWEEP + MSS + RETEST COMPLETE VALID TRADE ENTRY ENGINE FOR SOFTWARE`.
 - Module 2 engine path is now: market data -> data health -> session -> market context -> market regime -> swing detection -> liquidity detection/ranking -> sweep -> rejection/acceptance -> protected structure -> reversal MSS -> retest -> context filters -> conflict resolution -> risk -> confidence -> BUY_READY/SELL_READY/WAIT/BLOCK/INVALIDATE/EXPIRE.
 - Module 2 data health states are `HEALTHY`, `DELAYED`, `STALE`, `DISCONNECTED`, `INCONSISTENT`, and `RATE_LIMITED`. Non-healthy data blocks live paper-entry decisions.
-- Module 2 base mandatory gates now include data health, market context, market regime, active strategy cycle, daily trade limit, active setup conflict, active paper trade conflict, daily/weekly/consecutive-loss risk limits, manual-confirmation mode, ranked liquidity level, sweep, close-back rejection, no acceptance, risk engine, signal score, and selected variant. Variant-specific requirements such as BOS, MSS, protected point, retest, displacement, EMA, engulfing, or entry candle belong to the selected independent profile.
+- Module 2 base mandatory signal gates now include data health, active strategy cycle, daily signal limit, active setup conflict, paper-tracking duplicate guard, daily/weekly/consecutive-loss risk limits, manual-confirmation mode, ranked liquidity level, sweep, close-back rejection, no acceptance, risk engine, signal score, and selected variant. Market context/regime are evidence unless configured as required. Variant-specific requirements such as BOS, MSS, protected point, retest, displacement, EMA, engulfing, or entry candle belong to the selected independent profile.
 - Module 2 displacement is context by default (`WARN_ONLY`), not mandatory unless `displacementFilterMode` is set to `REQUIRED`.
-- Module 2 EMA defaults to `WARN_ONLY`; volume defaults to `RECORD_ONLY`; market context defaults to `RECORD_ONLY`; manual confirmation defaults to `false` for automatic paper trading.
+- Module 2 EMA defaults to `WARN_ONLY`; volume defaults to `RECORD_ONLY`; market context defaults to `RECORD_ONLY`; manual confirmation defaults to `false` for automatic BUY/SELL signal flow.
 - Module 2 ranked liquidity now scores previous week/day, London, Asian, ORB, equal highs/lows, external swings, and manual levels using base priority plus untouched/reaction/HTF/cluster bonuses and accepted/old/low-liquidity penalties. Nearby levels with similar scores are merged into one zone.
 - Module 2 ranked liquidity also includes lower-priority internal swing high/low levels, applies minimum 3 bars between confirmed swings, uses 0.03 ATR structure tolerance, adds overlap bonus, and penalizes liquidity that is too close to opposing liquidity.
 - Module 2 conflict resolution blocks simultaneous unresolved buy/sell setups; a confirmed MSS retest with entry confirmation can override weaker opposite sweep evidence.
@@ -530,7 +530,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 production proof endpoint response now explicitly includes `journal` and requires `journalCreated` in its final PASS checks. A valid proof must confirm setup, strict variant, entry readiness, paper trade, journal, notification payload, and Python brain.
 - Module 2 Predictions and BUY & SELL APIs continue to hide replay/proof rows in normal tenant mode. For production QA only, `/api/setups/predictions?moduleCode=high_probability_strategy_2&includeProof=true` and `/api/setups/signals?moduleCode=high_probability_strategy_2&includeProof=true` expose proof rows through the same UI mapping code. Predictions now return `takeProfit` alongside TP1/TP2/TP3.
 - Module 2 live Predictions must be upcoming/recent only: normal prediction rows hide replay/proof rows, hide active paper trades, require at least 80% probability, require detection within 90 minutes of the latest 5M candle, and require entry to be close to current price. This prevents stale predictions such as current price 4260 with an old 4045 entry.
-- Module 2 BUY & SELL cards are stricter than Predictions: normal mode now requires an actual active paper trade row. A valid signal card means the module met production rules, created the paper trade, and can show entry/SL/TP details.
+- Module 2 BUY & SELL cards are the main MVP output, not a paper-trade mirror. Normal mode shows recent near-current valid BUY/SELL setups with entry, SL, TP, chance, and module/variant evidence whether or not the audit paper-trade row has already opened. Paper trading mirrors those signals for win-rate/reporting only.
 - Python main brain now ignores stale non-proof setup rows unless there is an active paper trade to manage, so Module 1 and Module 2 brain decisions stay aligned with current market context.
 - Module 2 Python main brain supports `--proof-mode`. Live mode still excludes replay rows; proof mode intentionally reads only `scenario_flags.productionProof=true` replay evidence so the proof does not contaminate real live setup logic.
 - Module 2 replay QA has been realigned to the final strategy: A-I can prove/open paper-entry behavior when their own mandatory profile and risk gates pass; J remains observable research/control only.
@@ -538,7 +538,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Latest local proof on 2026-08-06: `POST /api/module2/production-proof/run` returned PASS with setup, strict variant, paper trade, notification payload, and Python brain all true. A bounded 300-candle Module 2 cache backtest completed with 0 full trades and 12 missed-trade learning reviews. `npm run validate:module2-production -- .env.production` returned 13 PASS, 3 WARN, 0 FAIL.
 - Module 2 live chart now includes a Live Candidate Monitor panel. It reads current price/latest candle from `/api/setups/current?moduleCode=high_probability_strategy_2&evidence=true`, shows whether the setup is an 80%+ recent prediction, whether BUY/SELL has become an active paper trade, entry distance, age, and the first blocking rule explaining why no trade is available yet.
 - Module 1 ORB chart levels must be rendered as timed session overlays, not full-width price lines. Each displayed session range starts at its own `session_start_at` so tenants can visually identify where the session ORB began.
-- Module 1 production proof is covered by module verification: three 5M candles lock the 15M ORB range, the next completed 5M breakout candle must produce entry/SL/TP, and the Python Module 1 brain must approve paper entry only when the mandatory ORB checklist is valid.
+- Module 1 production proof is covered by module verification: three 5M candles lock the 15M ORB range, the next completed 5M breakout candle must produce entry/SL/TP, and the Python Module 1 brain must approve BUY/SELL only when the mandatory ORB checklist is valid.
 - Module 1 production proof endpoint is `/api/module1/production-proof/run`. It creates a proof-only ORB replay setup, active paper trade, journal, structured notification payload, and runs the Python Module 1 brain in proof mode. Normal tenant Predictions/BUY & SELL continue to hide proof rows unless `includeProof=true`.
 - Module 1 sweep-reversal entries must not be blocked by the normal direct-breakout no-chase rule when the sequence is valid: opposite ORB boundary swept, candle closes back inside, then a completed candle closes beyond the other ORB boundary. Ordinary overextended breakouts still wait for retest, but confirmed sweep reversals can use a wider reversal extension limit and stop beyond the failed sweep.
 - Module 1 must not become overly restrictive. Valid MVP-capable paths include opening-drive clean breakout, displacement clean breakout, trend-aligned clean breakout, breakout retest confirmation, sweep-retest continuation, liquidity-sweep reversal, mandatory-only ORB breakout, and active NY horizontal range breakout/retest. Observation/watch paths such as fakeout candidate, inside-range wait, double-sided sweep, and overextended no-chase should not open paper trades until their own confirmation path completes.
@@ -546,12 +546,12 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Broker execution remains out of scope. Manual execution reconciliation is allowed only to compare a tenant's manual trade with the generated plan.
 - Module 3 was intentionally removed completely; do not reintroduce it.
 - Superseding Module 2 architecture update, 2026-08-06: Module 2 is no longer New York-only and no longer strict-MSS-retest-only for production entry. It runs as an all-session liquidity sweep strategy cycle using the shared XAUUSD 5M candle feed.
-- Module 2 variants are independent confirmation profiles evaluated after base conditions pass. The system must not require every variant to pass. One paper-approved variant plus risk and score gates can generate BUY/SELL, paper trade, journal, notification, chart markers, and predictions.
-- Module 2 paper-approved profiles include A sweep close-back, B sweep + BOS, C sweep + MSS, D sweep + engulfing, E sweep + BOS + retest, F sweep + MSS + retest, G sweep + EMA alignment, H sweep + volume expansion, and I sweep + MSS + displacement + retest. J sweep + no-confirmation remains research/control only.
+- Module 2 variants are independent confirmation profiles evaluated after base conditions pass. The system must not require every variant to pass. One signal-approved variant plus risk and score gates can generate predictions, BUY/SELL, notifications, chart markers, and paper-trade tracking.
+- Module 2 signal-approved profiles include A sweep close-back, B sweep + BOS, C sweep + MSS, D sweep + engulfing, E sweep + BOS + retest, F sweep + MSS + retest, G sweep + EMA alignment, H sweep + volume expansion, and I sweep + MSS + displacement + retest. J sweep + no-confirmation remains research/control only.
 - Module 2 proof endpoint `/api/module2/variant-matrix-proof/run` validates the full A-J matrix without Twelve Data credits or broker orders. A-I must create setup evidence and paper-proof artifacts; J must remain blocked from paper trade creation.
 - Combined tenant proof validation `npm run validate:modules-flow` now also runs the Module 2 A-J matrix proof and reports profile, variant code, paper-trade expectation, trade id, and notification id.
 - Module 2 retest expiration only invalidates retest-based profiles. It must not kill simpler independent profiles that already passed their own mandatory rules.
-- Module 2 Python brain must approve the selected paper-approved variant profile, not force every setup through strict MSS + retest. Protected point, BOS/CHoCH, MSS strength, entry zone, retrace, and entry candle are variant evidence unless the selected variant requires them.
+- Module 2 Python brain must approve the selected signal-approved variant profile, not force every setup through strict MSS + retest. Protected point, BOS/CHoCH, MSS strength, entry zone, retrace, and entry candle are variant evidence unless the selected variant requires them.
 - Module 2 Strategy Center should display base mandatory gates, selected variant profile, confirmation checklist, quality filters, and final automation gate. It should never display variants as one impossible combined checklist.
 - Module 1 is New York-only; Module 2 is all-session. Module 1 should show New York ORB High/Mid/Low indicators and NY-only active horizontal range breakout/retest evidence when present. Module 2 should show liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target indicators when evidence exists.
 - Module 1 now has a generic range-engine foundation around the existing MAX Options ORB logic. ORB remains the authoritative detector and keeps the existing 15M opening range / 5M trigger behavior. The shared normalized range contract is stored in setup `scenario_flags.genericRangeEngine` and `scenario_flags.tradingRange`.
@@ -565,6 +565,14 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 1 horizontal range stop placement uses the retest swing plus ATR buffer. Expired retests must override overextended wait states so dead setups do not remain eligible.
 - Module 1 and Module 2 strategy settings cards must stay readable in the tenant dashboard with responsive, full-width strategy fields and module-specific indicator toggles.
 - Generic range architecture rule: range detectors may share lifecycle/breakout/retest/risk evidence, but ORB must never be forced to satisfy horizontal consolidation rules, and horizontal ranges must not inherit fixed NY/15M ORB assumptions.
+- Paper Trading ledger rule: normal tenant paper-trade pages must exclude QA/proof/replay/rehearsal rows by default. Production validation can opt into proof rows with `includeProof=true`; tenant-facing history must show real automatic paper trades only.
+- Python main-brain rule: Module 1 and Module 2 brains are the final signal automation gate after the TypeScript strategy engines create a setup. Module 1 approves ORB or NY horizontal range as independent paths. Module 2 approves the selected liquidity-sweep variant profile when core sweep evidence, safety/risk gates, entry/SL/TP, and direction are complete. Module 2 must not require every variant/global checklist item to pass before allowing a valid selected profile to trigger predictions, BUY/SELL, notifications, and the separate paper-trade audit path.
+- Python brain contract is signal-first: `shouldEmitSignal` approves the MVP BUY/SELL output, `shouldTrackPaperTrade` approves the secondary win-rate tracking row, and legacy `shouldOpenPaperTrade` remains only for backward compatibility. API automation must gate user-facing signals on `shouldEmitSignal`, then create paper tracking only if the live entry guard and settings allow it.
+- Current brain verification covers Module 1 ORB signal, Module 1 Horizontal Range signal, Module 2 full liquidity-sweep signal, Module 2 flexible variant signal, and negative legacy/incomplete checks through `python3 scripts/verify-python-brains.py` and `npm run verify:modules`.
+- MVP signal philosophy: aim for practical opportunity coverage, roughly 1-2 high-quality opportunities in the New York session across Module 1/2 and 3-4 Module 2 opportunities across the full day when market structure supports it. Do not fake quota trades. Increase coverage by allowing independent valid profiles, separating hard safety blockers from optional confidence evidence, and showing clear wait/no-trade reasons.
+- Product priority: Predictions and BUY/SELL signals are the main MVP. Paper trading is secondary evidence used to calculate win rate, R, journal/report statistics, and learning feedback. A valid signal should not disappear just because the paper-trade audit row is delayed, skipped by stale-price guard, or blocked by an existing active paper trade.
+- Strategy Center UI must not present optional rows as one impossible all-pass checklist. Module 2 should show Base Safety Gates, Context Evidence, Selected Variant Profile, Confidence Evidence, Risk & Quality, and Final Automation Gate. BUY & SELL cards should say profile-approved rather than full-checklist unless literally every evidence row passed.
+- Paper entry trust guard: automatic paper trades must not execute at a stale planned entry when the latest 5M candle has moved too far away. If live close is beyond the entry-distance guard, skip/mark the setup missed instead of opening a fake paper position. Paper ledger rows should expose historical price context when entry is far from current market.
 
 ## Operating Principles
 

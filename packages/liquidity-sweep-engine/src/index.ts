@@ -421,10 +421,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "STRUCTURE_ALIGNMENT_CONTEXT", "Internal/external structure alignment resolved", config.countertrendResolutionMode !== "BLOCK" || structureGraph.alignmentState !== "COUNTERTREND", config.countertrendResolutionMode === "BLOCK", "AUTOMATIC", structureGraph.alignmentState, config.countertrendResolutionMode, structureGraph.conflictReason);
   push(evaluations, "SESSION_CONTEXT_READY", "Session context engine ready", Boolean(sessionContext.current), false, "AUTOMATIC", sessionContext.current?.name ?? "UNKNOWN", "active or completed context", sessionContext.current ? `${sessionContext.current.name} session context is ${sessionContext.current.state}.` : "No current session context could be classified.");
   push(evaluations, "NY_SESSION_ACTIVE", "Strategy cycle active", strategyCycleActive, true, "AUTOMATIC", `${activeSessionName} ${timeOnly(current.timestampUtc)}`, `${config.newYorkStartTime}-${config.newYorkEndTime}`, strategyCycleActive ? `Module 2 is evaluating the active ${activeSessionName} cycle.` : "Module 2 strategy cycle is outside the configured runtime window.");
-  push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
+  push(evaluations, "DAILY_TRADE_LIMIT", "Daily signal limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session signal limit allows another actionable setup." : "The configured session signal limit has already been reached.");
   push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", activeSetupOk, true, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No active same-symbol setup conflict is present." : "Another active same-symbol setup already exists.");
-  push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "No active paper trade conflict", activePositionOk, true, "AUTOMATIC", context.currentOpenPositions ?? 0, `<= ${config.maximumActivePositions}`, activePositionOk ? "No active paper position blocks a new Module 2 setup." : "An active position blocks new Module 2 entry.");
-  push(evaluations, "RISK_LIMITS_CLEAR", "Daily, weekly, and consecutive-loss risk limits clear", riskLimitsOk, true, "AUTOMATIC", `D ${context.dailyLossPercent ?? 0}% / W ${context.weeklyLossPercent ?? 0}% / L ${context.consecutiveLosses ?? 0}`, `D < ${config.maximumDailyLossPercent}%, W < ${config.maximumWeeklyLossPercent}%, losses < ${config.maximumConsecutiveLosses}`, riskLimitsOk ? "Account/session risk limits allow a new paper setup." : "Risk limits block a new paper setup.");
+  push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "No active tracking conflict", activePositionOk, true, "AUTOMATIC", context.currentOpenPositions ?? 0, `<= ${config.maximumActivePositions}`, activePositionOk ? "No active paper-tracking position blocks a new Module 2 setup." : "An active paper-tracking position blocks a duplicate Module 2 entry.");
+  push(evaluations, "RISK_LIMITS_CLEAR", "Daily, weekly, and consecutive-loss risk limits clear", riskLimitsOk, true, "AUTOMATIC", `D ${context.dailyLossPercent ?? 0}% / W ${context.weeklyLossPercent ?? 0}% / L ${context.consecutiveLosses ?? 0}`, `D < ${config.maximumDailyLossPercent}%, W < ${config.maximumWeeklyLossPercent}%, losses < ${config.maximumConsecutiveLosses}`, riskLimitsOk ? "Account/session risk limits allow a new BUY/SELL setup." : "Risk limits block a new BUY/SELL setup.");
   push(evaluations, "MANUAL_CONFIRMATION_COMPLETED", "Manual confirmation completed when required", manualConfirmationOk, config.manualConfirmationRequired, "AUTOMATIC", config.manualConfirmationRequired ? context.manualConfirmationCompleted === true : "AUTO_PAPER_MODE", config.manualConfirmationRequired ? "true" : "not required", manualConfirmationOk ? "Manual confirmation gate is satisfied for the configured mode." : "Manual confirmation is required before Module 2 can emit BUY_READY/SELL_READY.");
 
   if (!strategyCycleActive) {
@@ -624,8 +624,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     riskOk
   });
   const selectedVariant = selectModule2Variant(variants);
-  push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one paper-approved variant mandatory profile passes", selectedVariant ? selectedVariant.reason : "No paper-approved confirmation profile has completed. Variants are independent profiles; only one valid paper-approved profile is needed.");
-  push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
+  push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one signal-approved variant mandatory profile passes", selectedVariant ? selectedVariant.reason : "No signal-approved confirmation profile has completed. Variants are independent profiles; only one valid signal-approved profile is needed.");
+  push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic BUY/SELL output." : "Module 2 signal score is below the automatic BUY/SELL threshold.");
   const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
   const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
   flags.levels = levels;
@@ -682,18 +682,18 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
         direction,
         status: "WAIT",
         state: "ENTRY_CONFIRMATION",
-        finalReason: `Sweep is confirmed. Waiting for one paper-approved confirmation profile to complete. Best waiting profile: ${variants.find((item) => item.status === "WAIT")?.name ?? "none"}.`,
+        finalReason: `Sweep is confirmed. Waiting for one signal-approved confirmation profile to complete. Best waiting profile: ${variants.find((item) => item.status === "WAIT")?.name ?? "none"}.`,
         evaluations,
         scenarioFlags: flags,
         favorabilityScore: score,
         favorabilityGrade: gradeValue,
         favorabilityReasons: [
           "Base sweep conditions passed.",
-          "No paper-approved confirmation profile has completed yet."
+          "No signal-approved confirmation profile has completed yet."
         ]
       };
     }
-    return blockedDecision("NO_PAPER_PROFILE_SELECTED", "NO TRADE: no paper-approved confirmation profile is complete. Variants are independent; one approved variant must pass before entry.", evaluations, flags, direction, score);
+    return blockedDecision("NO_PAPER_PROFILE_SELECTED", "NO TRADE: no signal-approved confirmation profile is complete. Variants are independent; one approved variant must pass before BUY/SELL output.", evaluations, flags, direction, score);
   }
 
   if (!riskOk) {
@@ -2364,7 +2364,7 @@ function module2VariantCandidates(input: {
     variant("J", "SWEEP_NO_CONFIRMATION", "J. Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
-    ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction)
+    ], "Variant J passed: sweep-only control for backtesting comparison, not actionable BUY/SELL output.", base, input.direction)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
