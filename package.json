@@ -18,7 +18,7 @@
     "dev:quant": "uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir apps/quant",
     "build:android-apk:local": "npm run build:android-apk:local -w @orb-guide/mobile",
     "postinstall": "patch-package",
-    "build:packages": "npm run build -w @orb-guide/shared-types && npm run build -w @orb-guide/rule-engine && npm run build -w @orb-guide/risk-engine && npm run build -w @orb-guide/strategy-engine && npm run build -w @orb-guide/liquidity-sweep-engine",
+    "build:packages": "npm run build -w @orb-guide/shared-types && npm run build -w @orb-guide/rule-engine && npm run build -w @orb-guide/risk-engine && npm run build -w @orb-guide/strategy-engine && npm run build -w @orb-guide/range-engine && npm run build -w @orb-guide/liquidity-sweep-engine",
     "build:api": "npm run build:packages && npm run build -w @orb-guide/api",
     "build:web": "npm run build -w @orb-guide/web",
     "build": "npm run build:api && npm run build:web",
@@ -52,7 +52,7 @@
     "validate:modules-flow": "node scripts/validate-modules-production-flow.mjs",
     "verify:orb": "node --import tsx scripts/verify-orb-scenarios.ts",
     "verify:modules": "node --import tsx scripts/verify-module-strategies.ts && python3 scripts/verify-python-brains.py",
-    "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"
+    "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/range-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"
   },
   "engines": {
     "node": ">=20"

@@ -773,7 +773,7 @@ export async function adminRoutes(app: FastifyInstance) {
         [session.tenantId, moduleCode]
       );
       if (active.rows[0]) {
-        const error = new Error("Module 2 settings are locked during the live New York session. Change them after session closeout.") as Error & { statusCode?: number };
+        const error = new Error("Module 2 settings are locked while the strategy cycle is active. Change them after the active cycle closes.") as Error & { statusCode?: number };
         error.statusCode = 423;
         throw error;
       }
@@ -792,7 +792,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (moduleCode === "high_probability_strategy_2" && key === "liquiditySweep.strategy") {
       await query(
         `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-         VALUES ($1,$2,'MODULE2_REHEARSAL_REQUIRED','Module 2 rehearsal required','Module 2 settings changed. Run launch rehearsal before trusting the next NY signal.','HIGH')
+         VALUES ($1,$2,'MODULE2_REHEARSAL_REQUIRED','Module 2 rehearsal required','Module 2 settings changed. Run launch rehearsal before trusting the next all-session signal.','HIGH')
          ON CONFLICT (event_key) DO NOTHING`,
         [session.tenantId, `module2-rehearsal-required-${session.tenantId}-${Date.now()}`]
       );

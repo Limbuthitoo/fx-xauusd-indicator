@@ -14,7 +14,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const symbol = search.symbol ?? "XAUUSD";
     const timeframeMinutes = Number(search.timeframeMinutes ?? 5);
     const notificationQuery = search.notificationQuery ? decodeURIComponent(search.notificationQuery) : "";
-    const needsCommand = section === "command" || section === "orb";
+    const needsCommand = section === "command" || section === "command_center" || section === "orb";
     const needsStrategy = section === "orb";
     const needsReports = section === "reports";
     const needsLearning = section === "learning";

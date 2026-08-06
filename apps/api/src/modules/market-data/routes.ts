@@ -1,5 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { evaluateLiquiditySweepSetup } from "@orb-guide/liquidity-sweep-engine";
+import {
+  DEFAULT_HORIZONTAL_RANGE_CONFIG,
+  FalseBreakoutEngine,
+  HorizontalRangeDetector,
+  MaxOptionsOrbRangeDetector,
+  RANGE_BREAKOUT_PROFILES,
+  RangeConflictResolver,
+  RangeDecisionEngine,
+  RetestEngine,
+  evaluateRangeBreakout
+} from "@orb-guide/range-engine";
 import { calculateRisk } from "@orb-guide/risk-engine";
 import type { Candle, RuleContext } from "@orb-guide/shared-types";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
@@ -108,6 +119,7 @@ const ORB_SESSION_PRESETS = [
   { preset: "LONDON_ORB", label: "London", sessionStart: "03:00", tradeWindowEnd: "12:00" },
   { preset: "NEW_YORK_ORB", label: "New York", sessionStart: "09:15", tradeWindowEnd: "16:00" }
 ] as const;
+const MODULE1_ACTIVE_ORB_PRESET = "NEW_YORK_ORB";
 const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
 const XAUUSD_PAPER_SPEC = {
   contractSize: 100,
@@ -186,6 +198,123 @@ const autoRunState: AutoRunState = {
 export async function marketDataRoutes(app: FastifyInstance) {
   if (config.embeddedMarketDataWorker) startMarketDataWorker();
 
+  app.get("/api/ranges/active", async (request) => {
+    const queryParams = request.query as { moduleCode?: string; symbol?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query(
+      `SELECT r.*, e.validation_rules_json, e.upper_touch_count, e.lower_touch_count, e.containment_ratio, e.efficiency_ratio
+       FROM ranges r
+       LEFT JOIN range_evidence e ON e.range_id = r.id
+       WHERE r.tenant_id = $1
+         AND r.symbol = COALESCE($2, r.symbol)
+         AND r.state IN ('LOCKED','BREAKOUT_CANDIDATE','BREAKOUT_CONFIRMED','WAITING_FOR_RETEST','RETEST_CONFIRMED','ENTRY_READY','TRADE_ACTIVE')
+       ORDER BY r.locked_at DESC NULLS LAST, r.detected_at DESC
+       LIMIT 50`,
+      [auth.tenantId, queryParams.symbol ?? null]
+    );
+    return rows.map(rangeRowView);
+  });
+
+  app.get("/api/ranges/history", async (request) => {
+    const queryParams = request.query as { moduleCode?: string; symbol?: string; limit?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const limit = Math.min(Math.max(Number(queryParams.limit ?? 100), 1), 500);
+    const { rows } = await query(
+      `SELECT r.*, e.validation_rules_json, e.upper_touch_count, e.lower_touch_count, e.containment_ratio, e.efficiency_ratio
+       FROM ranges r
+       LEFT JOIN range_evidence e ON e.range_id = r.id
+       WHERE r.tenant_id = $1
+         AND r.symbol = COALESCE($2, r.symbol)
+       ORDER BY r.detected_at DESC
+       LIMIT $3`,
+      [auth.tenantId, queryParams.symbol ?? null, limit]
+    );
+    return rows.map(rangeRowView);
+  });
+
+  app.get("/api/ranges/:id", async (request) => {
+    const params = request.params as { id: string };
+    const queryParams = request.query as { moduleCode?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query("SELECT * FROM ranges WHERE tenant_id = $1 AND id = $2 LIMIT 1", [auth.tenantId, params.id]);
+    if (!rows[0]) return notFound("Range not found.");
+    return rangeRowView(rows[0]);
+  });
+
+  app.get("/api/ranges/:id/evidence", async (request) => {
+    const params = request.params as { id: string };
+    const queryParams = request.query as { moduleCode?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query("SELECT * FROM range_evidence WHERE tenant_id = $1 AND range_id = $2 LIMIT 1", [auth.tenantId, params.id]);
+    if (!rows[0]) return notFound("Range evidence not found.");
+    return rows[0];
+  });
+
+  app.get("/api/ranges/:id/relationships", async (request) => {
+    const params = request.params as { id: string };
+    const queryParams = request.query as { moduleCode?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query(
+      `SELECT *
+       FROM range_relationships
+       WHERE tenant_id = $1
+         AND (parent_range_id = $2 OR child_range_id = $2)
+       ORDER BY created_at DESC`,
+      [auth.tenantId, params.id]
+    );
+    return rows;
+  });
+
+  app.get("/api/range-setups/current", async (request) => {
+    const queryParams = request.query as { moduleCode?: string; symbol?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query(
+      `SELECT rbs.*, r.source, r.formation_method, r.high, r.low, r.midpoint, r.width, r.quality_score
+       FROM range_breakout_setups rbs
+       JOIN ranges r ON r.id = rbs.range_id
+       WHERE rbs.tenant_id = $1
+         AND r.symbol = COALESCE($2, r.symbol)
+         AND rbs.state IN ('BREAKOUT_CANDIDATE','BREAKOUT_CONFIRMED','WAITING_FOR_RETEST','RETEST_CONFIRMED','ENTRY_READY','TRADE_ACTIVE')
+       ORDER BY rbs.updated_at DESC, rbs.created_at DESC
+       LIMIT 1`,
+      [auth.tenantId, queryParams.symbol ?? null]
+    );
+    return rows[0] ?? null;
+  });
+
+  app.post("/api/ranges/:id/invalidate", async (request) => {
+    const params = request.params as { id: string };
+    const queryParams = request.query as { moduleCode?: string };
+    const body = request.body as { reason?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query(
+      `UPDATE ranges
+       SET state = 'INVALIDATED', updated_at = now(), source_payload = jsonb_set(COALESCE(source_payload, '{}'::jsonb), '{manualInvalidationReason}', to_jsonb($3::text), true)
+       WHERE tenant_id = $1 AND id = $2
+       RETURNING *`,
+      [auth.tenantId, params.id, body.reason ?? "Manual invalidation"]
+    );
+    if (!rows[0]) return notFound("Range not found.");
+    broadcastLiveEvent({
+      type: "range.invalidated",
+      rangeId: params.id,
+      source: rows[0].source,
+      formationMethod: rows[0].formation_method,
+      symbol: rows[0].symbol,
+      timestamp: new Date().toISOString(),
+      strategyVersion: rows[0].strategy_version,
+      reason: body.reason ?? "Manual invalidation"
+    });
+    return rangeRowView(rows[0]);
+  });
+
   app.get("/api/market-data/providers", async () => {
     const settings = await refreshRuntimeSettings();
     return [
@@ -229,7 +358,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
       catchupSeconds: config.twelveDataCatchupSeconds,
       startupBackfillCount: settings.feed.startupBackfillCount,
       livePollCount: settings.feed.livePollCount,
-      schedulerMode: twelveDataState.running ? "NY_LIVE_60S" : autoRunState.phase === "CATCH_UP" ? "OFF_SESSION_30M" : "PAUSED",
+      schedulerMode: twelveDataState.running ? "SHARED_5M_LIVE" : autoRunState.phase === "CATCH_UP" ? "SHARED_5M_CATCH_UP" : "PAUSED",
       lastRequestedCount: twelveDataState.lastRequestedCount,
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
@@ -349,7 +478,7 @@ export async function marketDataRoutes(app: FastifyInstance) {
       startupBackfillCount: settings.feed.startupBackfillCount,
       livePollCount: settings.feed.livePollCount,
       catchupSeconds: config.twelveDataCatchupSeconds,
-      schedulerMode: twelveDataState.running ? "NY_LIVE_60S" : autoRunState.phase === "CATCH_UP" ? "OFF_SESSION_30M" : "PAUSED",
+      schedulerMode: twelveDataState.running ? "SHARED_5M_LIVE" : autoRunState.phase === "CATCH_UP" ? "SHARED_5M_CATCH_UP" : "PAUSED",
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
       memoryCandles,
@@ -1243,8 +1372,8 @@ async function runAutoRunCycle() {
       autoRunState.lastActionAt = catchup.syncedAt ?? autoRunState.lastActionAt;
       autoRunState.nextActionAt = catchup.nextSyncAt ?? autoRunState.nextActionAt;
       autoRunState.reason = catchup.performed
-        ? `Off-session XAUUSD catch-up imported ${catchup.imported ?? 0} candle(s). Module 1 remains paused until New York.`
-        : `Off-session XAUUSD catch-up is current. Next shared sync is scheduled for ${catchup.nextSyncAt}.`;
+        ? `Shared XAUUSD 5-minute sync imported ${catchup.imported ?? 0} candle(s) and evaluated all active strategy modules.`
+        : `Shared XAUUSD 5-minute sync is current. Next sync is scheduled for ${catchup.nextSyncAt}.`;
     }
     return autoRunState;
   }
@@ -1481,7 +1610,7 @@ export function sharedNewYorkFeedWindow(sessionDate: string) {
 function currentOrNextOrbSessionWindow(settings: RuntimeSettings, now = new Date()) {
   const dates = [shiftIsoDate(newYorkDate(now), -1), newYorkDate(now), shiftIsoDate(newYorkDate(now), 1)];
   const candidates = dates.flatMap((sessionDate) =>
-    ORB_SESSION_PRESETS.map((preset) => {
+    ORB_SESSION_PRESETS.filter((preset) => preset.preset === MODULE1_ACTIVE_ORB_PRESET).map((preset) => {
       const sessionStart = preset.preset === "NEW_YORK_ORB" ? settings.orb.sessionStart : preset.sessionStart;
       const tradeWindowEnd = preset.preset === "NEW_YORK_ORB" ? settings.orb.tradeWindowEnd : preset.tradeWindowEnd;
       const times = sessionTimesForDate(sessionDate, sessionStart, settings.orb.openingRangeMinutes, tradeWindowEnd);
@@ -1508,6 +1637,10 @@ function currentOrNextOrbSessionWindow(settings: RuntimeSettings, now = new Date
 
 function orbSessionLabel(sessionPreset?: string | null) {
   return ORB_SESSION_PRESETS.find((preset) => preset.preset === sessionPreset)?.label ?? "ORB";
+}
+
+export function isModule1ActiveOrbPreset(sessionPreset?: string | null) {
+  return sessionPreset === MODULE1_ACTIVE_ORB_PRESET || sessionPreset === "NY_0915" || sessionPreset === "NY_0930";
 }
 
 function nextNewYorkTradingApiStart(settings: RuntimeSettings) {
@@ -1572,10 +1705,10 @@ async function twelveDataCallPolicy(options: {
   if (isScheduledTwelveDataTrigger(options.triggerSource)) {
     return {
       allowed: true,
-      reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "OFF_SESSION_CATCH_UP" : "NY_API_WINDOW_ACTIVE",
+      reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "SHARED_CANDLE_CATCH_UP" : "SHARED_CANDLE_LIVE_WINDOW",
       message: options.triggerSource === "MARKET_DATA_CATCH_UP"
-        ? "Shared Twelve Data call is the scheduled 5-minute off-session catch-up."
-        : "Shared Twelve Data call is inside the active New York API window.",
+        ? "Shared Twelve Data call is the scheduled 5-minute all-session candle sync."
+        : "Shared Twelve Data call is inside an active strategy monitoring window.",
       sessionDate,
       forced: false
     };
@@ -2424,6 +2557,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
      WHERE ts.symbol = $1
        AND ts.tenant_id = $2
        AND ts.module_code = 'orb_max_options'
+       AND ts.session_preset IN ('NEW_YORK_ORB', 'NY_0915', 'NY_0930')
        AND ts.state NOT IN ('SESSION_COMPLETED', 'TRADE_CLOSED')
      ORDER BY
        CASE
@@ -3113,7 +3247,7 @@ function module2DataReadinessGrade(candles: number, sessions: number) {
   if (candles >= 100 && sessions >= 1) {
     return { grade: "QA_READY", label: "Enough for QA", canBacktest: true, reason: "Enough candles to test the backtest path and inspect setup behavior." };
   }
-  return { grade: "NOT_ENOUGH_DATA", label: "Not enough data", canBacktest: false, reason: "Collect at least one NY session of 5-minute candles before trusting Module 2 backtests." };
+  return { grade: "NOT_ENOUGH_DATA", label: "Not enough data", canBacktest: false, reason: "Collect at least one strategy cycle of 5-minute candles before trusting Module 2 backtests." };
 }
 
 async function moduleSessionForReport(tenantId: string | null, moduleCode: string, sessionDate?: string) {
@@ -3520,7 +3654,7 @@ async function buildModule2Operator(tenantId: string | null, runRehearsal: boole
       activeWarnings: warnings.length > 0 ? warnings : ["No active Module 2 warnings."],
       expectedNextAction: operator.nextAction,
       manualTraderNotes: finalStatus === "GO"
-        ? "Module 2 is ready for the next NY session. Watch alerts and chart markers; execution remains manual."
+        ? "Module 2 is ready for the next active strategy cycle. Watch alerts and chart markers; execution remains manual."
         : "Resolve NO GO checklist rows before relying on Module 2 paper signals."
     }
   };
@@ -4393,8 +4527,9 @@ async function calculateCanonicalOrbRange(session: any) {
 }
 
 async function selectModule1EvaluationRange(session: any, currentRow: any, fallbackRange: any) {
-  const recentRanges = await recentOrbRangesForTenant(session.tenant_id, 2).catch(() => []);
+  const recentRanges = await recentOrbRangesForTenant(session.tenant_id, 6).catch(() => []);
   const candidates = (Array.isArray(recentRanges) ? recentRanges : [])
+    .filter((range: any) => isModule1ActiveOrbPreset(range?.session_preset))
     .map((range: any) => module1EvaluationRangeFromRecent(range))
     .filter((range: any) => range?.status === "LOCKED" && Number.isFinite(Number(range.high)) && Number.isFinite(Number(range.low)));
   const fallback = {
@@ -4405,7 +4540,7 @@ async function selectModule1EvaluationRange(session: any, currentRow: any, fallb
     module1RangeSessionStartAt: session.session_start_at,
     module1RangeOpeningRangeEndAt: session.opening_range_end_at
   };
-  const allCandidates = candidates.length > 0 ? candidates : [fallback];
+  const allCandidates = candidates.length > 0 || !isModule1ActiveOrbPreset(session.session_preset) ? candidates : [fallback];
   const close = Number(currentRow.close);
   const breakout = allCandidates.find((range: any) => close > Number(range.high) || close < Number(range.low));
   return breakout ?? allCandidates[0] ?? fallback;
@@ -4515,15 +4650,18 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     riskStatus: initialRisk.status,
     configuration: configuration as any
   };
+  const rangeEngineMetadata = buildModule1RangeEngineMetadata(session, range, currentCandle, previousRows.map(toCandle), configuration);
   let decision = withModule1RangeMetadata(
     range,
-    withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext))
+    withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext)),
+    rangeEngineMetadata
   );
   let risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? initialRisk;
   if (risk.status !== initialRisk.status) {
     decision = withModule1RangeMetadata(
       range,
-      withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status }))
+      withChecklistMetadata("orb_max_options", evaluateSetup({ ...ruleContext, riskStatus: risk.status })),
+      rangeEngineMetadata
     );
     risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? risk;
   }
@@ -4553,6 +4691,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
       session.tenant_id
     ]
   );
+  await persistGenericRangeEngineEvidence(session, saved.rows[0], rangeEngineMetadata, currentCandle, previousRows.map(toCandle));
   for (const evaluation of decision.evaluations) {
     await query(
       `INSERT INTO setup_rule_evaluations (
@@ -4581,11 +4720,332 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   return { setup: saved.rows[0], decision, risk };
 }
 
-function withModule1RangeMetadata(range: any, decision: any) {
+function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle: Candle, previousCandles: Candle[], configuration: Record<string, any>) {
+  const candles5m = mergeCandles([...previousCandles, currentCandle]);
+  const rangeEngine = objectRecord(configuration.rangeEngine);
+  const horizontalInput = objectRecord(rangeEngine.horizontalRange);
+  const activeNewYorkRange = isModule1ActiveOrbPreset(range.module1RangeSessionPreset ?? session.session_preset);
+  const horizontalConfig = {
+    ...DEFAULT_HORIZONTAL_RANGE_CONFIG,
+    ...horizontalInput,
+    enabled: activeNewYorkRange && horizontalInput.enabled === true,
+    observationOnly: true
+  };
+  const context = {
+    symbol: session.symbol,
+    now: currentCandle.timestampUtc,
+    timezone: String(configuration.timezone ?? "America/New_York"),
+    candles5m,
+    atr5m: calculateSimpleAtr(candles5m, 14),
+    sessionContext: {
+      sessionName: orbSessionLabel(session.session_preset),
+      sessionTimezone: String(configuration.timezone ?? "America/New_York"),
+      rangeStart: range.module1RangeSessionStartAt ?? session.session_start_at,
+      rangeEnd: range.module1RangeOpeningRangeEndAt ?? session.opening_range_end_at,
+      signalWindowEnd: session.signal_window_end_at
+    },
+    strategyVersion: String(session.strategy_version_id)
+  };
+  const orbResult = new MaxOptionsOrbRangeDetector().detect(context);
+  const horizontalResult = new HorizontalRangeDetector(horizontalConfig).detect(context);
+  const fallbackTradingRange = {
+    id: `MAX_OPTIONS_ORB:${range.module1RangeSessionStartAt ?? session.session_start_at}:${Number(range.high).toFixed(2)}:${Number(range.low).toFixed(2)}`,
+    symbol: session.symbol,
+    source: "MAX_OPTIONS_ORB",
+    formationMethod: "TIME_BASED",
+    detectorVersion: "ORB_ADAPTER_V1_FALLBACK",
+    strategyVersion: String(session.strategy_version_id),
+    timeframe: "5min",
+    startedAt: range.module1RangeSessionStartAt ?? session.session_start_at,
+    detectedAt: currentCandle.timestampUtc,
+    lockedAt: range.module1RangeOpeningRangeEndAt ?? session.opening_range_end_at,
+    high: Number(range.high),
+    low: Number(range.low),
+    midpoint: Number(range.midpoint),
+    width: Number(range.width),
+    upperZone: { center: Number(range.high), lowerBound: Number(range.high), upperBound: Number(range.high), toleranceMethod: "EXACT", toleranceValue: 0 },
+    lowerZone: { center: Number(range.low), lowerBound: Number(range.low), upperBound: Number(range.low), toleranceMethod: "EXACT", toleranceValue: 0 },
+    sourceEvidence: {
+      candleIds: candles5m.slice(0, ORB_RANGE_SOURCE_CANDLES).map((candle) => candle.timestampUtc),
+      startCandleId: candles5m[0]?.timestampUtc ?? null,
+      endCandleId: candles5m[Math.min(candles5m.length, ORB_RANGE_SOURCE_CANDLES) - 1]?.timestampUtc ?? null,
+      sessionName: orbSessionLabel(session.session_preset),
+      sessionTimezone: String(configuration.timezone ?? "America/New_York"),
+      fixedStartTime: range.module1RangeSessionStartAt ?? session.session_start_at,
+      fixedEndTime: range.module1RangeOpeningRangeEndAt ?? session.opening_range_end_at,
+      validationRules: []
+    },
+    childRangeIds: [],
+    supportingRangeIds: [],
+    state: "LOCKED",
+    createdAt: currentCandle.timestampUtc,
+    updatedAt: currentCandle.timestampUtc
+  };
+
+  const authoritativeRange = orbResult.range ?? fallbackTradingRange;
+  const ranges = [authoritativeRange, horizontalResult.range].filter(Boolean) as any[];
+  const profile = RANGE_BREAKOUT_PROFILES[authoritativeRange.source as keyof typeof RANGE_BREAKOUT_PROFILES] ?? RANGE_BREAKOUT_PROFILES.MAX_OPTIONS_NY_ORB;
+  const breakout = evaluateRangeBreakout(authoritativeRange as any, currentCandle, { ...profile, atr: calculateSimpleAtr(candles5m, 14) } as any);
+  const falseBreakout = new FalseBreakoutEngine().evaluate(authoritativeRange as any, currentCandle, previousCandles);
+  const retest = breakout.direction ? new RetestEngine().evaluate(authoritativeRange as any, breakout.direction, currentCandle, profile) : null;
+  const conflict = new RangeConflictResolver().resolve(ranges as any[], breakout.direction);
+  const genericDecision = new RangeDecisionEngine().decide({
+    range: authoritativeRange as any,
+    breakout,
+    falseBreakout,
+    retest,
+    conflict,
+    dataHealthy: session.data_status !== "MISSING_CANDLES" && session.data_status !== "INVALID",
+    riskPermitted: true,
+    signalMode: "ACTIVE_SIGNAL"
+  });
+
+  return {
+    version: "GENERIC_RANGE_ENGINE_V1",
+    authoritativeDetector: "MAX_OPTIONS_NY_ORB",
+    authoritativeFormationMethod: "TIME_BASED",
+    behaviorPreserved: true,
+    horizontalObservationOnly: true,
+    activeSessionPreset: range.module1RangeSessionPreset ?? session.session_preset,
+    nyOnly: true,
+    breakout,
+    falseBreakout,
+    retest,
+    conflict,
+    decision: genericDecision,
+    orb: {
+      detectorCode: orbResult.detectorCode,
+      status: orbResult.status,
+      range: authoritativeRange,
+      failures: orbResult.failures,
+      warnings: orbResult.warnings
+    },
+    horizontal: {
+      detectorCode: horizontalResult.detectorCode,
+      status: horizontalResult.status,
+      enabled: horizontalConfig.enabled,
+      nyOnly: true,
+      observationOnly: true,
+      range: horizontalResult.range ?? null,
+      failures: horizontalResult.failures,
+      warnings: horizontalResult.warnings
+    }
+  };
+}
+
+async function persistGenericRangeEngineEvidence(session: any, setup: any, metadata: any, currentCandle: Candle, previousCandles: Candle[]) {
+  if (!metadata?.orb?.range) return;
+  const ranges = [metadata.orb.range, metadata.horizontal?.range].filter(Boolean);
+  for (const range of ranges) {
+    await persistTradingRange(session.tenant_id, range);
+    await persistTradingRangeEvidence(session.tenant_id, range);
+    broadcastLiveEvent({
+      type: range.state === "LOCKED" ? "range.locked" : "range.detected",
+      rangeId: range.id,
+      source: range.source,
+      formationMethod: range.formationMethod,
+      symbol: range.symbol,
+      timestamp: currentCandle.timestampUtc,
+      strategyVersion: range.strategyVersion,
+      reason: `${range.source} ${range.state}`
+    });
+  }
+  const relationships = Array.isArray(metadata.conflict?.relationships) ? metadata.conflict.relationships : [];
+  for (const relationship of relationships) await persistRangeRelationship(session.tenant_id, relationship);
+  const range = metadata.orb.range;
+  const breakout = metadata.breakout;
+  const falseBreakout = metadata.falseBreakout ?? new FalseBreakoutEngine().evaluate(range, currentCandle, previousCandles);
+  const state = setup.status === "LONG SETUP READY" || setup.status === "SHORT SETUP READY"
+    ? "ENTRY_READY"
+    : falseBreakout?.falseBreakout
+      ? "FALSE_BREAKOUT"
+      : breakout?.state ?? "WAITING_FOR_BREAKOUT";
+  await query(
+    `INSERT INTO range_breakout_setups (
+      tenant_id, setup_candidate_id, range_id, direction, state, breakout_candle_id, breakout_price,
+      break_distance_atr, body_ratio, close_location_ratio, extension_ratio,
+      entry_price, stop_price, target_price, decision, decision_reason,
+      false_breakout_json, retest_json, conflict_json
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19::jsonb)
+    ON CONFLICT (range_id, breakout_candle_id, direction) DO UPDATE SET
+      setup_candidate_id = EXCLUDED.setup_candidate_id,
+      state = EXCLUDED.state,
+      breakout_price = EXCLUDED.breakout_price,
+      break_distance_atr = EXCLUDED.break_distance_atr,
+      body_ratio = EXCLUDED.body_ratio,
+      close_location_ratio = EXCLUDED.close_location_ratio,
+      extension_ratio = EXCLUDED.extension_ratio,
+      entry_price = EXCLUDED.entry_price,
+      stop_price = EXCLUDED.stop_price,
+      target_price = EXCLUDED.target_price,
+      decision = EXCLUDED.decision,
+      decision_reason = EXCLUDED.decision_reason,
+      false_breakout_json = EXCLUDED.false_breakout_json,
+      retest_json = EXCLUDED.retest_json,
+      conflict_json = EXCLUDED.conflict_json,
+      updated_at = now()`,
+    [
+      session.tenant_id,
+      setup.id,
+      range.id,
+      breakout?.direction ?? setup.direction ?? null,
+      state,
+      currentCandle.timestampUtc,
+      numericParam(currentCandle.close, 5),
+      numericParam(breakout?.breakDistanceAtr, 4),
+      numericParam(breakout?.bodyRatio, 4),
+      numericParam(breakout?.closeLocationRatio, 4),
+      numericParam(breakout?.extensionRatio, 4),
+      numericParam(setup.entry_price, 5),
+      numericParam(setup.stop_price, 5),
+      numericParam(setup.target_price, 5),
+      metadata.decision?.status ?? setup.status,
+      metadata.decision?.reason ?? setup.final_reason,
+      JSON.stringify(falseBreakout ?? {}),
+      JSON.stringify(metadata.retest ?? {}),
+      JSON.stringify(metadata.conflict ?? {})
+    ]
+  );
+  if (falseBreakout?.falseBreakout) {
+    broadcastLiveEvent({
+      type: "range.false-breakout",
+      rangeId: range.id,
+      source: range.source,
+      formationMethod: range.formationMethod,
+      symbol: range.symbol,
+      timestamp: currentCandle.timestampUtc,
+      strategyVersion: range.strategyVersion,
+      reason: falseBreakout.reason
+    });
+  }
+  if (state === "ENTRY_READY") {
+    broadcastLiveEvent({
+      type: "range.setup.ready",
+      rangeId: range.id,
+      source: range.source,
+      formationMethod: range.formationMethod,
+      symbol: range.symbol,
+      timestamp: currentCandle.timestampUtc,
+      strategyVersion: range.strategyVersion,
+      reason: setup.final_reason
+    });
+  }
+}
+
+async function persistTradingRange(tenantId: string, range: any) {
+  await query(
+    `INSERT INTO ranges (
+      id, tenant_id, symbol, source, formation_method, detector_version, strategy_version, timeframe,
+      started_at, detected_at, locked_at, expires_at, completed_at, high, low, midpoint, width, width_atr,
+      upper_zone_json, lower_zone_json, quality_score, confidence_score, parent_range_id,
+      child_range_ids_json, supporting_range_ids_json, breakout_direction, state, source_payload
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20::jsonb,$21,$22,$23,$24::jsonb,$25::jsonb,$26,$27,$28::jsonb)
+    ON CONFLICT (id) DO UPDATE SET
+      state = EXCLUDED.state,
+      detected_at = EXCLUDED.detected_at,
+      locked_at = COALESCE(ranges.locked_at, EXCLUDED.locked_at),
+      high = EXCLUDED.high,
+      low = EXCLUDED.low,
+      midpoint = EXCLUDED.midpoint,
+      width = EXCLUDED.width,
+      width_atr = EXCLUDED.width_atr,
+      quality_score = EXCLUDED.quality_score,
+      confidence_score = EXCLUDED.confidence_score,
+      upper_zone_json = EXCLUDED.upper_zone_json,
+      lower_zone_json = EXCLUDED.lower_zone_json,
+      source_payload = EXCLUDED.source_payload,
+      updated_at = now()`,
+    [
+      range.id,
+      tenantId,
+      range.symbol,
+      range.source,
+      range.formationMethod,
+      range.detectorVersion,
+      range.strategyVersion,
+      range.timeframe,
+      range.startedAt,
+      range.detectedAt,
+      range.lockedAt ?? null,
+      range.expiresAt ?? null,
+      range.completedAt ?? null,
+      numericParam(range.high, 5),
+      numericParam(range.low, 5),
+      numericParam(range.midpoint, 5),
+      numericParam(range.width, 5),
+      numericParam(range.widthAtr, 6),
+      JSON.stringify(range.upperZone ?? {}),
+      JSON.stringify(range.lowerZone ?? {}),
+      numericParam(range.qualityScore, 2),
+      numericParam(range.confidenceScore, 2),
+      range.parentRangeId ?? null,
+      JSON.stringify(range.childRangeIds ?? []),
+      JSON.stringify(range.supportingRangeIds ?? []),
+      range.breakoutDirection ?? null,
+      range.state,
+      JSON.stringify(range)
+    ]
+  );
+}
+
+async function persistTradingRangeEvidence(tenantId: string, range: any) {
+  const evidence = range.sourceEvidence ?? {};
+  await query(
+    `INSERT INTO range_evidence (
+      range_id, tenant_id, candle_ids_json, validation_rules_json,
+      upper_touch_count, lower_touch_count, midpoint_cross_count,
+      containment_ratio, efficiency_ratio, upper_slope_atr_per_bar, lower_slope_atr_per_bar,
+      session_name, fixed_start_time, fixed_end_time
+    ) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    ON CONFLICT (range_id) DO UPDATE SET
+      candle_ids_json = EXCLUDED.candle_ids_json,
+      validation_rules_json = EXCLUDED.validation_rules_json,
+      upper_touch_count = EXCLUDED.upper_touch_count,
+      lower_touch_count = EXCLUDED.lower_touch_count,
+      midpoint_cross_count = EXCLUDED.midpoint_cross_count,
+      containment_ratio = EXCLUDED.containment_ratio,
+      efficiency_ratio = EXCLUDED.efficiency_ratio,
+      upper_slope_atr_per_bar = EXCLUDED.upper_slope_atr_per_bar,
+      lower_slope_atr_per_bar = EXCLUDED.lower_slope_atr_per_bar,
+      session_name = EXCLUDED.session_name,
+      fixed_start_time = EXCLUDED.fixed_start_time,
+      fixed_end_time = EXCLUDED.fixed_end_time`,
+    [
+      range.id,
+      tenantId,
+      JSON.stringify(evidence.candleIds ?? []),
+      JSON.stringify(evidence.validationRules ?? []),
+      evidence.upperTouchCount ?? null,
+      evidence.lowerTouchCount ?? null,
+      evidence.midpointCrossCount ?? null,
+      numericParam(evidence.containmentRatio, 4),
+      numericParam(evidence.efficiencyRatio, 4),
+      numericParam(evidence.upperSlopeAtrPerBar, 4),
+      numericParam(evidence.lowerSlopeAtrPerBar, 4),
+      evidence.sessionName ?? null,
+      evidence.fixedStartTime ?? null,
+      evidence.fixedEndTime ?? null
+    ]
+  );
+}
+
+async function persistRangeRelationship(tenantId: string, relationship: any) {
+  await query(
+    `INSERT INTO range_relationships (tenant_id, parent_range_id, child_range_id, relationship_type, reason)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (parent_range_id, child_range_id, relationship_type) DO UPDATE SET reason = EXCLUDED.reason`,
+    [tenantId, relationship.parentRangeId, relationship.childRangeId, relationship.relationshipType, relationship.reason ?? null]
+  );
+}
+
+function withModule1RangeMetadata(range: any, decision: any, rangeEngineMetadata?: any) {
   return {
     ...decision,
     scenarioFlags: {
       ...(decision.scenarioFlags ?? {}),
+      genericRangeEngine: rangeEngineMetadata ?? null,
+      tradingRange: rangeEngineMetadata?.orb?.range ?? null,
+      horizontalRangeObservation: rangeEngineMetadata?.horizontal ?? null,
       module1OrbRange: {
         label: range.module1RangeLabel ?? "ORB",
         shortLabel: range.module1RangeShortLabel ?? "ORB",
@@ -4600,6 +5060,77 @@ function withModule1RangeMetadata(range: any, decision: any) {
       }
     }
   };
+}
+
+function objectRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {};
+}
+
+function calculateSimpleAtr(candles: Candle[], period: number) {
+  const slice = candles.slice(-period);
+  if (slice.length === 0) return null;
+  const total = slice.reduce((sum, candle) => sum + Math.max(0, candle.high - candle.low), 0);
+  return total / slice.length;
+}
+
+function mergeCandles(candles: Candle[]) {
+  const byTime = new Map<string, Candle>();
+  for (const candle of candles) {
+    if (!candle.timestampUtc) continue;
+    byTime.set(new Date(candle.timestampUtc).toISOString(), {
+      ...candle,
+      timestampUtc: new Date(candle.timestampUtc).toISOString()
+    });
+  }
+  return [...byTime.entries()]
+    .sort((left, right) => new Date(left[0]).getTime() - new Date(right[0]).getTime())
+    .map(([, candle]) => candle);
+}
+
+function rangeRowView(row: any) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    symbol: row.symbol,
+    source: row.source,
+    formationMethod: row.formation_method,
+    detectorVersion: row.detector_version,
+    strategyVersion: row.strategy_version,
+    timeframe: row.timeframe,
+    startedAt: row.started_at,
+    detectedAt: row.detected_at,
+    lockedAt: row.locked_at,
+    expiresAt: row.expires_at,
+    completedAt: row.completed_at,
+    high: row.high == null ? null : Number(row.high),
+    low: row.low == null ? null : Number(row.low),
+    midpoint: row.midpoint == null ? null : Number(row.midpoint),
+    width: row.width == null ? null : Number(row.width),
+    widthAtr: row.width_atr == null ? null : Number(row.width_atr),
+    upperZone: row.upper_zone_json ?? {},
+    lowerZone: row.lower_zone_json ?? {},
+    qualityScore: row.quality_score == null ? null : Number(row.quality_score),
+    confidenceScore: row.confidence_score == null ? null : Number(row.confidence_score),
+    parentRangeId: row.parent_range_id,
+    childRangeIds: row.child_range_ids_json ?? [],
+    supportingRangeIds: row.supporting_range_ids_json ?? [],
+    breakoutDirection: row.breakout_direction,
+    state: row.state,
+    evidence: {
+      validationRules: row.validation_rules_json ?? [],
+      upperTouchCount: row.upper_touch_count,
+      lowerTouchCount: row.lower_touch_count,
+      containmentRatio: row.containment_ratio == null ? null : Number(row.containment_ratio),
+      efficiencyRatio: row.efficiency_ratio == null ? null : Number(row.efficiency_ratio)
+    },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function notFound(message: string) {
+  return { statusCode: 404, error: "Not Found", message };
 }
 
 async function saveModuleDecision(session: any, moduleCode: string, decision: any, currentRow: any) {

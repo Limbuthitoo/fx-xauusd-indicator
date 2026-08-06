@@ -18,6 +18,7 @@
     "@fastify/multipart": "^8.3.1",
     "@fastify/websocket": "^8.3.1",
     "@orb-guide/liquidity-sweep-engine": "0.1.0",
+    "@orb-guide/range-engine": "0.1.0",
     "@orb-guide/risk-engine": "0.1.0",
     "@orb-guide/shared-types": "0.1.0",
     "@orb-guide/strategy-engine": "0.1.0",

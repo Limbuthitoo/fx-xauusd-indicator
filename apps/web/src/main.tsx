@@ -1158,6 +1158,7 @@ function App() {
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 session={state.session}
               />
+              {selectedModuleCode === "orb_max_options" ? <RangeEnginePanel setup={currentModuleSetup} /> : null}
               {selectedModuleCode === "high_probability_strategy_2" ? <Module2CandidateMonitorPanel setup={currentModuleSetup} trade={currentModuleTrade} /> : null}
               {selectedModuleCode === "high_probability_strategy_2" ? <Module2LiveEvidencePanel setup={currentModuleSetup} /> : null}
             </aside>
@@ -3185,6 +3186,47 @@ function LiveStrategyCenterPanel({
   );
 }
 
+function RangeEnginePanel({ setup }: { setup?: any }) {
+  const engine = setup?.scenario_flags?.genericRangeEngine ?? {};
+  const tradingRange = setup?.scenario_flags?.tradingRange ?? engine?.orb?.range ?? {};
+  const horizontal = setup?.scenario_flags?.horizontalRangeObservation ?? engine?.horizontal ?? {};
+  const breakout = engine?.breakout ?? {};
+  const falseBreakout = engine?.falseBreakout ?? {};
+  const retest = engine?.retest ?? {};
+  const decision = engine?.decision ?? {};
+  return (
+    <Panel icon={<Layers />} title="Range Engine">
+      <div className="live-side-metrics">
+        <Metric label="Source" value={formatRangeSource(tradingRange.source ?? engine.authoritativeDetector)} />
+        <Metric label="Method" value={formatScenario(tradingRange.formationMethod ?? engine.authoritativeFormationMethod)} />
+        <Metric label="State" value={tradingRange.state ?? "--"} />
+        <Metric label="Width" value={tradingRange.width == null ? "--" : Number(tradingRange.width).toFixed(2)} />
+        <Metric label="Breakout" value={breakout.status ? `${breakout.status}${breakout.direction ? ` ${breakout.direction}` : ""}` : "--"} />
+        <Metric label="Extension" value={breakout.extensionRatio == null ? "--" : formatRatio(breakout.extensionRatio)} />
+        <Metric label="False break" value={falseBreakout.status ?? "--"} />
+        <Metric label="Retest" value={retest.status ?? "--"} />
+        <Metric label="Decision" value={decision.status ?? "--"} />
+        <Metric label="Horizontal" value={horizontal.enabled ? `${horizontal.status ?? "WAIT"} · observation` : "Disabled"} />
+      </div>
+      <p className="reason">{decision.reason ?? "ORB remains authoritative. Horizontal ranges are observation-only until validation gates pass."}</p>
+      {horizontal?.range ? (
+        <div className="live-range-observation">
+          <strong>Horizontal observation</strong>
+          <span>{Number(horizontal.range.low).toFixed(2)} - {Number(horizontal.range.high).toFixed(2)} · quality {horizontal.range.qualityScore ?? "--"}</span>
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+function formatRangeSource(source?: string) {
+  if (!source) return "--";
+  if (source === "MAX_OPTIONS_NY_ORB" || source === "MAX_OPTIONS_ORB") return "MAX Options ORB";
+  if (source === "HORIZONTAL_CONSOLIDATION") return "Horizontal Range";
+  if (source === "COMPOSITE_RANGE") return "Composite Range";
+  return formatScenario(source);
+}
+
 function LiveModuleEvidence({ moduleCode, setup, openingRange }: { moduleCode: string; setup?: any; openingRange?: any }) {
   const flags = setup?.scenario_flags ?? {};
   if (moduleCode === "orb_max_options") {
@@ -4286,12 +4328,12 @@ function OrbCompletionCenter({ state, qaSuite }: { state: PanelState; qaSuite?: 
     { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run Full ORB QA Suite from Data Admin to refresh proof." },
     { phase: "GO / NO-GO rehearsal", status: rehearsalStatus === "GO" ? "COMPLETE" : "READY", detail: rehearsalStatus === "GO" ? "End-to-end ORB replay, paper trade, close, journal, notification, and isolation proof passed." : "Run Module 1 launch rehearsal." },
     { phase: "Production audit", status: auditStatusValue === "PASS" ? "COMPLETE" : "READY", detail: auditStatusValue === "PASS" ? "Module 1 audit is clean." : "Run rehearsal and confidence audit." },
-    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for ORB timeframe NY candles." },
+    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for all-session ORB timeframe candles." },
     { phase: "Backtest confidence", status: performanceProven ? "COMPLETE" : backtestRan ? "NEEDS_DATA" : "READY", detail: latestBacktest.confidence?.recommendation ?? "Run Module 1 backtest after candles are ready." },
     { phase: "Learning system", status: state.orbLearning?.status === "COMPLETED" || state.orbLearning?.id ? "COMPLETE" : "READY", detail: "ORB learning reviews closed paper-trade outcomes and scenario performance." },
     { phase: "Reports", status: (state.weeklyReport?.length ?? 0) > 0 || (state.monthlyReport?.length ?? 0) > 0 ? "COMPLETE" : "READY", detail: "Weekly and monthly ORB reports are available from real non-QA paper trades." },
     { phase: "Journal evidence", status: Number(state.orbAdmin?.trades ?? 0) > 0 ? "COMPLETE" : "READY", detail: Number(state.orbAdmin?.trades ?? 0) > 0 ? `${state.orbAdmin?.trades} ORB paper trades recorded.` : "Will populate from live paper trades." },
-    { phase: "Live NY observation", status: state.feedStatus?.live ? "COMPLETE" : "READY", detail: "Live proof completes during upcoming NY sessions." }
+    { phase: "Live session observation", status: state.feedStatus?.live ? "COMPLETE" : "READY", detail: "Live proof completes during upcoming ORB sessions." }
   ];
   const built = rows.filter((row) => row.status === "COMPLETE").length;
   const featureComplete = qaPass && rehearsalStatus === "GO" && auditStatusValue === "PASS";
@@ -4433,14 +4475,14 @@ function Module2CompletionCenter({ state, qaSuite }: { state: PanelState; qaSuit
     { phase: "Shared XAUUSD feed", status: "COMPLETE", detail: "Module 2 uses the shared Twelve Data chart/feed while keeping trades and logic isolated." },
     { phase: "Paper trading", status: "COMPLETE", detail: "External execution disabled; paper trades open only after Module 2 checklist eligibility." },
     { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run Full QA Suite from Data Admin to refresh proof." },
-    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for 5-minute NY candles." },
+    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for shared 5-minute XAUUSD candles." },
     { phase: "Backtest confidence", status: performanceProven ? "COMPLETE" : backtestRan ? "NEEDS_DATA" : "READY", detail: latestBacktest.confidence?.recommendation ?? "Run Module 2 backtest after candles are ready." },
     { phase: "Learning system", status: learning.status === "COMPLETED" || learning.id ? "COMPLETE" : "READY", detail: learning.summary?.generatedFrom === "CACHE_BACKTEST" ? "Latest learning snapshot came from Module 2 cache/PostgreSQL backtest." : "Learning runs after backtests or completed paper trades." },
     { phase: "Journal evidence", status: journalTrades.length > 0 ? "COMPLETE" : "READY", detail: journalTrades.length > 0 ? `${journalTrades.length} Module 2 journal trade rows available.` : "Will populate when real or QA paper trades exist." },
-    { phase: "Daily reports", status: reports.length > 0 ? "COMPLETE" : "READY", detail: reports.length > 0 ? `${reports.length} Module 2 session reports stored.` : "Generate after a Module 2 NY session." },
+    { phase: "Daily reports", status: reports.length > 0 ? "COMPLETE" : "READY", detail: reports.length > 0 ? `${reports.length} Module 2 session reports stored.` : "Generate after a Module 2 strategy cycle." },
     { phase: "Closeout recovery", status: closeouts.length > 0 ? "COMPLETE" : "READY", detail: closeouts.length > 0 ? "Closeout history and recovery actions are available." : "Ready for first session closeout." },
     { phase: "Production safeguards", status: auditPass ? "COMPLETE" : "READY", detail: auditPass ? "Audit checks pass; replay data stays excluded." : "Production audit is available and will flag boundary issues." },
-    { phase: "Live NY observation", status: state.module2Health?.summary?.status === "OK" ? "COMPLETE" : "READY", detail: "Live proof completes naturally during upcoming NY sessions." }
+    { phase: "Live strategy observation", status: state.module2Health?.summary?.status === "OK" ? "COMPLETE" : "READY", detail: "Live proof completes naturally during active strategy cycles." }
   ];
   const built = rows.filter((row) => row.status === "COMPLETE").length;
   const finalLabel = performanceProven ? "MODULE 2 COMPLETE AND PAPER-CONFIDENCE READY" : "MODULE 2 FEATURE COMPLETE, PERFORMANCE NEEDS MORE MARKET DATA";
@@ -4786,6 +4828,7 @@ function Module2LifecycleTester({
 function Module2RuleAuditPanel({ setup }: { setup?: any }) {
   const evaluations = setup?.evaluations ?? [];
   const hard = evaluations.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "hard");
+  const variant = evaluations.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "variant");
   const confirmations = evaluations.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = evaluations.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
   return (
@@ -4793,7 +4836,8 @@ function Module2RuleAuditPanel({ setup }: { setup?: any }) {
       <Metric label="Decision" value={setup?.status ?? "WAITING"} />
       <Metric label="Scenario" value={formatScenario(setup?.scenario)} />
       <Metric label="Why" value={setup?.final_reason ?? "Waiting for Module 2 evidence."} />
-      <Module2RuleLayer title="Hard Rules" rows={hard} empty="No hard-rule evidence yet." />
+      <Module2RuleLayer title="Base Mandatory Gates" rows={hard} empty="No base-gate evidence yet." />
+      <Module2RuleLayer title="Selected Variant Profile" rows={variant} empty="No selected variant evidence yet." />
       <Module2RuleLayer title="Confirmation Rules" rows={confirmations} empty="No confirmation evidence yet." />
       <Module2RuleLayer title="Quality Filters" rows={quality} empty="No quality-filter evidence yet." />
     </Panel>
@@ -5153,7 +5197,7 @@ function Module2HandoffReportPanel({ operator }: { operator?: any }) {
         <strong>Active warnings</strong>
         {warnings.slice(0, 5).map((warning: string) => <span key={warning}>{warning}</span>)}
       </div>
-      <p className="reason">{handoff.manualTraderNotes ?? "Run launch rehearsal before the NY session to generate the handoff report."}</p>
+      <p className="reason">{handoff.manualTraderNotes ?? "Run launch rehearsal before the strategy cycle to generate the handoff report."}</p>
     </Panel>
   );
 }
@@ -5742,7 +5786,7 @@ function Module2BacktestTable({ latest }: { latest?: any }) {
               );
             })}
             {trades.length === 0 ? (
-              <tr><td colSpan={11}>Run a Module 2 cache backtest after NY candles are stored to populate this table.</td></tr>
+              <tr><td colSpan={11}>Run a Module 2 cache backtest after shared 5-minute candles are stored to populate this table.</td></tr>
             ) : null}
           </tbody>
         </table>
@@ -7299,6 +7343,11 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         codes: ["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]
       },
       {
+        title: "NY Horizontal Observation",
+        description: "Observation-only range evidence. This can support review, but cannot create Module 1 paper trades.",
+        codes: ["HORIZONTAL_RANGE_OBSERVATION"]
+      },
+      {
         title: "Risk & Quality Filters",
         description: "Filters that protect the setup from poor execution conditions.",
         codes: ["ENTRY_NOT_OVEREXTENDED", "NEWS_FILTER", "RISK_PERMISSION"]
@@ -7476,6 +7525,7 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
   const matrix = flags.matrix ?? {};
   const profile = flags.breakoutProfile ?? {};
   const favorability = flags.favorability ?? {};
+  const horizontal = flags.horizontalRangeObservation ?? flags.genericRangeEngine?.horizontal ?? {};
   const byCode = new Map(evaluations.map((item: any) => [item.rule_code ?? item.ruleCode, item]));
   const bodyRatio = numberOrNull(profile.bodyRatio ?? favorability.bodyRatio);
   const closeLocationRatio = numberOrNull(profile.closeLocationRatio ?? favorability.closeLocationRatio);
@@ -7524,6 +7574,16 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
       name: "Favorability threshold",
       status: setup?.favorability_score == null ? "WAITING" : Number(setup.favorability_score) >= 70 ? "PASS" : "FAIL",
       explanation: setup?.favorability_score == null ? "Waiting for favorability scoring." : `Score is ${setup.favorability_score}/100. Required: 70/100 or higher for automatic paper trading.`
+    },
+    {
+      rule_code: "HORIZONTAL_RANGE_OBSERVATION",
+      name: "NY horizontal range observation",
+      status: horizontal?.enabled !== true ? "NOT_APPLICABLE" : horizontal?.range ? "PASS" : "WAITING",
+      explanation: horizontal?.enabled !== true
+        ? "Horizontal observation is only active for the New York Module 1 session."
+        : horizontal?.range
+          ? `Observation-only range detected from ${formatPriceValue(horizontal.range.low)} to ${formatPriceValue(horizontal.range.high)}. It does not create paper trades.`
+          : "NY-only horizontal observation is active, waiting for a valid consolidation range."
     },
     {
       rule_code: "STRICT_CHECKLIST",
@@ -8378,7 +8438,7 @@ function moduleTimeframe(moduleCode: string, fallback: number) {
 }
 
 function moduleTimingLabel(moduleCode: string) {
-  if (moduleCode === "orb_max_options") return "All-session 15M OR / 5M trigger";
+  if (moduleCode === "orb_max_options") return "NY 15M OR / 5M trigger";
   if (moduleCode === "high_probability_strategy_2") return "5M sweep + structure / 15M bias";
   return `${DEFAULT_TIMEFRAME_MINUTES}M execution`;
 }
@@ -8438,13 +8498,13 @@ function module2CockpitState(state: PanelState, setup?: any, trade?: any) {
     rehearsalStatus,
     blockers: blockers.length > 0 ? blockers : ["No blocking items. Wait for a valid completed Module 2 setup."],
     verdict: launchStatus === "TRUST NEXT VALID SIGNAL"
-      ? "Module 2 is ready for today’s NY session. Only act on signals after the module checklist is valid."
+      ? "Module 2 is ready for the active all-session strategy cycle. Only act on signals after the selected variant checklist is valid."
       : launchStatus === "CAUTION"
         ? "Module 2 can be monitored, but review the blocking items before trusting the next signal."
         : "Do not trust Module 2 signals yet. Resolve the blocking items first.",
     checklists: [
       {
-        title: "Before NY Session",
+        title: "Before Strategy Cycle",
         items: ["Run launch rehearsal", "Confirm Twelve Data feed", "Confirm paper trading", "Review pending learning items"]
       },
       {
@@ -8536,9 +8596,17 @@ function moduleShortName(moduleCode: string, name?: string) {
 
 function module2RuleLayer(code?: string) {
   if (!code) return "other";
-  if (code === "CONFIRM_ENTRY_CANDLE") return "hard";
+  if (code === "CONFIRM_ENTRY_CANDLE") return "variant";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
+  if ([
+    "PROTECTED_POINT_CONFIDENCE",
+    "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "DIRECTIONAL_CONFLICT_CLEAR"
+  ].includes(code)) return "variant";
   if ([
     "STRATEGY_CYCLE_ACTIVE",
     "DATA_HEALTHY",
@@ -8554,12 +8622,6 @@ function module2RuleLayer(code?: string) {
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE"
   ].includes(code)) return "hard";

@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
 import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
+import {
+  FalseBreakoutEngine,
+  HorizontalRangeDetector,
+  MaxOptionsOrbRangeDetector,
+  RangeConflictResolver,
+  RangeDecisionEngine,
+  RetestEngine,
+  evaluateRangeBreakout
+} from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { calculateCatchupRequestCount, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 
 const module1OpeningCandles: Candle[] = [
   candle("2026-08-10T13:30:00Z", 100.0, 100.8, 99.4, 100.5),
@@ -92,9 +101,67 @@ const module1 = evaluateSetup({
   }
 });
 assert.equal(module1Range.status, "LOCKED", "Module 1 opening range must lock from three 5m candles");
+assert.equal(isModule1ActiveOrbPreset("NEW_YORK_ORB"), true, "Module 1 must actively evaluate New York ORB");
+assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), false, "Module 1 must not actively evaluate London ORB");
 assert.equal(module1.status, "LONG SETUP READY", `Module 1 should produce a long setup, got ${module1.scenario}: ${module1.finalReason}`);
 assert.equal((module1.scenarioFlags.matrix as any)?.mandatoryChecklistMatched, true, "Module 1 mandatory checklist must be complete");
 assertTradePlan(module1, "LONG", "Module 1");
+const orbDetector = new MaxOptionsOrbRangeDetector();
+const orbRangeResult = orbDetector.detect({
+  symbol: "XAUUSD",
+  now: module1Signal.timestampUtc,
+  timezone: "America/New_York",
+  candles5m: module1OpeningCandles,
+  sessionContext: {
+    sessionName: "New York",
+    sessionTimezone: "America/New_York",
+    rangeStart: "2026-08-10T13:30:00Z",
+    rangeEnd: "2026-08-10T13:45:00Z",
+    signalWindowEnd: "2026-08-10T20:00:00Z"
+  },
+  activeRanges: [],
+  strategyVersion: "module1-contract"
+});
+assert.equal(orbRangeResult.status, "VALID", "ORB adapter must produce a valid normalized TradingRange");
+assert.equal(orbRangeResult.range?.source, "MAX_OPTIONS_NY_ORB", "ORB adapter must preserve time-based ORB source");
+assert.equal(orbRangeResult.range?.high, module1Range.high, "ORB adapter high must match old ORB");
+assert.equal(orbRangeResult.range?.low, module1Range.low, "ORB adapter low must match old ORB");
+assert.equal(orbRangeResult.range?.midpoint, module1Range.midpoint, "ORB adapter midpoint must match old ORB");
+const orbBreakout = evaluateRangeBreakout(orbRangeResult.range!, module1Signal, { source: "MAX_OPTIONS_NY_ORB", requireCompletedCandle: true, requireCloseOutside: true, minimumBodyRatio: 0.45, minimumCloseLocationRatio: 0.6, maximumOppositeWickRatio: 1, minimumBreakDistanceAtr: 0, maximumDirectEntryExtensionRatio: 1, entryModel: "SOURCE_SPECIFIC", stopModel: "SOURCE_SPECIFIC", targetModel: "SOURCE_SPECIFIC" });
+assert.equal(orbBreakout.confirmed, true, "Generic breakout engine must confirm the same ORB breakout candle");
+const orbDecision = new RangeDecisionEngine().decide({ range: orbRangeResult.range!, breakout: orbBreakout, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" });
+assert.equal(orbDecision.status, "BUY_READY", "Generic decision engine must produce BUY_READY for valid ORB long breakout");
+
+const horizontalCandles = [
+  candle("2026-08-10T09:00:00Z", 100.0, 101.0, 99.0, 100.2),
+  candle("2026-08-10T09:05:00Z", 100.2, 100.8, 99.2, 99.8),
+  candle("2026-08-10T09:10:00Z", 99.8, 100.9, 99.1, 100.3),
+  candle("2026-08-10T09:15:00Z", 100.3, 100.7, 99.3, 99.9),
+  candle("2026-08-10T09:20:00Z", 99.9, 101.1, 99.0, 100.4),
+  candle("2026-08-10T09:25:00Z", 100.4, 100.9, 99.2, 99.7),
+  candle("2026-08-10T09:30:00Z", 99.7, 100.8, 99.1, 100.1),
+  candle("2026-08-10T09:35:00Z", 100.1, 100.7, 99.2, 99.8),
+  candle("2026-08-10T09:40:00Z", 99.8, 101.0, 99.0, 100.2),
+  candle("2026-08-10T09:45:00Z", 100.2, 100.8, 99.1, 99.9),
+  candle("2026-08-10T09:50:00Z", 99.9, 100.9, 99.2, 100.3),
+  candle("2026-08-10T09:55:00Z", 100.3, 100.7, 99.1, 99.8)
+];
+const horizontal = new HorizontalRangeDetector({ enabled: true, observationOnly: true, timeframe: "5min", minimumRangeCandles: 12, maximumRangeCandles: 12, minimumUpperTouches: 2, minimumLowerTouches: 2, minimumBarsBetweenTouches: 2, boundaryReactionCount: 3, boundaryToleranceAtr: 0.12, minimumContainmentRatio: 0.7, maximumEfficiencyRatio: 0.4, maximumBoundarySlopeAtrPerBar: 0.2, minimumWidthAtr: 0.5, maximumWidthAtr: 4, minimumMidpointCrosses: 2, minimumQualityScore: 60, lockAfterValidation: true, expireAfterCandles: 60 }).detect({
+  symbol: "XAUUSD",
+  now: horizontalCandles.at(-1)!.timestampUtc,
+  timezone: "America/New_York",
+  candles5m: horizontalCandles,
+  activeRanges: [],
+  strategyVersion: "horizontal-observation"
+});
+assert.equal(horizontal.status, "VALID", "Horizontal detector must identify valid rectangular consolidation in observation mode");
+assert.equal(horizontal.range?.formationMethod, "PRICE_BASED", "Horizontal range must remain price-based");
+const wickFalseBreak = new FalseBreakoutEngine().evaluate(horizontal.range!, candle("2026-08-10T10:00:00Z", 100.2, horizontal.range!.high + 0.5, 99.8, horizontal.range!.high - 0.1));
+assert.equal(wickFalseBreak.falseBreakout, true, "False-breakout engine must reject wick-only boundary breaks");
+const retest = new RetestEngine().evaluate(horizontal.range!, "LONG", candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));
+assert.equal(retest.confirmed, true, "Retest engine must confirm a clean post-breakout boundary retest");
+const conflict = new RangeConflictResolver().resolve([orbRangeResult.range!, horizontal.range!], "LONG");
+assert.notEqual(conflict.status, "CONFLICT", "Aligned/same-direction range evidence must not block ORB");
 
 const module2Candles: Candle[] = Array.from({ length: 24 }, (_, index) => {
   const base = 103.6 + Math.sin(index / 2) * 0.35;

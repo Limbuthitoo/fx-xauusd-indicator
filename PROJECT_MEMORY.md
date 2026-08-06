@@ -49,27 +49,25 @@ Domain:
 - Default execution candle timeframe is 5 minutes.
 - Module bias/context can use derived 15-minute candles from stored 5-minute data.
 - Twelve Data credits are protected:
-  - NY live session polling: every 1 minute.
-  - Off-session catch-up: every 30 minutes until next NY session.
-  - Saturday/Sunday: no live polling and no live paper entries.
-  - Safety sync can run if stale before NY starts.
+  - Shared 5-minute candle sync: one XAUUSD call per 5-minute cadence on market weekdays.
+  - All modules evaluate from PostgreSQL after the shared candle sync.
+  - Saturday/Sunday: no Twelve Data polling and no live paper entries.
+  - Safety sync can run if data is stale before a strategy cycle.
 
 Expected daily usage target:
 
-- NY live polling around 390 credits.
-- Off-session 30-minute catch-up around 35 credits.
-- Total expected around 425 credits/day under an 800/day free-tier budget.
+- Full weekday 5-minute cadence is roughly 288 credits/day if running continuously.
+- This keeps the shared XAUUSD feed under an 800/day free-tier budget while giving complete 5M candles for all strategy sessions.
 
 ## Strategy Modules
 
 ### Module 1: ORB MAX Options Strategy
 
 - Code: `orb_max_options`
-- Purpose: New York ORB strategy for XAUUSD.
-- Opening range: 15-minute NY opening range.
+- Purpose: New York-session ORB strategy for XAUUSD.
+- Opening range: 15-minute New York opening range.
 - Entry trigger: 5-minute trigger candles.
-- Bound to New York session only.
-- Must show ORB High, ORB Mid, ORB Low on chart.
+- Must show New York ORB High, ORB Mid, ORB Low on chart, starting at the New York ORB session open rather than full-width across unrelated history.
 - Paper trade opens only when module rules pass.
 
 ### Module 2: Ultimate Liquidity Sweep
@@ -92,14 +90,14 @@ Expected daily usage target:
   - Optional retest.
   - Risk validation.
   - Trade decision and automatic paper trade when setup-ready.
-- Module 2 strict production profile:
+- Module 2 variant-driven production model:
   - Variant version is stored as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
   - Current variant metadata is persisted in `setup_candidates.scenario_flags.module2Variant`, plus `variantCode` and `variantVersion`.
-  - Research-only profiles are recorded for backtesting and learning but must not open automatic paper trades.
-  - The only production paper-entry profile is `SWEEP_MSS_RETEST`.
-  - `VARIANT_SELECTED` means the strict live profile passed; it does not mean the platform compared and chose among weaker variants.
-  - Live BUY/SELL must never come from sweep-only, BOS-only, EMA-only, volume-only, or candle-pattern-only evidence.
-  - Required live path: healthy data, active NY entry window, valid ranked liquidity, sweep, close-back rejection, no acceptance, protected structure, reversal MSS, MSS retest, entry confirmation candle, risk approval, and signal score.
+  - Variants are independent confirmation profiles evaluated after base liquidity sweep conditions.
+  - Sweep-only/no-confirmation is research/control only and must not open automatic paper trades.
+  - Paper-approved variants can open automatic paper trades when their own mandatory profile passes with risk approval, signal score, and Python brain approval.
+  - `VARIANT_SELECTED` means one selected independent profile passed; it does not mean every variant must pass.
+  - Required live base path: healthy data, active strategy cycle, valid ranked liquidity, sweep, close-back rejection, no acceptance, risk approval, signal score, and a selected paper-approved variant.
   - Web and mobile notification/details should show the selected variant name/code/version when available.
 - Terms must be explicit and versioned. Use `POTENTIAL_LIQUIDITY_LEVELS`, not confirmed institutional liquidity.
 - `CHoCH` is a UI alias for structure shift; internally classify reversal confirmation as `REVERSAL_MSS`.
@@ -471,19 +469,19 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 
 ## Latest Module 1 Direction
 
-- Module 1 ORB is no longer New York-only.
-- Module 1 should evaluate ORB sessions for Sydney, Tokyo, London, and New York.
-- Each Module 1 ORB session uses a 15-minute opening range and 5-minute trigger candles.
-- Module 1 chart should display only the latest two locked session ORB ranges, using session labels such as `TY ORB High/Mid/Low` and `NY ORB High/Mid/Low`.
-- Module 1 strategy entry logic should evaluate against the current active session ORB; previous session ORBs are chart/reference context.
-- New York keeps the 1-minute live Twelve Data polling cadence.
-- Sydney/Tokyo/London ORB evaluation should use the shared 30-minute catch-up candles to protect the 800/day Twelve Data credit budget.
+- Module 1 ORB is New York-session only again.
+- Module 1 should evaluate only the `NEW_YORK_ORB` session for BUY/SELL signals, predictions, paper trades, journal rows, reports, and notifications.
+- Module 1 keeps the existing MAX Options behavior: 15-minute New York opening range built from three 5-minute candles, then 5-minute closed-candle triggers.
+- Module 1 horizontal range detection is active only during the New York ORB session and remains observation-only. It may persist range evidence and chart context, but it must not create paper trades, BUY/SELL cards, predictions, or change ORB entries.
+- Module 2 remains the all-session Liquidity Sweep + MSS/Retest module and must not depend on Module 1 ORB sessions.
+- All market sessions use the shared XAUUSD 5-minute Twelve Data candle feed. The platform requests one 5M candle sync per 5-minute cadence on market weekdays, then all modules evaluate from PostgreSQL.
+- Sydney/Tokyo/London/New York ORB evaluation all use the same shared 5-minute candle cadence to protect the 800/day Twelve Data credit budget.
 - Module 2 remains separate and now uses the Ultimate Liquidity Sweep + MSS + Retest production model, not the old `Liquidity Sweep + BOS` strategy.
 - Module 2 profile evidence is registry-backed in `module2_strategy_variants` and versioned as `ULTIMATE_LIQUIDITY_SWEEP_V1.0`.
 - Module 2 evidence profiles can be tracked for backtesting, but live paper trading is not a profile comparison system.
-- Module 2 actionable live profile: only `SWEEP_MSS_RETEST`.
-- Module 2 research/control profiles: sweep close-back, sweep-only, engulfing, BOS, MSS without retest, volume expansion, displacement retest, EMA alignment, BOS retest, and MSS+displacement+retest. They can explain context and near misses but must not open paper trades.
-- Module 2 paper trades require closed 5M candles, strict sweep + close-back + reversal MSS + MSS retest confirmation, risk guardrails, minimum confidence, and Python brain approval.
+- Module 2 actionable live profiles are independent confirmation profiles. One paper-approved variant plus risk, score, and Python brain approval can generate a BUY/SELL signal and paper trade.
+- Module 2 sweep-only/no-confirmation remains research/control only. Paper-approved profiles include sweep close-back, sweep engulfing, sweep BOS, sweep MSS, sweep volume expansion, displacement retest, EMA-aligned sweep, BOS retest, MSS retest, and MSS + displacement + retest.
+- Module 2 paper trades require closed 5M candles, valid base sweep conditions, a selected paper-approved variant, risk guardrails, minimum confidence, and Python brain approval.
 - Module 2 liquidity selection now includes previous week high/low, previous day high/low, Asian high/low, London high/low, NY premarket high/low, ORB high/low, equal high/low, swing high/low, round numbers, and optional manual levels.
 - Module 2 confirmation layer currently tracks 10 plugins: 15M/EMA alignment, VWAP, fresh FVG, order-block retest, engulfing candle, pin-bar rejection, inside-bar break, doji rejection, volume expansion, and entry confirmation candle. Volume expansion remains record-only by default because XAUUSD provider volume may be incomplete.
 - Module 2 tenant settings include EMA mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_ALIGNMENT`, `REQUIRE_COUNTERTREND`) and volume mode (`OFF`, `RECORD_ONLY`, `WARN_ONLY`, `REQUIRE_EXPANSION`), plus NY premarket, ORB, round-number, and manual liquidity-level controls.
@@ -501,13 +499,13 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Latest Module 2 final contract implemented from `LIQUIDITY SWEEP + MSS + RETEST COMPLETE VALID TRADE ENTRY ENGINE FOR SOFTWARE`.
 - Module 2 engine path is now: market data -> data health -> session -> market context -> market regime -> swing detection -> liquidity detection/ranking -> sweep -> rejection/acceptance -> protected structure -> reversal MSS -> retest -> context filters -> conflict resolution -> risk -> confidence -> BUY_READY/SELL_READY/WAIT/BLOCK/INVALIDATE/EXPIRE.
 - Module 2 data health states are `HEALTHY`, `DELAYED`, `STALE`, `DISCONNECTED`, `INCONSISTENT`, and `RATE_LIMITED`. Non-healthy data blocks live paper-entry decisions.
-- Module 2 strict profile required rules now include data health, market context, market regime, NY session, daily trade limit, active setup conflict, active paper trade conflict, daily/weekly/consecutive-loss risk limits, manual-confirmation mode, ranked liquidity level, sweep, close-back rejection, no acceptance, protected point, reversal MSS, MSS strength, retest zone, retest, entry candle, directional conflict clear, risk engine, signal score, and selected variant.
+- Module 2 base mandatory gates now include data health, market context, market regime, active strategy cycle, daily trade limit, active setup conflict, active paper trade conflict, daily/weekly/consecutive-loss risk limits, manual-confirmation mode, ranked liquidity level, sweep, close-back rejection, no acceptance, risk engine, signal score, and selected variant. Variant-specific requirements such as BOS, MSS, protected point, retest, displacement, EMA, engulfing, or entry candle belong to the selected independent profile.
 - Module 2 displacement is context by default (`WARN_ONLY`), not mandatory unless `displacementFilterMode` is set to `REQUIRED`.
 - Module 2 EMA defaults to `WARN_ONLY`; volume defaults to `RECORD_ONLY`; market context defaults to `RECORD_ONLY`; manual confirmation defaults to `false` for automatic paper trading.
 - Module 2 ranked liquidity now scores previous week/day, London, Asian, ORB, equal highs/lows, external swings, and manual levels using base priority plus untouched/reaction/HTF/cluster bonuses and accepted/old/low-liquidity penalties. Nearby levels with similar scores are merged into one zone.
 - Module 2 ranked liquidity also includes lower-priority internal swing high/low levels, applies minimum 3 bars between confirmed swings, uses 0.03 ATR structure tolerance, adds overlap bonus, and penalizes liquidity that is too close to opposing liquidity.
 - Module 2 conflict resolution blocks simultaneous unresolved buy/sell setups; a confirmed MSS retest with entry confirmation can override weaker opposite sweep evidence.
-- Module 2 final profile on VPS must be backed by migration `063_module2_complete_entry_contract.sql`. The validator fails if `SWEEP_MSS_RETEST` is missing any production gate.
+- Module 2 final contract on VPS must be backed by migration `063_module2_complete_entry_contract.sql` plus later Module 2 variant migrations. The validator fails if registry/schema/production gates are missing.
 - Migration `064_module2_swing_contract_backfill.sql` backfills the final swing contract fields for databases that already applied migration `063`.
 - Module 2 platform-core engine contract is implemented from `TRADING PLATFORM CORE ENGINES NEXT UPDATE FOR THE LIQUIDITY SWEEP EXECUTION MODULE`.
 - Module 2 now emits `scenarioFlags.platformEngines`, `sessionContext`, `structureGraph`, `liquidityLifecycle`, and richer `marketRegime` evidence from the strategy brain.
@@ -529,7 +527,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 BUY & SELL cards are stricter than Predictions: normal mode now requires an actual active paper trade row. A valid signal card means the module met production rules, created the paper trade, and can show entry/SL/TP details.
 - Python main brain now ignores stale non-proof setup rows unless there is an active paper trade to manage, so Module 1 and Module 2 brain decisions stay aligned with current market context.
 - Module 2 Python main brain supports `--proof-mode`. Live mode still excludes replay rows; proof mode intentionally reads only `scenario_flags.productionProof=true` replay evidence so the proof does not contaminate real live setup logic.
-- Module 2 replay QA has been realigned to the final strategy: research profiles remain observable, but only `SWEEP_MSS_RETEST` can prove/open paper-entry behavior. Older BOS/displacement/EMA-only profiles must not be treated as paper-eligible production entries.
+- Module 2 replay QA has been realigned to the final strategy: research/control profiles remain observable, while paper-approved independent variants can prove/open paper-entry behavior when their own mandatory profile and risk gates pass.
 - Module 2 cache backtest endpoint now accepts `limit` and defaults Module 2 to a bounded latest-candle window to avoid blocking the API while validating locally or on VPS. Full historical runs should move to worker/job execution if they become heavy.
 - Latest local proof on 2026-08-06: `POST /api/module2/production-proof/run` returned PASS with setup, strict variant, paper trade, notification payload, and Python brain all true. A bounded 300-candle Module 2 cache backtest completed with 0 full trades and 12 missed-trade learning reviews. `npm run validate:module2-production -- .env.production` returned 13 PASS, 3 WARN, 0 FAIL.
 - Module 2 live chart now includes a Live Candidate Monitor panel. It reads current price/latest candle from `/api/setups/current?moduleCode=high_probability_strategy_2&evidence=true`, shows whether the setup is an 80%+ recent prediction, whether BUY/SELL has become an active paper trade, entry distance, age, and the first blocking rule explaining why no trade is available yet.
@@ -544,7 +542,10 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 paper-approved profiles include sweep close-back, sweep engulfing, sweep BOS, sweep MSS, sweep volume expansion, displacement retest, EMA-aligned sweep, BOS retest, MSS retest, and MSS + displacement + retest. Sweep-only/no-confirmation remains research/control only.
 - Module 2 retest expiration only invalidates retest-based profiles. It must not kill simpler independent profiles that already passed their own mandatory rules.
 - Module 2 Strategy Center should display base mandatory gates, selected variant profile, confirmation checklist, quality filters, and final automation gate. It should never display variants as one impossible combined checklist.
-- Module 1 and Module 2 are both all-session strategy modules. Module 1 uses session-by-session ORB ranges and should show recent session ORB High/Mid/Low indicators; Module 2 should show liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target indicators when evidence exists.
+- Module 1 is New York-only; Module 2 is all-session. Module 1 should show New York ORB High/Mid/Low indicators and NY-only horizontal range observations when evidence exists. Module 2 should show liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target indicators when evidence exists.
+- Module 1 now has a generic range-engine foundation around the existing MAX Options ORB logic. ORB remains the authoritative detector and keeps the existing 15M opening range / 5M trigger behavior. The shared normalized range contract is stored in setup `scenario_flags.genericRangeEngine` and `scenario_flags.tradingRange`.
+- Module 1 horizontal range breakout is introduced only as a New York-session, observation-only detector (`rangeEngine.horizontalRange.enabled=true`, `scope=NEW_YORK_SESSION_ONLY`, `observationOnly=true`). It must not create paper trades, BUY/SELL cards, predictions, or change ORB entries until separate backtest/demo promotion gates are added and passed.
+- Generic range architecture rule: range detectors may share lifecycle/breakout/retest/risk evidence, but ORB must never be forced to satisfy horizontal consolidation rules, and horizontal ranges must not inherit fixed NY/15M ORB assumptions.
 
 ## Operating Principles
 

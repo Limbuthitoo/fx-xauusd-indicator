@@ -340,6 +340,8 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const risk = objectValue(base.risk);
   const favorability = objectValue(base.favorability);
   const paperTrading = objectValue(base.paperTrading);
+  const rangeEngine = objectValue(base.rangeEngine);
+  const horizontalRange = objectValue(rangeEngine.horizontalRange);
 
   return {
     ...base,
@@ -387,6 +389,35 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       enabled: booleanValue(paperTrading.enabled, true),
       maximumTradesPerSession: positiveInteger(paperTrading.maximumTradesPerSession, 1, 20),
       conservativeSameCandleExit: booleanValue(paperTrading.conservativeSameCandleExit, true)
+    },
+    rangeEngine: {
+      ...rangeEngine,
+      enabled: booleanValue(rangeEngine.enabled, true),
+      authoritativeDetector: "MAX_OPTIONS_ORB",
+      preserveOrbBehavior: true,
+      detectorVersion: stringValue(rangeEngine.detectorVersion, "GENERIC_RANGE_ENGINE_V1"),
+      horizontalRange: {
+        ...horizontalRange,
+        enabled: booleanValue(horizontalRange.enabled, false),
+        observationOnly: true,
+        timeframe: ["5min", "15min"].includes(String(horizontalRange.timeframe)) ? String(horizontalRange.timeframe) : "5min",
+        minimumRangeCandles: positiveInteger(horizontalRange.minimumRangeCandles, 12, 240),
+        maximumRangeCandles: positiveInteger(horizontalRange.maximumRangeCandles, 60, 500),
+        minimumUpperTouches: positiveInteger(horizontalRange.minimumUpperTouches, 2, 10),
+        minimumLowerTouches: positiveInteger(horizontalRange.minimumLowerTouches, 2, 10),
+        minimumBarsBetweenTouches: positiveInteger(horizontalRange.minimumBarsBetweenTouches, 2, 50),
+        boundaryReactionCount: positiveInteger(horizontalRange.boundaryReactionCount, 3, 20),
+        boundaryToleranceAtr: positiveNumber(horizontalRange.boundaryToleranceAtr, 0.08, 2),
+        minimumContainmentRatio: ratioValue(horizontalRange.minimumContainmentRatio, 0.75),
+        maximumEfficiencyRatio: ratioValue(horizontalRange.maximumEfficiencyRatio, 0.35),
+        maximumBoundarySlopeAtrPerBar: positiveNumber(horizontalRange.maximumBoundarySlopeAtrPerBar, 0.02, 1),
+        minimumWidthAtr: positiveNumber(horizontalRange.minimumWidthAtr, 0.8, 20),
+        maximumWidthAtr: positiveNumber(horizontalRange.maximumWidthAtr, 4, 50),
+        minimumMidpointCrosses: positiveInteger(horizontalRange.minimumMidpointCrosses, 2, 50),
+        minimumQualityScore: positiveInteger(horizontalRange.minimumQualityScore, 70, 100),
+        lockAfterValidation: booleanValue(horizontalRange.lockAfterValidation, true),
+        expireAfterCandles: positiveInteger(horizontalRange.expireAfterCandles, 60, 500)
+      }
     }
   };
 }

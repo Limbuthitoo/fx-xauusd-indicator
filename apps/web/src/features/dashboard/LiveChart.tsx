@@ -551,9 +551,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             </>
           ) : (
             <>
-              <span><i style={{ background: "#1f7a8c" }} />Recent ORB High</span>
-              <span><i style={{ background: "#f0b429" }} />Recent ORB Mid</span>
-              <span><i style={{ background: "#e05252" }} />Recent ORB Low</span>
+              <span><i style={{ background: "#1f7a8c" }} />NY ORB High</span>
+              <span><i style={{ background: "#f0b429" }} />NY ORB Mid</span>
+              <span><i style={{ background: "#e05252" }} />NY ORB Low</span>
+              <span><i style={{ background: "#8b5cf6" }} />NY horizontal observation</span>
             </>
           )}
         </div>
@@ -1067,6 +1068,19 @@ function buildPositionedOverlays(input: {
       addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.session_start_at, range.midpoint);
       addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.session_start_at, range.low);
     });
+    const horizontal = input.setup?.scenario_flags?.horizontalRangeObservation ?? input.setup?.scenario_flags?.genericRangeEngine?.horizontal;
+    const horizontalRange = horizontal?.range;
+    if (horizontal?.enabled === true && horizontalRange?.low != null && horizontalRange?.high != null) {
+      addBox(
+        "module1-horizontal-observation",
+        "NY horizontal observation",
+        "orderBlock",
+        horizontalRange.startedAt ?? horizontalRange.detectedAt,
+        horizontalRange.lockedAt ?? horizontalRange.detectedAt ?? latestTime,
+        horizontalRange.low,
+        horizontalRange.high
+      );
+    }
     return overlays;
   }
   if (input.moduleCode === "high_probability_strategy_2" && input.session?.session_start_at && input.session?.signal_window_end_at) {

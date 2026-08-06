@@ -205,8 +205,9 @@ export async function setupRoutes(app: FastifyInstance) {
       rows.push(evaluation);
       evaluationsBySetup.set(evaluation.setup_candidate_id, rows);
     }
+    const brainPredictions = setupIds.length > 0 ? await latestBrainPredictions(auth.tenantId, setupIds) : new Map<string, any>();
     const predictions = setups.rows
-      .map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? []))
+      .map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? [], brainPredictions.get(row.id) ?? null))
       .filter((prediction) =>
         prediction.probability >= MINIMUM_VISIBLE_PREDICTION_PROBABILITY &&
         (includeProof || isUpcomingPrediction(prediction))
@@ -328,8 +329,8 @@ export async function setupRoutes(app: FastifyInstance) {
          AND sc.module_code = $2
          AND sc.status <> 'TEST_CLEARED'
          AND sc.scenario <> 'QA_TEST_SIGNAL'
-         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND (COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true' OR COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true')
+         AND (COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true' OR COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true')
          AND ($3::boolean = true OR sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
          AND ($3::boolean = false OR sc.scenario_flags IS NOT NULL)
        ORDER BY
@@ -1054,7 +1055,7 @@ export async function setupRoutes(app: FastifyInstance) {
   app.post("/api/module2/production-proof/run", async (request) => {
     const auth = await requireTenantModule(request, "high_probability_strategy_2");
     if (!auth.tenantId) throw new Error("Tenant context is required for Module 2 production proof.");
-    const body = request.body as { direction?: "LONG" | "SHORT" };
+    const body = (request.body ?? {}) as { direction?: "LONG" | "SHORT" };
     const replayCase: Module2ReplayCase = body.direction === "SHORT" ? "SELL" : "MSS_RETEST";
     const proof: any = await createModule2ReplayRecord(auth.tenantId, replayCase, true, true);
     let brain: unknown = null;
@@ -1325,6 +1326,7 @@ function signalSetupView(row: any, evaluations: any[]) {
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   const checklistTotal = evaluations.length;
   const mandatoryRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "mandatory");
+  const variantRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "variant");
   const confirmationRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "confirmation");
   const qualityRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "quality");
   const missingRules = evaluations
@@ -1360,6 +1362,7 @@ function signalSetupView(row: any, evaluations: any[]) {
     variantVersion: variant?.version ?? flags.variantVersion ?? null,
     checklistSummary: {
       mandatory: signalRuleSummary(mandatoryRules),
+      variant: signalRuleSummary(variantRules),
       confirmations: signalRuleSummary(confirmationRules),
       quality: signalRuleSummary(qualityRules),
       missingRules
@@ -1427,14 +1430,23 @@ function signalRuleSummary(rows: any[]) {
 function module2SignalLayer(moduleCode: string, ruleCode?: string) {
   const code = String(ruleCode ?? "");
   if (moduleCode !== "high_probability_strategy_2") return "other";
-  if (code === "CONFIRM_ENTRY_CANDLE") return "mandatory";
+  if (code === "CONFIRM_ENTRY_CANDLE") return "variant";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
+  if ([
+    "PROTECTED_POINT_CONFIDENCE",
+    "BOS_CHOCH_CONFIRMED",
+    "MSS_STRENGTH",
+    "ENTRY_ZONE_READY",
+    "ENTRY_ZONE_RETRACE",
+    "DIRECTIONAL_CONFLICT_CLEAR"
+  ].includes(code)) return "variant";
   if ([
     "DATA_HEALTHY",
     "MARKET_CONTEXT_READY",
     "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
+    "STRATEGY_CYCLE_ACTIVE",
     "DAILY_TRADE_LIMIT",
     "ACTIVE_SETUP_CONFLICT_CLEAR",
     "NO_ACTIVE_TRADE_CONFLICT",
@@ -1444,12 +1456,6 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
@@ -1457,14 +1463,32 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
   return "other";
 }
 
-function predictionSetupView(row: any, evaluations: any[]) {
-  const direction = row.direction === "SHORT" ? "SHORT" : row.direction === "LONG" ? "LONG" : predictedDirection(row);
-  const action = direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "WAIT";
+async function latestBrainPredictions(tenantId: string | null, setupIds: string[]) {
+  if (!tenantId || setupIds.length === 0) return new Map<string, any>();
+  const rows = await query(
+    `SELECT DISTINCT ON (metadata->>'setupId')
+       metadata->>'setupId' AS setup_id,
+       metadata,
+       created_at
+     FROM operational_events
+     WHERE tenant_id = $1
+       AND event_type = 'MAIN_BRAIN_DECISION'
+       AND metadata->>'setupId' = ANY($2::text[])
+     ORDER BY metadata->>'setupId', created_at DESC`,
+    [tenantId, setupIds]
+  );
+  return new Map((rows.rows as any[]).map((row) => [row.setup_id, { ...(row.metadata ?? {}), generatedAt: row.created_at }]));
+}
+
+function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
+  const brainDirection = brain?.direction === "SHORT" ? "SHORT" : brain?.direction === "LONG" ? "LONG" : null;
+  const direction = brainActionDirection(brain?.action) ?? brainDirection ?? (row.direction === "SHORT" ? "SHORT" : row.direction === "LONG" ? "LONG" : predictedDirection(row));
+  const action = brain?.action === "BUY" || brain?.action === "SELL" ? brain.action : direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "WAIT";
   const flags = row.scenario_flags ?? {};
   const entryZone = predictionEntryZone(row, flags);
-  const entry = numericOrNull(row.actual_entry ?? row.entry_price) ?? entryZone.midpoint;
-  const stopLoss = numericOrNull(row.actual_stop ?? row.stop_price) ?? predictedStop(row, flags, direction, entry);
-  const target = numericOrNull(row.actual_target ?? row.target_price) ?? predictedTarget(entry, stopLoss, direction);
+  const entry = numericOrNull(brain?.entry ?? row.actual_entry ?? row.entry_price) ?? entryZone.midpoint;
+  const stopLoss = numericOrNull(brain?.stop ?? row.actual_stop ?? row.stop_price) ?? predictedStop(row, flags, direction, entry);
+  const target = numericOrNull(brain?.target ?? row.actual_target ?? row.target_price) ?? predictedTarget(entry, stopLoss, direction);
   const [tp1, tp2, tp3] = (direction === "SHORT" || direction === "LONG") && entry != null
     ? DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(Number(entry ?? 0) + (direction === "SHORT" ? -1 : 1) * pips * XAUUSD_PIP_SIZE))
     : [null, null, null];
@@ -1474,8 +1498,8 @@ function predictionSetupView(row: any, evaluations: any[]) {
   const fullChecklistMatched = total > 0 && passed === total;
   const mandatoryMatched = Boolean(flags.mandatoryChecklistMatched ?? flags.matrix?.mandatoryChecklistMatched ?? false);
   const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
-  const probability = predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched);
-  const status = predictionStatus(row, mandatoryMatched, fullChecklistMatched);
+  const probability = predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched, brain);
+  const status = predictionStatus(row, mandatoryMatched, fullChecklistMatched, brain);
   const rr = entry != null && stopLoss != null && target != null
     ? Math.abs(Number(target) - Number(entry)) / Math.max(0.00001, Math.abs(Number(entry) - Number(stopLoss)))
     : null;
@@ -1504,6 +1528,8 @@ function predictionSetupView(row: any, evaluations: any[]) {
     probability,
     confidence,
     grade: row.favorability_grade ?? flags.tradeGrade ?? null,
+    brainPrediction: brainPredictionView(brain),
+    brainApprovedPrediction: brainApprovesPrediction(brain),
     currentPrice: row.current_price == null ? null : Number(row.current_price),
     currentPriceAt: row.current_price_at,
     trade: row.trade_id ? { id: row.trade_id, status: row.trade_outcome, openedAt: row.opened_at } : null,
@@ -1515,7 +1541,7 @@ function predictionSetupView(row: any, evaluations: any[]) {
       blocking,
       evaluations
     },
-    reasoning: predictionReasoning(row, evaluations, flags, action),
+    reasoning: predictionReasoning(row, evaluations, flags, action, brain),
     missing: blocking.map((rule) => ({
       ruleCode: rule.rule_code,
       name: rule.name,
@@ -1577,37 +1603,89 @@ function predictedTarget(entry: number | null, stop: number | null, direction: "
   return roundSignalPrice(entry + (direction === "SHORT" ? -1 : 1) * risk * 2);
 }
 
-function predictionProbability(row: any, evaluations: any[], confidence: unknown, mandatoryMatched: boolean, fullChecklistMatched: boolean) {
+function predictionProbability(row: any, evaluations: any[], confidence: unknown, mandatoryMatched: boolean, fullChecklistMatched: boolean, brain: any = null) {
   const numericConfidence = Number(confidence);
-  if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence)));
+  const brainApproved = brainApprovesPrediction(brain);
+  const brainBlocked = brain && !brainApproved;
+  if (Number.isFinite(numericConfidence)) {
+    const value = Math.min(99, Math.max(1, Math.round(numericConfidence + (brainApproved ? 3 : 0))));
+    return brainBlocked ? Math.min(79, value) : value;
+  }
   const total = evaluations.length;
   const passed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   const base = total > 0 ? (passed / total) * 72 : 18;
   const mandatoryBonus = mandatoryMatched ? 12 : 0;
   const fullBonus = fullChecklistMatched ? 15 : 0;
   const actionBonus = row.direction ? 4 : 0;
-  return Math.min(99, Math.max(1, Math.round(base + mandatoryBonus + fullBonus + actionBonus)));
+  const brainBonus = brainApproved ? 5 : 0;
+  const value = Math.min(99, Math.max(1, Math.round(base + mandatoryBonus + fullBonus + actionBonus + brainBonus)));
+  return brainBlocked ? Math.min(79, value) : value;
 }
 
-function predictionStatus(row: any, mandatoryMatched: boolean, fullChecklistMatched: boolean) {
+function predictionStatus(row: any, mandatoryMatched: boolean, fullChecklistMatched: boolean, brain: any = null) {
   if (row.trade_outcome === "ACTIVE") return "ACTIVE PAPER TRADE";
+  if (brain && !brainApprovesPrediction(brain)) return "BRAIN WAIT";
+  if (brainApprovesPrediction(brain)) return fullChecklistMatched ? "BRAIN VALID ENTRY" : "BRAIN CORE ENTRY";
   if (["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(row.status)) return fullChecklistMatched ? "VALID ENTRY" : "CORE ENTRY";
   if (mandatoryMatched) return "CORE PREDICTION";
   if (row.direction) return "WATCHLIST";
   return "WAITING";
 }
 
-function predictionReasoning(row: any, evaluations: any[], flags: any, action: string) {
+function predictionReasoning(row: any, evaluations: any[], flags: any, action: string, brain: any = null) {
   const passNames = evaluations.filter((rule) => rule.status === "PASS").slice(0, 5).map((rule) => rule.name);
   const base = row.final_reason ?? `${row.module_name} is monitoring for the next valid ${action === "WAIT" ? "BUY/SELL" : action} setup.`;
   const variant = flags.module2Variant ?? {};
   const moduleReason = row.module_code === "high_probability_strategy_2"
     ? `Prediction follows the ${variant.name ?? flags.variantCode ?? "selected Module 2 variant"} chain: potential liquidity, sweep rejection, displacement, BOS/MSS, entry-zone retrace, confirmation, then risk.`
     : "Prediction follows 15M opening range, 5M breakout/acceptance, retest or sweep-reversal evidence.";
+  const brainReason = brain
+    ? `Python brain: ${brain.decisionType ?? "DECISION"} / ${brain.action ?? "WAIT"}${brain.reason ? ` - ${brain.reason}` : ""}`
+    : "Python brain prediction is waiting for the next strategy-brain sweep.";
   const missing = Array.isArray(variant.missingRules) && variant.missingRules.length > 0
     ? `Variant waiting on: ${variant.missingRules.slice(0, 4).join(", ")}.`
     : null;
-  return [moduleReason, base, missing, passNames.length ? `Matched: ${passNames.join(", ")}.` : null].filter(Boolean);
+  return [brainReason, moduleReason, base, missing, passNames.length ? `Matched: ${passNames.join(", ")}.` : null].filter(Boolean);
+}
+
+function brainActionDirection(action?: string) {
+  if (action === "BUY") return "LONG";
+  if (action === "SELL") return "SHORT";
+  return null;
+}
+
+function brainApprovesPrediction(brain: any) {
+  if (!brain) return false;
+  const hasDirectionalAction = brain.action === "BUY" || brain.action === "SELL" || (brain.action === "MANAGE" && (brain.direction === "LONG" || brain.direction === "SHORT"));
+  const isManagedTrade = brain.decisionType === "TRADE_ACTIVE" && (brain.direction === "LONG" || brain.direction === "SHORT");
+  return (hasDirectionalAction || isManagedTrade)
+    && [brain.entry, brain.stop, brain.target].every((value) => Number.isFinite(Number(value)))
+    && !["ERROR", "CRITICAL"].includes(String(brain.severity ?? ""));
+}
+
+function brainPredictionView(brain: any) {
+  if (!brain) return {
+    source: "PYTHON_MAIN_BRAIN",
+    status: "NOT_RUN",
+    action: "WAIT",
+    approved: false,
+    reason: "Python brain has not produced a prediction decision for this setup yet."
+  };
+  return {
+    source: "PYTHON_MAIN_BRAIN",
+    status: brain.decisionType ?? "UNKNOWN",
+    action: brain.action ?? "WAIT",
+    direction: brain.direction ?? null,
+    approved: brainApprovesPrediction(brain),
+    shouldOpenPaperTrade: Boolean(brain.shouldOpenPaperTrade),
+    entry: numericOrNull(brain.entry),
+    stopLoss: numericOrNull(brain.stop),
+    takeProfit: numericOrNull(brain.target),
+    score: numericOrNull(brain.score),
+    grade: brain.grade ?? null,
+    reason: brain.reason ?? null,
+    generatedAt: brain.generatedAt ?? null
+  };
 }
 
 function predictionEvidence(moduleCode: string, flags: any) {
@@ -1927,8 +2005,26 @@ async function buildOrbQaSuite(tenantId: string | null) {
 }
 
 async function selectedStrategyVersion() {
-  const versionResult = await query("SELECT * FROM strategy_versions WHERE id = (SELECT selected_strategy_version_id FROM user_preferences LIMIT 1)");
-  return versionResult.rows[0] as any;
+  const versionResult = await query(`
+    SELECT sv.*
+    FROM strategy_versions sv
+    JOIN strategies s ON s.id = sv.strategy_id
+    LEFT JOIN user_preferences up ON up.selected_strategy_version_id = sv.id
+    WHERE up.selected_strategy_version_id IS NOT NULL
+       OR s.name ILIKE '%ORB%'
+       OR sv.configuration_json->>'moduleCode' = 'orb_max_options'
+    ORDER BY
+      CASE WHEN up.selected_strategy_version_id IS NOT NULL THEN 0 ELSE 1 END,
+      CASE WHEN sv.status = 'ACTIVE' THEN 0 ELSE 1 END,
+      sv.activated_at DESC NULLS LAST,
+      sv.created_at DESC
+    LIMIT 1
+  `);
+  const version = versionResult.rows[0] as any;
+  if (!version?.id) {
+    throw new Error("No Module 1 ORB strategy version is available. Run migrations/seeds before running Module 1 proof.");
+  }
+  return version;
 }
 
 async function ensureTodaySession(tenantId: string | null) {

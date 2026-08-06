@@ -4,10 +4,17 @@ SET name = 'Module 2: All-Session Liquidity Sweep',
     updated_at = now()
 WHERE code = 'high_probability_strategy_2';
 
-UPDATE strategy_versions
+UPDATE strategies
 SET name = replace(name, 'New York', 'All-Session'),
-    description = 'All-session XAUUSD liquidity sweep execution module: one paper-approved confirmation profile can create BUY/SELL, paper trade, notification, and journal entries after risk approval.',
-    session_start = '00:00',
+    description = 'All-session XAUUSD liquidity sweep execution module: one paper-approved confirmation profile can create BUY/SELL, paper trade, notification, and journal entries after risk approval.'
+WHERE id IN (
+  SELECT strategy_id
+  FROM strategy_versions
+  WHERE configuration_json->>'moduleCode' = 'high_probability_strategy_2'
+);
+
+UPDATE strategy_versions
+SET session_start = '00:00',
     trade_window_end = '23:59',
     configuration_json = jsonb_set(
       jsonb_set(
@@ -20,7 +27,7 @@ SET name = replace(name, 'New York', 'All-Session'),
       '"23:59"'::jsonb,
       true
     )
-WHERE module_code = 'high_probability_strategy_2';
+WHERE configuration_json->>'moduleCode' = 'high_probability_strategy_2';
 
 UPDATE tenant_module_settings
 SET value = jsonb_set(

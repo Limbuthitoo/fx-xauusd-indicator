@@ -41,7 +41,7 @@ if (!headers.authorization.endsWith(" ")) {
     const proof = await json("/api/module2/production-proof/run", { method: "POST", headers });
     const failed = Object.entries(proof?.checks ?? {}).filter(([, value]) => value !== true).map(([key]) => key);
     return {
-      ok: proof?.status === "PASS" && failed.length === 0,
+      ok: (proof?.status === "PASS" || proof?.finalStatus === "PASS") && failed.length === 0,
       detail: failed.length === 0 ? "Module 2 created strict MSS retest setup, paper trade, journal, notification, and Python brain proof." : `Failed checks: ${failed.join(", ")}.`,
       evidence: summarizeProof(proof)
     };
@@ -95,9 +95,12 @@ async function checkModuleSurface(label, moduleCode, setupId) {
     const payload = await json(`/api/setups/predictions?moduleCode=${encodeURIComponent(moduleCode)}&includeProof=true&limit=20`, { headers });
     const rows = Array.isArray(payload?.predictions) ? payload.predictions : [];
     const match = rows.find((row) => !setupId || row.id === setupId);
+    const brainApproved = match?.brainPrediction?.approved === true;
     return {
-      ok: Boolean(match?.entry && match?.stopLoss && (match?.takeProfit || match?.target)),
-      detail: match ? `${label} proof prediction visible with ${match.probability ?? "--"}% probability.` : `${label} proof prediction missing.`,
+      ok: Boolean(match?.entry && match?.stopLoss && (match?.takeProfit || match?.target) && brainApproved),
+      detail: match
+        ? `${label} proof prediction visible with ${match.probability ?? "--"}% probability and Python brain approval ${brainApproved ? "present" : "missing"}.`
+        : `${label} proof prediction missing.`,
       evidence: match ? pickTradeFields(match) : payload?.summary
     };
   });
@@ -165,7 +168,7 @@ async function timedFetch(url, init = {}) {
 
 function summarizeProof(proof) {
   return {
-    status: proof?.status,
+    status: proof?.status ?? proof?.finalStatus,
     setupId: proof?.setup?.id,
     tradeId: proof?.trade?.id,
     setupStatus: proof?.setup?.status,
@@ -193,6 +196,7 @@ function pickTradeFields(row) {
     tp1: row.tp1,
     tp2: row.tp2,
     tp3: row.tp3,
-    trade: row.trade
+    trade: row.trade,
+    brainPrediction: row.brainPrediction
   };
 }

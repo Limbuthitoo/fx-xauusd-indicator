@@ -467,6 +467,25 @@ h2 {
   border-radius: 0;
 }
 
+.live-range-observation {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #2b4236;
+  border-radius: 6px;
+  background: #101a14;
+}
+
+.live-range-observation strong {
+  color: #d9e7dc;
+}
+
+.live-range-observation span {
+  color: #9eaca3;
+  overflow-wrap: anywhere;
+}
+
 .live-evidence-list,
 .live-check-summary {
   display: grid;
