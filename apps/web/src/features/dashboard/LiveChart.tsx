@@ -229,6 +229,15 @@ function shouldShowPriceLine(moduleCode: string, line: ChartPriceLine, visibilit
   return true;
 }
 
+function isModule1HorizontalRangeActive(setup: TwelveDataChartProps["setup"]) {
+  const horizontal = setup?.scenario_flags?.horizontalRangeObservation ?? setup?.scenario_flags?.genericRangeEngine?.horizontal;
+  if (horizontal?.enabled !== true || !horizontal?.range) return false;
+  const status = String(horizontal.status ?? horizontal.range?.state ?? "").toUpperCase();
+  const decisionStatus = String(setup?.scenario_flags?.genericRangeEngine?.decision?.status ?? "").toUpperCase();
+  return ["VALID", "LOCKED", "BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(status)
+    || ["BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(decisionStatus);
+}
+
 const CHART_BAR_SPACING = 2.5;
 const CHART_RIGHT_OFFSET = 16;
 const INITIAL_CHART_CANDLES = 300;
@@ -265,7 +274,6 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [evidenceSetup, setEvidenceSetup] = useState<TwelveDataChartProps["setup"] | null>(null);
   const [indicatorVisibility, setIndicatorVisibility] = useState<ChartIndicatorVisibility>(() => defaultIndicatorVisibility(moduleCode, showEma, showOrbSessionLevels, indicatorDefaults));
   const effectiveShowEma = showEma && indicatorVisibility.ema !== false;
-  const effectiveShowOrbSessionLevels = showOrbSessionLevels && indicatorVisibility.orbLevels !== false;
   const activeEvidenceSetup = useMemo(() => {
     if (moduleCode !== "high_probability_strategy_2") return activeSetup;
     if (!activeSetup) return evidenceSetup;
@@ -281,6 +289,8 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       coreEvidence: evidenceSetup.coreEvidence ?? activeSetup.coreEvidence
     };
   }, [moduleCode, activeSetup, evidenceSetup]);
+  const horizontalRangeIsActive = moduleCode === "orb_max_options" && isModule1HorizontalRangeActive(activeEvidenceSetup);
+  const effectiveShowOrbSessionLevels = showOrbSessionLevels && indicatorVisibility.orbLevels !== false && !horizontalRangeIsActive;
   const orbRangeState = useMemo(
     () => moduleCode === "orb_max_options" ? module1OrbRangeState(openingRange, candles, session) : null,
     [moduleCode, openingRange, candles, session]
@@ -558,7 +568,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
-  }, [activeEvidenceSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges, effectiveShowOrbSessionLevels, indicatorVisibility]);
+  }, [activeEvidenceSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges, effectiveShowOrbSessionLevels, indicatorVisibility, horizontalRangeIsActive]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -670,6 +680,8 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
                   <span><i style={{ background: "#f0b429" }} />NY ORB Mid</span>
                   <span><i style={{ background: "#e05252" }} />NY ORB Low</span>
                 </>
+              ) : horizontalRangeIsActive ? (
+                <span><i style={{ background: "#56616b" }} />ORB hidden by horizontal range</span>
               ) : (
                 <span><i style={{ background: "#56616b" }} />NY ORB levels hidden</span>
               )}
@@ -714,7 +726,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             <span>ORB range</span>
             <strong className={orbRangeState?.range ? "good" : "warn"}>{orbRangeState?.label ?? "MISSING"}</strong>
             <span>ORB values</span>
-            <strong>{effectiveOrbRanges.length > 0 ? effectiveOrbRanges.map((range) => `${range.shortLabel ?? "ORB"} ${format(numberValue(range.high))}/${format(numberValue(range.midpoint))}/${format(numberValue(range.low))}`).join(" | ") : `${orbRangeState?.candleCount ?? 0}/3 candles`}</strong>
+            <strong>{horizontalRangeIsActive ? "HORIZONTAL ACTIVE" : effectiveOrbRanges.length > 0 ? effectiveOrbRanges.map((range) => `${range.shortLabel ?? "ORB"} ${format(numberValue(range.high))}/${format(numberValue(range.midpoint))}/${format(numberValue(range.low))}`).join(" | ") : `${orbRangeState?.candleCount ?? 0}/3 candles`}</strong>
           </>
         ) : null}
       </div>

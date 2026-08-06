@@ -71,6 +71,7 @@ Expected daily usage target:
 - Tenant setting `orb.strategy.chart.showOrbSessionLevels` controls whether Module 1 ORB High/Mid/Low are visible on the live chart. Default is ON, and disabling it hides chart indicators only; it does not disable ORB calculation, signals, predictions, or paper trading.
 - Module 1 live chart indicators are module-owned: ORB levels and horizontal range can be toggled independently. They must not leak into Module 2.
 - Module 1 live chart should render only the latest/current New York ORB High/Mid/Low until the next New York ORB replaces it. Do not draw previous NY ORB ranges, duplicate NY ranges, or full-width ORB price-line indicators.
+- Module 1 ORB High/Mid/Low remain visible while ORB is the active structure. When a horizontal range observation becomes a valid/locked setup, the live chart hides ORB levels and prioritizes the horizontal range display to prevent crowding. This is display-only; ORB strategy calculations remain available.
 - Paper trade opens only when module rules pass.
 
 ### Module 2: Ultimate Liquidity Sweep
