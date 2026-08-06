@@ -100,7 +100,7 @@ services:
     environment:
       DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${QUANT_HOST_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,7 +173,7 @@ services:
       EXPO_PUBLIC_API_BASE_URL: ${EXPO_PUBLIC_API_BASE_URL:-}
       EXPO_PUBLIC_EAS_PROJECT_ID: ${EXPO_PUBLIC_EAS_PROJECT_ID:-}
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_HOST_PORT:-3000}:3000"
 
   migrate:
     build:

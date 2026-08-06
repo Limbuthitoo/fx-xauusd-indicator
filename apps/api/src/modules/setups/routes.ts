@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { getTenantOrbStrategyConfiguration } from "../admin/settings.js";
+import { runMainBrainPython } from "../admin/learning.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 
@@ -48,6 +49,43 @@ const DAY_TRADING_HOLD_WINDOW = {
   guidance: "Review or close the paper trade before the day-trading window expires."
 };
 const MINIMUM_VISIBLE_PREDICTION_PROBABILITY = 80;
+const MAX_LIVE_PREDICTION_AGE_MINUTES = 90;
+const MAX_LIVE_PREDICTION_ENTRY_DISTANCE = 10;
+const MODULE2_STRICT_VARIANT = {
+  code: "SWEEP_MSS_RETEST",
+  name: "Sweep + MSS + Retest",
+  version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0",
+  paperEligible: true,
+  approvalStatus: "PRODUCTION_APPROVED",
+  category: "PRODUCTION"
+};
+const MODULE2_STRICT_REQUIRED_RULES = [
+  "DATA_HEALTHY",
+  "MARKET_CONTEXT_READY",
+  "MARKET_REGIME_CLASSIFIED",
+  "NY_SESSION_ACTIVE",
+  "DAILY_TRADE_LIMIT",
+  "ACTIVE_SETUP_CONFLICT_CLEAR",
+  "NO_ACTIVE_TRADE_CONFLICT",
+  "RISK_LIMITS_CLEAR",
+  "MANUAL_CONFIRMATION_COMPLETED",
+  "LIQUIDITY_LEVEL_IDENTIFIED",
+  "LIQUIDITY_SWEEP_CONFIRMED",
+  "SWEEP_REJECTION_CONFIRMED",
+  "SWEEP_ACCEPTANCE_BLOCK",
+  "PROTECTED_POINT_CONFIDENCE",
+  "BOS_CHOCH_CONFIRMED",
+  "MSS_STRENGTH",
+  "ENTRY_ZONE_READY",
+  "ENTRY_ZONE_RETRACE",
+  "CONFIRM_ENTRY_CANDLE",
+  "DIRECTIONAL_CONFLICT_CLEAR",
+  "RISK_OK",
+  "SIGNAL_SCORE",
+  "VARIANT_SELECTED"
+] as const;
+const MODULE2_CONFIRMATION_RULES = ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE"] as const;
+const MODULE2_QUALITY_RULES = ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP"] as const;
 
 const MODULE2_QA_CASES: Array<{
   code: Module2ReplayCase;
@@ -57,19 +95,19 @@ const MODULE2_QA_CASES: Array<{
   opensPaperTrade: boolean;
   failureRule?: string;
 }> = [
-  { code: "BUY", label: "Valid BUY", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "SELL", label: "Valid SELL", expected: "NY_LIQUIDITY_SWEEP_BOS_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
+  { code: "BUY", label: "Valid BUY", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "SELL", label: "Valid SELL", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
   { code: "SWEEP_ONLY", label: "Sweep close-back research", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
   { code: "SWEEP_NO_CONFIRMATION", label: "Sweep no-confirmation control", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
   { code: "SWEEP_ENGULFING", label: "Sweep + engulfing research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
   { code: "SWEEP_BOS", label: "Sweep + BOS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
   { code: "SWEEP_MSS", label: "Sweep + MSS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
   { code: "SWEEP_VOLUME_EXPANSION", label: "Sweep + volume research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
-  { code: "DISPLACEMENT_RETEST", label: "Displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "BOS_RETEST", label: "BOS retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "MSS_RETEST", label: "MSS retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "MSS_DISPLACEMENT_RETEST", label: "MSS displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "EMA_ALIGNED_SWEEP", label: "EMA-aligned sweep entry", expected: "NY_LIQUIDITY_SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "DISPLACEMENT_RETEST", label: "Displacement retest research", expected: "WAITING_FOR_MSS_RETEST", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
+  { code: "BOS_RETEST", label: "BOS retest research", expected: "WAITING_FOR_MSS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
+  { code: "MSS_RETEST", label: "MSS retest entry", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "MSS_DISPLACEMENT_RETEST", label: "MSS displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "EMA_ALIGNED_SWEEP", label: "EMA-aligned sweep research", expected: "WAITING_FOR_MSS_RETEST", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
   { code: "SWEEP_NO_DISPLACEMENT", label: "Sweep but no displacement", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
   { code: "DISPLACEMENT_NO_BOS", label: "Displacement but no BOS", expected: "WAITING_FOR_BOS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "BOS_CHOCH_CONFIRMED" },
   { code: "BOS_NO_RETRACE", label: "BOS but no retrace", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRM_ENTRY_CANDLE" },
@@ -91,11 +129,18 @@ export async function setupRoutes(app: FastifyInstance) {
   app.get("/api/setups/predictions", async (request) => {
     const auth = requirePermission(request, "signals.view");
     if (!auth.tenantId) return { summary: emptyPredictionSummary(), predictions: [] };
-    const search = request.query as { limit?: string; moduleCode?: string };
+    const search = request.query as { limit?: string; moduleCode?: string; includeProof?: string };
     const limit = Math.min(100, Math.max(1, Number(search.limit ?? 60)));
     const moduleCode = String(search.moduleCode ?? "ALL");
+    const includeProof = search.includeProof === "true";
     const params: unknown[] = [auth.tenantId];
     const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    const proofFilter = includeProof
+      ? "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'"
+      : `AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(t.outcome, '') <> 'ACTIVE'
+         AND sc.detected_at >= latest.timestamp_utc - interval '${MAX_LIVE_PREDICTION_AGE_MINUTES} minutes'`;
     params.push(limit);
     const setups = await query(
       `SELECT
@@ -130,8 +175,7 @@ export async function setupRoutes(app: FastifyInstance) {
          AND sc.module_code IN ('orb_max_options', 'high_probability_strategy_2')
          AND sc.status <> 'TEST_CLEARED'
          AND sc.scenario <> 'QA_TEST_SIGNAL'
-         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         ${proofFilter}
          AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE' OR sc.detected_at >= now() - interval '24 hours')
          ${moduleFilter}
        ORDER BY
@@ -163,22 +207,32 @@ export async function setupRoutes(app: FastifyInstance) {
     }
     const predictions = setups.rows
       .map((row: any) => predictionSetupView(row, evaluationsBySetup.get(row.id) ?? []))
-      .filter((prediction) => prediction.probability >= MINIMUM_VISIBLE_PREDICTION_PROBABILITY);
+      .filter((prediction) =>
+        prediction.probability >= MINIMUM_VISIBLE_PREDICTION_PROBABILITY &&
+        (includeProof || isUpcomingPrediction(prediction))
+      );
     return { summary: summarizePredictions(predictions), predictions };
   });
 
   app.get("/api/setups/signals", async (request) => {
     const auth = requirePermission(request, "signals.view");
     if (!auth.tenantId) return { summary: emptySignalSummary(), signals: [] };
-    const search = request.query as { limit?: string; side?: string; moduleCode?: string };
+    const search = request.query as { limit?: string; side?: string; moduleCode?: string; includeProof?: string };
     const limit = Math.min(100, Math.max(1, Number(search.limit ?? 50)));
     const side = String(search.side ?? "ALL").toUpperCase();
     const moduleCode = String(search.moduleCode ?? "ALL");
+    const includeProof = search.includeProof === "true";
     const params: unknown[] = [auth.tenantId];
     const sideFilter = side === "BUY" || side === "SELL"
       ? `AND sc.direction = $${params.push(side === "BUY" ? "LONG" : "SHORT")}`
       : "";
     const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
+    const proofFilter = includeProof
+      ? "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'"
+      : `AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND t.id IS NOT NULL
+         AND t.outcome = 'ACTIVE'`;
     params.push(limit);
     const setups = await query(
       `SELECT
@@ -219,8 +273,7 @@ export async function setupRoutes(app: FastifyInstance) {
          AND sc.target_price IS NOT NULL
          AND sc.status IN ('LONG SETUP READY', 'SHORT SETUP READY', 'PAPER_TRADE_OPENED', 'TRADE_PLANNED')
          AND sc.scenario <> 'QA_TEST_SIGNAL'
-         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         ${proofFilter}
          AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE')
          ${sideFilter}
          ${moduleFilter}
@@ -256,13 +309,14 @@ export async function setupRoutes(app: FastifyInstance) {
     const setup = await query(
       `SELECT
          sc.*,
+         latest.close AS current_price,
          latest.timestamp_utc AS latest_candle_at,
          (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc) AS live_current
        FROM setup_candidates sc
        LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
        LEFT JOIN trades t ON t.trade_plan_id = tp.id AND t.outcome = 'ACTIVE'
        JOIN LATERAL (
-         SELECT c.timestamp_utc
+         SELECT c.timestamp_utc, c.close
          FROM candles c
          WHERE c.symbol = sc.symbol
            AND c.timeframe_minutes = 5
@@ -785,6 +839,151 @@ export async function setupRoutes(app: FastifyInstance) {
     return result;
   });
 
+  app.post("/api/module1/production-proof/run", async (request) => {
+    const auth = await requireTenantModule(request, "orb_max_options");
+    if (!auth.tenantId) throw new Error("Tenant context is required for Module 1 production proof.");
+    const session = await ensureTodaySession(auth.tenantId);
+    const version = await selectedStrategyVersion();
+    const replay = buildReplay("BUY", session);
+    const openingRange = buildOpeningRange(replay.openingRangeCandles, 0.01, 1);
+    const configuration = await getTenantOrbStrategyConfiguration(auth.tenantId, version.configuration_json);
+    const decision = evaluateSetup({
+      now: replay.currentCandle.timestampUtc,
+      symbol: session.symbol,
+      strategyVersionId: session.strategy_version_id,
+      session: {
+        id: session.id,
+        symbol: session.symbol,
+        strategyVersionId: session.strategy_version_id,
+        sessionDate: session.session_date,
+        sessionPreset: session.session_preset,
+        state: "WAITING_FOR_SETUP",
+        sessionStartAt: session.session_start_at,
+        openingRangeEndAt: session.opening_range_end_at,
+        signalWindowEndAt: session.signal_window_end_at,
+        dataStatus: "VALID"
+      },
+      openingRange,
+      currentCandle: replay.currentCandle,
+      previousCandles: replay.previousCandles,
+      spread: replay.currentCandle.spread ?? undefined,
+      newsStatus: "CLEAR",
+      riskStatus: "PERMITTED",
+      configuration: configuration as any
+    });
+    const setupResult = await query(
+      `INSERT INTO setup_candidates (
+        tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
+        expires_at, entry_price, stop_price, target_price, final_reason,
+        favorability_score, favorability_grade, favorability_reasons, scenario_flags
+      ) VALUES ($17,$1,$2,$3,'orb_max_options',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      RETURNING *`,
+      [
+        session.id,
+        session.strategy_version_id,
+        session.symbol,
+        decision.scenario,
+        decision.direction,
+        decision.status,
+        new Date().toISOString(),
+        session.signal_window_end_at,
+        decision.entryPrice ?? null,
+        decision.stopPrice ?? null,
+        decision.targetPrice ?? null,
+        `Module 1 production proof: ${decision.finalReason}`,
+        decision.favorabilityScore,
+        decision.favorabilityGrade,
+        JSON.stringify(["Production proof", ...decision.favorabilityReasons]),
+        JSON.stringify({
+          ...decision.scenarioFlags,
+          replay: true,
+          productionProof: true,
+          proofMode: true,
+          replayCase: "BUY",
+          replayExpectedScenario: replay.expectedScenario,
+          replayMatchedExpectedScenario: decision.scenario === replay.expectedScenario
+        }),
+        auth.tenantId
+      ]
+    );
+    const setup = setupResult.rows[0];
+    for (const evaluation of decision.evaluations) {
+      await query(
+        `INSERT INTO setup_rule_evaluations (
+          setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          setup.id,
+          evaluation.ruleCode,
+          evaluation.name,
+          evaluation.status,
+          evaluation.blocking,
+          evaluation.source,
+          evaluation.actualValue == null ? null : String(evaluation.actualValue),
+          evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
+          evaluation.explanation
+        ]
+      );
+    }
+    const trade = await openModuleReplayPaperTrade(setup, auth.tenantId, "MODULE1_PRODUCTION_PROOF");
+    const notificationResult = await query(
+      `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
+       VALUES ($1,$2,'MODULE1_PRODUCTION_PROOF',$3,$4,'HIGH',$5::jsonb)
+       ON CONFLICT (event_key) DO UPDATE SET
+         title = EXCLUDED.title,
+         body = EXCLUDED.body,
+         priority = EXCLUDED.priority,
+         data = EXCLUDED.data
+       RETURNING *`,
+      [
+        auth.tenantId,
+        `module1-production-proof-${setup.id}`,
+        "Module 1 production proof signal",
+        "ORB proof created an active paper trade with entry, SL, TP, journal, and Python brain approval.",
+        JSON.stringify({
+        moduleCode: "orb_max_options",
+        setupCandidateId: setup.id,
+        tradeId: trade?.id ?? null,
+        action: setup.direction === "LONG" ? "BUY" : "SELL",
+        direction: setup.direction,
+        entry: setup.entry_price,
+        stopLoss: setup.stop_price,
+        takeProfit: setup.target_price,
+        scenario: setup.scenario,
+        proofMode: true
+        })
+      ]
+    );
+    const notification = notificationResult.rows[0] ?? null;
+    let brain: unknown = null;
+    let brainError: string | null = null;
+    try {
+      brain = await runMainBrainPython(auth.tenantId, "orb_max_options", { proofMode: true });
+    } catch (error) {
+      brainError = error instanceof Error ? error.message : String(error);
+    }
+    const checks = {
+      setupCreated: Boolean(setup?.id),
+      entryReady: ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(String(setup?.status ?? "")),
+      tradeCreated: Boolean(trade?.id),
+      journalCreated: Boolean((await query("SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND setup_candidate_id = $2 LIMIT 1", [auth.tenantId, setup.id])).rows[0]),
+      notificationCreated: Boolean(notification),
+      pythonBrainRan: Boolean(brain) && !brainError
+    };
+    const finalStatus = Object.values(checks).every(Boolean) ? "PASS" : "WARN";
+    await query(
+      `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
+       VALUES ($1,'SYSTEM','MODULE1_PRODUCTION_PROOF','module1-production-proof',$2,$3,$4::jsonb)`,
+      [
+        finalStatus === "PASS" ? "INFO" : "WARN",
+        auth.tenantId,
+        `Module 1 production proof ${finalStatus}.`,
+        JSON.stringify({ checks, setupId: setup.id, tradeId: trade?.id ?? null, brain, brainError })
+      ]
+    );
+    return { status: finalStatus, moduleCode: "orb_max_options", setup, trade, notification, brain, brainError, checks };
+  });
+
   app.get("/api/module1/launch-rehearsals", async (request) => {
     const auth = await requireTenantModule(request, "orb_max_options");
     const rows = await query(
@@ -847,80 +1046,45 @@ export async function setupRoutes(app: FastifyInstance) {
 
   app.post("/api/dev/module2-replay", async (request) => {
     const auth = await requireTenantModule(request, "high_probability_strategy_2");
+    if (!auth.tenantId) throw new Error("Tenant context is required for Module 2 replay.");
     const body = request.body as { case?: Module2ReplayCase; openPaperTrade?: boolean };
-    const replayCase = body.case ?? "BUY";
-    const session = await ensureTodayModule2Session(auth.tenantId);
-    const replay = buildModule2Replay(replayCase, session);
-    const timestamp = new Date().toISOString();
-    const { rows } = await query(
-      `INSERT INTO setup_candidates (
-        tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
-        expires_at, entry_price, stop_price, target_price, final_reason,
-        favorability_score, favorability_grade, favorability_reasons, scenario_flags
-      ) VALUES ($17,$1,$2,$3,'high_probability_strategy_2',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      RETURNING *`,
+    return createModule2ReplayRecord(auth.tenantId, body.case ?? "BUY", Boolean(body.openPaperTrade), false);
+  });
+
+  app.post("/api/module2/production-proof/run", async (request) => {
+    const auth = await requireTenantModule(request, "high_probability_strategy_2");
+    if (!auth.tenantId) throw new Error("Tenant context is required for Module 2 production proof.");
+    const body = request.body as { direction?: "LONG" | "SHORT" };
+    const replayCase: Module2ReplayCase = body.direction === "SHORT" ? "SELL" : "MSS_RETEST";
+    const proof: any = await createModule2ReplayRecord(auth.tenantId, replayCase, true, true);
+    let brain: unknown = null;
+    let brainError: string | null = null;
+    try {
+      brain = await runMainBrainPython(auth.tenantId, "high_probability_strategy_2", { proofMode: true });
+    } catch (error) {
+      brainError = error instanceof Error ? error.message : String(error);
+    }
+    const checks = {
+      setupCreated: Boolean(proof.setup?.id),
+      strictVariant: proof.setup?.scenario_flags?.variantCode === "SWEEP_MSS_RETEST" || proof.setup?.scenario_flags?.module2Variant?.code === "SWEEP_MSS_RETEST",
+      entryReady: ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(String(proof.setup?.status ?? "")),
+      tradeCreated: Boolean(proof.trade?.id),
+      journalCreated: Boolean(proof.journal?.id),
+      notificationPayload: Boolean(proof.notification?.data?.entry || proof.notification?.data?.stopLoss || proof.notification?.data?.trade),
+      pythonBrainRan: Boolean(brain) && !brainError
+    };
+    const finalStatus = Object.values(checks).every(Boolean) ? "PASS" : "WARN";
+    await query(
+      `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
+       VALUES ($1,'SYSTEM','MODULE2_PRODUCTION_PROOF','module2-production-proof',$2,$3,$4::jsonb)`,
       [
-        session.id,
-        session.strategy_version_id,
-        session.symbol,
-        replay.scenario,
-        replay.direction,
-        replay.status,
-        timestamp,
-        session.signal_window_end_at,
-        replay.entryPrice ?? null,
-        replay.stopPrice ?? null,
-        replay.targetPrice ?? null,
-        `Module 2 replay ${replayCase}: ${replay.finalReason}`,
-        replay.score,
-        replay.grade,
-        JSON.stringify(replay.reasons),
-        JSON.stringify({
-          ...replay.flags,
-          replay: true,
-          replayCase,
-          replayExpectedScenario: replay.expectedScenario,
-          replayMatchedExpectedScenario: replay.scenario === replay.expectedScenario || replay.flags.state === replay.expectedScenario,
-          chartSnapshotCandles: replay.snapshotCandles
-        }),
-        auth.tenantId
+        finalStatus === "PASS" ? "INFO" : "WARN",
+        auth.tenantId,
+        `Module 2 production proof ${finalStatus}.`,
+        JSON.stringify({ checks, replayCase, setupId: proof.setup?.id ?? null, tradeId: proof.trade?.id ?? null, journalId: proof.journal?.id ?? null, brain, brainError })
       ]
     );
-    for (const evaluation of replay.evaluations) {
-      await query(
-        `INSERT INTO setup_rule_evaluations (
-          setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
-          rows[0].id,
-          evaluation.ruleCode,
-          evaluation.name,
-          evaluation.status,
-          evaluation.blocking,
-          evaluation.source,
-          evaluation.actualValue == null ? null : String(evaluation.actualValue),
-          evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
-          evaluation.explanation
-        ]
-      );
-    }
-    if (await canCreateTenantNotification(auth.tenantId)) {
-      await query(
-        `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-         VALUES ($4,$1,'MODULE2_REPLAY',$2,$3,'NORMAL')`,
-        [
-          `module2-replay-${rows[0].id}`,
-          `Module 2 replay: ${replay.status}`,
-          `${replayCase} produced ${replay.scenario}. No Twelve Data call, no real order.`,
-          auth.tenantId
-        ]
-      );
-    }
-    const trade = body.openPaperTrade && replay.status.includes("SETUP READY")
-      ? await openModule2ReplayPaperTrade(rows[0], auth.tenantId)
-      : null;
-    const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [rows[0].id]);
-    return { setup: { ...rows[0], evaluations: evaluations.rows }, trade, replayCase, testMode: true };
+    return { finalStatus, checks, ...proof, brain, brainError };
   });
 
   app.post("/api/dev/test-signal", async (request) => {
@@ -1332,6 +1496,7 @@ function predictionSetupView(row: any, evaluations: any[]) {
     entryRange: entryZone,
     stopLoss,
     target,
+    takeProfit: target,
     tp1,
     tp2,
     tp3,
@@ -1534,6 +1699,23 @@ function summarizePredictions(predictions: any[]) {
 
 function emptyPredictionSummary() {
   return { total: 0, buy: 0, sell: 0, validEntries: 0, watchlist: 0, averageProbability: 0, latestAt: null };
+}
+
+function isUpcomingPrediction(prediction: any) {
+  if (!prediction || prediction.action === "WAIT") return false;
+  if (prediction.trade?.status === "ACTIVE") return false;
+  const detectedAt = new Date(prediction.detectedAt).getTime();
+  const latestAt = prediction.currentPriceAt ? new Date(prediction.currentPriceAt).getTime() : Date.now();
+  if (!Number.isFinite(detectedAt) || !Number.isFinite(latestAt)) return false;
+  const ageMinutes = (latestAt - detectedAt) / 60000;
+  if (ageMinutes < -5 || ageMinutes > MAX_LIVE_PREDICTION_AGE_MINUTES) return false;
+  const currentPrice = numericOrNull(prediction.currentPrice);
+  const entry = numericOrNull(prediction.entry ?? prediction.entryRange?.midpoint);
+  if (currentPrice == null || entry == null) return false;
+  const stopLoss = numericOrNull(prediction.stopLoss);
+  const riskDistance = stopLoss == null ? 0 : Math.abs(entry - stopLoss);
+  const maxDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance * 1.5);
+  return Math.abs(currentPrice - entry) <= maxDistance;
 }
 
 function setupRecommendation(setup: any) {
@@ -1895,19 +2077,222 @@ function candle(timestampUtc: string, open: number, high: number, low: number, c
   return { timestampUtc, open, high, low, close, spread: 0.2 };
 }
 
+async function createModule2ReplayRecord(tenantId: string, replayCase: Module2ReplayCase, openPaperTrade: boolean, productionProof: boolean): Promise<any> {
+  const session = await ensureTodayModule2Session(tenantId);
+  const replay = buildModule2Replay(replayCase, session);
+  const timestamp = new Date().toISOString();
+  const { rows } = await query(
+    `INSERT INTO setup_candidates (
+      tenant_id, session_id, strategy_version_id, symbol, module_code, scenario, direction, status, detected_at,
+      expires_at, entry_price, stop_price, target_price, final_reason,
+      favorability_score, favorability_grade, favorability_reasons, scenario_flags
+    ) VALUES ($17,$1,$2,$3,'high_probability_strategy_2',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    RETURNING *`,
+    [
+      session.id,
+      session.strategy_version_id,
+      session.symbol,
+      replay.scenario,
+      replay.direction,
+      replay.status,
+      timestamp,
+      session.signal_window_end_at,
+      replay.entryPrice ?? null,
+      replay.stopPrice ?? null,
+      replay.targetPrice ?? null,
+      `${productionProof ? "Module 2 production proof" : "Module 2 replay"} ${replayCase}: ${replay.finalReason}`,
+      replay.score,
+      replay.grade,
+      JSON.stringify(replay.reasons),
+      JSON.stringify({
+        ...replay.flags,
+        replay: true,
+        productionProof,
+        replayCase,
+        replayExpectedScenario: replay.expectedScenario,
+        replayMatchedExpectedScenario: replay.scenario === replay.expectedScenario || replay.flags.state === replay.expectedScenario,
+        chartSnapshotCandles: replay.snapshotCandles
+      }),
+      tenantId
+    ]
+  );
+  const setup = rows[0];
+  for (const evaluation of replay.evaluations) {
+    await query(
+      `INSERT INTO setup_rule_evaluations (
+        setup_candidate_id, rule_code, name, status, blocking, source, actual_value, required_value, explanation
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        setup.id,
+        evaluation.ruleCode,
+        evaluation.name,
+        evaluation.status,
+        evaluation.blocking,
+        evaluation.source,
+        evaluation.actualValue == null ? null : String(evaluation.actualValue),
+        evaluation.requiredValue == null ? null : String(evaluation.requiredValue),
+        evaluation.explanation
+      ]
+    );
+  }
+  const trade = openPaperTrade && replay.status.includes("SETUP READY")
+    ? await openModule2ReplayPaperTrade(setup, tenantId)
+    : null;
+  let notification: any = null;
+  if (await canCreateTenantNotification(tenantId)) {
+    const eventType = productionProof ? "MODULE2_PRODUCTION_PROOF" : "MODULE2_REPLAY";
+    const notificationRows = await query(
+      `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+       ON CONFLICT (event_key) DO UPDATE SET
+         title = EXCLUDED.title,
+         body = EXCLUDED.body,
+         priority = EXCLUDED.priority,
+         data = EXCLUDED.data,
+         created_at = now()
+       RETURNING *`,
+      [
+        tenantId,
+        `${eventType.toLowerCase()}-${setup.id}`,
+        eventType,
+        productionProof ? `Module 2 proof: ${replay.status}` : `Module 2 replay: ${replay.status}`,
+        `${replayCase} produced ${replay.scenario}. No Twelve Data call, no real order.`,
+        replay.status.includes("SETUP READY") ? "HIGH" : "NORMAL",
+        JSON.stringify(module2ReplayNotificationData(setup, replay, trade, productionProof))
+      ]
+    );
+    notification = notificationRows.rows[0] ?? null;
+  }
+  if (productionProof) {
+    await upsertModule2ProofLearningReview(tenantId, setup, replay, trade);
+  }
+  const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [setup.id]);
+  const journal = await query("SELECT * FROM journal_entries WHERE setup_candidate_id = $1 ORDER BY created_at DESC LIMIT 1", [setup.id]);
+  const refreshedSetup = await query("SELECT * FROM setup_candidates WHERE id = $1", [setup.id]);
+  return {
+    setup: { ...(refreshedSetup.rows[0] ?? setup), evaluations: evaluations.rows },
+    trade,
+    notification,
+    journal: journal.rows[0] ?? null,
+    replayCase,
+    testMode: true,
+    productionProof
+  };
+}
+
+async function upsertModule2ProofLearningReview(tenantId: string, setup: any, replay: ReturnType<typeof buildModule2Replay>, trade: any) {
+  await query(
+    `INSERT INTO module_learning_reviews (
+      tenant_id, module_code, status, title, rationale, proposed_change, guardrails,
+      source_key, review_type, classification, evidence
+    ) VALUES (
+      $1,
+      'high_probability_strategy_2',
+      'PENDING',
+      'Module 2 production proof replay review',
+      $2,
+      $3::jsonb,
+      $4::jsonb,
+      $5,
+      'LEARNING_RECOMMENDATION',
+      'PENDING_CLASSIFICATION',
+      $6::jsonb
+    )
+    ON CONFLICT (tenant_id, module_code, source_key) WHERE source_key IS NOT NULL DO UPDATE SET
+      status = 'PENDING',
+      rationale = EXCLUDED.rationale,
+      proposed_change = EXCLUDED.proposed_change,
+      guardrails = EXCLUDED.guardrails,
+      classification = EXCLUDED.classification,
+      evidence = EXCLUDED.evidence,
+      created_at = now()`,
+    [
+      tenantId,
+      "Production proof replay verified the strict Sweep + MSS + Retest chain. Review this artifact before changing live thresholds.",
+      JSON.stringify({
+        action: "KEEP_CURRENT_PRODUCTION_PROFILE",
+        moduleCode: "high_probability_strategy_2",
+        variantCode: replay.flags.variantCode,
+        minimumSignalScore: 80,
+        note: "This proof confirms wiring; real threshold changes still require backtest and forward-test evidence."
+      }),
+      JSON.stringify([
+        "Do not approve threshold changes from proof replay alone.",
+        "Require saved-candle backtest and live forward evidence before tuning.",
+        "Keep broker execution disabled; paper trading only."
+      ]),
+      `module2-production-proof-${setup.id}`,
+      JSON.stringify({
+        setupId: setup.id,
+        tradeId: trade?.id ?? null,
+        scenario: replay.scenario,
+        direction: replay.direction,
+        entry: replay.entryPrice,
+        stopLoss: replay.stopPrice,
+        target: replay.targetPrice,
+        confidence: replay.score,
+        grade: replay.grade,
+        variant: replay.flags.module2Variant,
+        mandatoryRules: MODULE2_STRICT_REQUIRED_RULES,
+        snapshotCandles: replay.snapshotCandles,
+        finalReason: replay.finalReason
+      })
+    ]
+  );
+}
+
+function module2ReplayNotificationData(setup: any, replay: ReturnType<typeof buildModule2Replay>, trade: any, productionProof: boolean) {
+  const direction = replay.direction === "SHORT" ? "SELL" : replay.direction === "LONG" ? "BUY" : "WAIT";
+  return {
+    kind: productionProof ? "MODULE2_PRODUCTION_PROOF" : "MODULE2_REPLAY",
+    moduleCode: "high_probability_strategy_2",
+    moduleName: "Module 2: Ultimate Liquidity Sweep + MSS + Retest",
+    strategy: "Liquidity Sweep + MSS + Retest",
+    variantCode: replay.flags.variantCode,
+    direction,
+    action: direction,
+    status: replay.status,
+    scenario: replay.scenario,
+    confidence: replay.score,
+    grade: replay.grade,
+    entry: replay.entryPrice,
+    stopLoss: replay.stopPrice,
+    target: replay.targetPrice,
+    takeProfit: replay.targetPrice,
+    rewardToRisk: replay.flags.riskReward,
+    setupCandidateId: setup.id,
+    tradeId: trade?.id ?? null,
+    trade: trade ? {
+      id: trade.id,
+      outcome: trade.outcome,
+      openedAt: trade.opened_at,
+      entry: trade.actual_entry,
+      stopLoss: trade.actual_stop,
+      target: trade.actual_target
+    } : null,
+    liquidity: replay.flags.sweep?.level ?? null,
+    sweep: replay.flags.sweep ?? null,
+    displacement: replay.flags.displacement ?? null,
+    bos: replay.flags.bos ?? null,
+    entryZone: replay.flags.entryZone ?? null,
+    mandatoryRules: MODULE2_STRICT_REQUIRED_RULES,
+    finalReason: replay.finalReason
+  };
+}
+
 function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
   const base = new Date(session.session_start_at).getTime();
   const at = (minutesAfterStart: number) => new Date(base + minutesAfterStart * 60_000).toISOString();
   const direction = replayCase === "SELL" ? "SHORT" : "LONG";
   const isShort = direction === "SHORT";
   const entryVariantByCase: Partial<Record<Module2ReplayCase, { code: string; name: string; version: string; paperEligible: boolean; approvalStatus: string; category: string }>> = {
-    BUY: { code: "SWEEP_MSS_DISPLACEMENT_RETEST", name: "Sweep + MSS + Displacement + Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
-    SELL: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
-    DISPLACEMENT_RETEST: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
-    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
-    MSS_RETEST: { code: "SWEEP_MSS_RETEST", name: "Sweep + MSS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
-    MSS_DISPLACEMENT_RETEST: { code: "SWEEP_MSS_DISPLACEMENT_RETEST", name: "Sweep + MSS + Displacement + Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
-    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "Sweep + EMA Alignment", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    BUY: MODULE2_STRICT_VARIANT,
+    SELL: MODULE2_STRICT_VARIANT,
+    DISPLACEMENT_RETEST: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    MSS_RETEST: MODULE2_STRICT_VARIANT,
+    MSS_DISPLACEMENT_RETEST: MODULE2_STRICT_VARIANT,
+    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "Sweep + EMA Alignment", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
     SWEEP_ONLY: { code: "SWEEP_CLOSE_BACK_INSIDE", name: "Sweep + Close Back Inside", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
     SWEEP_NO_CONFIRMATION: { code: "SWEEP_NO_CONFIRMATION", name: "Sweep + No Confirmation", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
     SWEEP_ENGULFING: { code: "SWEEP_ENGULFING", name: "Sweep + Engulfing", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
@@ -1932,11 +2317,11 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
     SWEEP_BOS: "WAITING_FOR_RETRACE",
     SWEEP_MSS: "WAITING_FOR_RETRACE",
     SWEEP_VOLUME_EXPANSION: "WAITING_FOR_RETRACE",
-    DISPLACEMENT_RETEST: "SIGNAL_ACTIVE",
-    BOS_RETEST: "SIGNAL_ACTIVE",
+    DISPLACEMENT_RETEST: "WAITING_FOR_MSS_RETEST",
+    BOS_RETEST: "WAITING_FOR_MSS",
     MSS_RETEST: "SIGNAL_ACTIVE",
     MSS_DISPLACEMENT_RETEST: "SIGNAL_ACTIVE",
-    EMA_ALIGNED_SWEEP: "SIGNAL_ACTIVE",
+    EMA_ALIGNED_SWEEP: "WAITING_FOR_MSS_RETEST",
     SWEEP_NO_DISPLACEMENT: "WAITING_FOR_DISPLACEMENT",
     DISPLACEMENT_NO_BOS: "WAITING_FOR_BOS",
     BOS_NO_RETRACE: "WAITING_FOR_RETRACE",
@@ -1946,7 +2331,7 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
   const state = failureStateByCase[replayCase];
   const signal = state === "SIGNAL_ACTIVE";
   const scenario = signal
-    ? (isShort ? "NY_LIQUIDITY_SWEEP_BOS_SELL" : "NY_LIQUIDITY_SWEEP_BOS_BUY")
+    ? (isShort ? "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL" : "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY")
     : state;
   const status = signal
     ? (isShort ? "SHORT SETUP READY" : "LONG SETUP READY")
@@ -1993,6 +2378,22 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
     },
     riskReward: Math.abs(target - entry) / Math.abs(entry - stop),
     invalidation: replayCase === "INVALIDATED_SETUP" ? { time: at(50), reason: "Price closed through the stop side of the entry zone before confirmation." } : null,
+    marketContext: {
+      dataHealthy: true,
+      marketContextReady: true,
+      regime: isShort ? "BEARISH_REVERSAL_AFTER_BUY_SIDE_SWEEP" : "BULLISH_REVERSAL_AFTER_SELL_SIDE_SWEEP",
+      session: "NEW_YORK",
+      executionTimeframeMinutes: 5,
+      contextTimeframeMinutes: 15
+    },
+    riskEngine: {
+      riskOk: signal,
+      spreadOk: true,
+      newsOk: true,
+      rewardToRisk: Math.abs(target - entry) / Math.abs(entry - stop),
+      stopSizeOk: true,
+      maxActivePositionsOk: true
+    },
     module2Variant: variant ?? null,
     variantCode: variant?.code ?? null,
     variantVersion: variant?.version ?? null,
@@ -2029,29 +2430,37 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
 }
 
 function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LONG" | "SHORT") {
+  const strictSignalCases = new Set<Module2ReplayCase>(["BUY", "SELL", "MSS_RETEST", "MSS_DISPLACEMENT_RETEST"]);
   const passUntil: Record<Module2ReplayCase, string[]> = {
-    BUY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    SELL: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    SWEEP_ONLY: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
-    SWEEP_NO_CONFIRMATION: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK"],
-    SWEEP_ENGULFING: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_ENGULFING"],
-    SWEEP_BOS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    SWEEP_MSS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    SWEEP_VOLUME_EXPANSION: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_VOLUME_EXPANSION"],
-    DISPLACEMENT_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    BOS_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    MSS_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    MSS_DISPLACEMENT_RETEST: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    EMA_ALIGNED_SWEEP: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"],
-    SWEEP_NO_DISPLACEMENT: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
-    DISPLACEMENT_NO_BOS: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED"],
-    BOS_NO_RETRACE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    INVALIDATED_SETUP: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    LOW_SCORE_NO_TRADE: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS"]
+    BUY: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
+    SELL: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, "CONFIRM_ORDER_BLOCK_RETEST", ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
+    SWEEP_ONLY: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
+    SWEEP_NO_CONFIRMATION: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK"],
+    SWEEP_ENGULFING: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_ENGULFING"],
+    SWEEP_BOS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    SWEEP_MSS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    SWEEP_VOLUME_EXPANSION: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_VOLUME_EXPANSION"],
+    DISPLACEMENT_RETEST: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"],
+    BOS_RETEST: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ORDER_BLOCK_RETEST"],
+    MSS_RETEST: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
+    MSS_DISPLACEMENT_RETEST: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
+    EMA_ALIGNED_SWEEP: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP"],
+    SWEEP_NO_DISPLACEMENT: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
+    DISPLACEMENT_NO_BOS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED"],
+    BOS_NO_RETRACE: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    INVALIDATED_SETUP: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
+    LOW_SCORE_NO_TRADE: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_FRESH_FVG", "CONFIRM_ENTRY_CANDLE", "QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "RISK_OK"]
   };
   const labels = [
+    ["DATA_HEALTHY", "Data health passed", "XAUUSD candle history is fresh enough for the setup engine."],
+    ["MARKET_CONTEXT_READY", "Market context ready", "Session highs/lows, bias, and liquidity context are available."],
+    ["MARKET_REGIME_CLASSIFIED", "Market regime classified", "The engine classified the current sweep/reversal regime."],
     ["NY_SESSION_ACTIVE", "New York session active", "Current candle is inside the configured New York sweep window."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Session trade limit allows a paper trade."],
+    ["ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", "No newer conflicting setup is blocking this candidate."],
+    ["NO_ACTIVE_TRADE_CONFLICT", "No active trade conflict", "No active paper trade already occupies Module 2 for this tenant."],
+    ["RISK_LIMITS_CLEAR", "Account risk limits clear", "Daily/weekly/consecutive-loss limits allow a new paper trade."],
+    ["MANUAL_CONFIRMATION_COMPLETED", "Automation gate clear", "Manual confirmation is not required for the production paper profile."],
     ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "A valid PDH/PDL, Asian, London, or equal high/low level was selected."],
     ["LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", "Price swept mapped liquidity and closed back through the level."],
     ["SWEEP_REJECTION_CONFIRMED", "Sweep rejection quality confirmed", "The sweep rejected or quickly reclaimed the liquidity level."],
@@ -2060,6 +2469,7 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["DISPLACEMENT_CONFIRMED", `${direction === "LONG" ? "Bullish" : "Bearish"} displacement confirmed`, "A strong directional displacement candle formed after the sweep."],
     ["PROTECTED_POINT_CONFIDENCE", "Protected structure point confirmed", "The setup has a medium/high confidence protected high or protected low."],
     ["BOS_CHOCH_CONFIRMED", "BOS or CHoCH confirmed by close", "Candle body closed beyond the selected internal structure point."],
+    ["MSS_STRENGTH", "MSS strength confirmed", "The market-structure shift is strong enough to qualify as the production reversal signal."],
     ["ENTRY_ZONE_READY", "Fresh entry zone ready", "A fresh FVG/order-block entry zone exists after BOS/CHoCH."],
     ["ENTRY_ZONE_RETRACE", "Price retraced into entry zone", "Price returned into the fresh entry zone before the confirmation candle."],
     ["CONFIRM_EMA_200", "Confirmation: 200 EMA alignment", "200 EMA confirmation matched."],
@@ -2077,15 +2487,18 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["QUALITY_STOP_SIZE", "Quality: stop size", "Stop-size quality filter passed."],
     ["QUALITY_FRESH_SETUP", "Quality: fresh setup", "Fresh setup quality filter passed."],
     ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters matched."],
+    ["DIRECTIONAL_CONFLICT_CLEAR", "Directional conflict clear", "The selected direction is not contradicted by higher-priority context."],
+    ["RISK_OK", "Risk engine passed", "Entry, SL, TP, and RR are complete and inside risk limits."],
     ["VARIANT_SELECTED", "Entry-grade variant selected", "The best valid Module 2 strategy variant was selected for paper-entry gating."],
     ["SIGNAL_SCORE", "Minimum signal score", "Final Module 2 signal score reached the configured threshold."]
   ];
   const passed = new Set(passUntil[replayCase]);
+  const blockingRules = new Set([...MODULE2_STRICT_REQUIRED_RULES, "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"]);
   return labels.map(([ruleCode, name, explanation]) => ({
     ruleCode,
     name,
-    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode) ? "FAIL" : "WAIT",
-    blocking: ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT", "VARIANT_SELECTED", "SIGNAL_SCORE"].includes(ruleCode),
+    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode) ? "FAIL" : strictSignalCases.has(replayCase) ? "FAIL" : "WAIT",
+    blocking: blockingRules.has(ruleCode),
     source: "MODULE2_REPLAY",
     actualValue: passed.has(ruleCode) ? "matched" : "not matched",
     requiredValue: "matched",
@@ -2103,11 +2516,11 @@ function module2ReplayReason(replayCase: Module2ReplayCase) {
     SWEEP_BOS: "Sweep and BOS are visible, but the setup is research-only until a clean retest and confirmation candle appear.",
     SWEEP_MSS: "Sweep and market-structure shift are visible, but the setup is research-only until a clean retest and confirmation candle appear.",
     SWEEP_VOLUME_EXPANSION: "Sweep and provider volume expansion were recorded, but volume is record-only until backtesting proves it is reliable.",
-    DISPLACEMENT_RETEST: "Sweep, displacement, retest, confirmation, and quality filters validate a paper-entry variant.",
-    BOS_RETEST: "Sweep, BOS, retest, confirmation, and quality filters validate a paper-entry variant.",
-    MSS_RETEST: "Sweep, reversal MSS, retest, confirmation, and quality filters validate a paper-entry variant.",
-    MSS_DISPLACEMENT_RETEST: "Sweep, displacement, reversal MSS, retest, confirmation, and quality filters validate the highest-priority paper-entry variant.",
-    EMA_ALIGNED_SWEEP: "Sweep is aligned with 15M bias and EMA/VWAP confirmation, validating the EMA-aligned paper-entry variant.",
+    DISPLACEMENT_RETEST: "Sweep and displacement retest are visible, but production waits for MSS strength before paper trading.",
+    BOS_RETEST: "Sweep and BOS retest are visible, but production waits for reversal MSS before paper trading.",
+    MSS_RETEST: "Sweep, reversal MSS, retest, confirmation, and quality filters validate the production paper-entry profile.",
+    MSS_DISPLACEMENT_RETEST: "Sweep, displacement, reversal MSS, retest, confirmation, and quality filters validate the same production MSS retest profile with stronger optional evidence.",
+    EMA_ALIGNED_SWEEP: "Sweep is aligned with EMA/VWAP context, but production waits for MSS retest before paper trading.",
     SWEEP_NO_DISPLACEMENT: "Liquidity was swept, but the required displacement candle did not appear.",
     DISPLACEMENT_NO_BOS: "Sweep and displacement appeared, but structure was not broken by candle close.",
     BOS_NO_RETRACE: "BOS confirmed and the zone exists, but price has not retraced into the entry zone.",
@@ -2129,14 +2542,14 @@ function module2ReplayReasons(replayCase: Module2ReplayCase, score: number) {
 function module2ReplayQaSummary(replay: ReturnType<typeof buildModule2Replay>, testCase: (typeof MODULE2_QA_CASES)[number]) {
   const evaluations = replay.evaluations;
   const statusByRule = new Map(evaluations.map((row) => [row.ruleCode, row.status]));
-  const hardRuleCodes = ["NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"];
+  const hardRuleCodes = [...MODULE2_STRICT_REQUIRED_RULES];
   const hardRulesPassed = hardRuleCodes.every((code) => statusByRule.get(code) === "PASS");
   const entryTriggerPassed = statusByRule.get("CONFIRM_ENTRY_CANDLE") === "PASS";
-  const confirmationCount = ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE"]
+  const confirmationCount = [...MODULE2_CONFIRMATION_RULES, "CONFIRM_ORDER_BLOCK_RETEST"]
     .filter((code) => statusByRule.get(code) === "PASS").length;
-  const qualityCount = ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP"]
+  const qualityCount = [...MODULE2_QUALITY_RULES]
     .filter((code) => statusByRule.get(code) === "PASS").length;
-  const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "VARIANT_SELECTED", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
+  const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
   const paperEligible = replay.status.includes("SETUP READY") && replay.entryPrice != null && replay.stopPrice != null && replay.targetPrice != null;
   const scenarioMatched = replay.scenario === testCase.expected || replay.flags.state === testCase.expected;
   const statusMatched = replay.status === testCase.expectedStatus;

@@ -436,7 +436,6 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     priceLinesRef.current.forEach((line) => candleSeriesRef.current?.removePriceLine(line as never));
     priceLinesRef.current = [];
     const defaultLines = [
-      ...effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index)),
       { title: "Entry", price: numberValue(activeEvidenceSetup?.entry_price), color: "#16a46c" },
       { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
@@ -1011,6 +1010,23 @@ function buildPositionedOverlays(input: {
       height: 2
     });
   };
+  const addTimedHorizontalLine = (id: string, label: string, tone: PositionedOverlay["tone"], startAt: string | null | undefined, price: unknown) => {
+    const coordinate = priceToCoordinate(price);
+    const startCoordinate = timeToCoordinate(startAt);
+    if (coordinate == null) return;
+    if (coordinate < 0 || coordinate > input.container!.clientHeight) return;
+    const left = startCoordinate == null ? 0 : Math.max(0, Math.min(input.container!.clientWidth, startCoordinate));
+    if (input.container!.clientWidth - left < 2) return;
+    overlays.push({
+      id,
+      label,
+      tone,
+      left,
+      top: Math.max(0, coordinate - 1),
+      width: input.container!.clientWidth - left,
+      height: 2
+    });
+  };
 
   const visibleCandles = input.candles.filter((candle) => {
     const x = timeToCoordinate(candle.timestampUtc);
@@ -1022,9 +1038,9 @@ function buildPositionedOverlays(input: {
     const ranges = input.orbRanges?.length ? input.orbRanges : normalizeOrbRanges([], input.openingRange);
     ranges.forEach((range, index) => {
       const prefix = range.shortLabel ?? "ORB";
-      addHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.high);
-      addHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.midpoint);
-      addHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.low);
+      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.session_start_at, range.high);
+      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.session_start_at, range.midpoint);
+      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.session_start_at, range.low);
     });
     return overlays;
   }

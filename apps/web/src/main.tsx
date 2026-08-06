@@ -128,6 +128,13 @@ function App() {
     return null;
   }
 
+  async function clearRouteMismatchedSession(message: string) {
+    clearAuthToken();
+    setUser(null);
+    setMessage(message);
+    await api<any>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => undefined);
+  }
+
   function setActiveModuleCode(moduleCode: string) {
     activeModuleCodeRef.current = moduleCode;
     window.localStorage.setItem("orb_active_module_code", moduleCode);
@@ -230,9 +237,7 @@ function App() {
       if (result?.user) {
         const routeError = routeAccountError(result.user);
         if (routeError) {
-          clearAuthToken();
-          setUser(null);
-          setMessage(routeError);
+          await clearRouteMismatchedSession(routeError);
           setAuthChecked(true);
           return;
         }
@@ -303,9 +308,7 @@ function App() {
         .then((result) => {
           const routeError = routeAccountError(result.user);
           if (routeError) {
-            clearAuthToken();
-            setUser(null);
-            setMessage(routeError);
+            clearRouteMismatchedSession(routeError).catch(() => undefined);
             return;
           }
           setAuthToken(result.token);
@@ -392,7 +395,7 @@ function App() {
     });
     const routeError = routeAccountError(result.user);
     if (routeError) {
-      clearAuthToken();
+      await clearRouteMismatchedSession(routeError);
       throw new Error(routeError);
     }
     setAuthToken(result.token);
@@ -1155,6 +1158,7 @@ function App() {
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 session={state.session}
               />
+              {selectedModuleCode === "high_probability_strategy_2" ? <Module2CandidateMonitorPanel setup={currentModuleSetup} trade={currentModuleTrade} /> : null}
               {selectedModuleCode === "high_probability_strategy_2" ? <Module2LiveEvidencePanel setup={currentModuleSetup} /> : null}
             </aside>
           </section>
@@ -3265,6 +3269,111 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
 
 function firstMissingRule(rows: any[]) {
   return rows.find((row: any) => row.status !== "PASS" && (row.blocking || row.requiredForEntry || row.required_for_entry)) ?? null;
+}
+
+function firstBlockingEvaluation(rows: any[]) {
+  return rows.find((row: any) => row.status !== "PASS" && (row.blocking || row.requiredForEntry || row.required_for_entry)) ?? null;
+}
+
+function module2MonitorStages(setup: any, evaluations: any[]) {
+  const flags = setup?.scenario_flags ?? {};
+  const sweep = flags.sweep ?? {};
+  const bos = flags.bos ?? {};
+  const zone = flags.entryZone ?? {};
+  const hasPassed = (codes: string[]) => evaluations.some((row: any) => {
+    const code = row.rule_code ?? row.ruleCode;
+    return codes.includes(code) && row.status === "PASS";
+  });
+  const stageStatus = (codes: string[]) => hasPassed(codes) ? "PASS" : "WAIT";
+
+  return [
+    {
+      label: "Liquidity",
+      status: stageStatus(["LIQUIDITY_LEVEL_IDENTIFIED"]),
+      value: sweep?.level?.price == null ? "--" : `${formatScenario(sweep.level.type)} ${formatPriceValue(sweep.level.price)}`
+    },
+    {
+      label: "Sweep",
+      status: stageStatus(["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"]),
+      value: formatNepalTime(sweep?.closedBackAt ?? sweep?.sweptAt ?? sweep?.candle?.timestampUtc)
+    },
+    {
+      label: "MSS",
+      status: stageStatus(["BOS_CHOCH_CONFIRMED", "MSS_STRENGTH"]),
+      value: bos?.level == null ? "--" : formatPriceValue(bos.level)
+    },
+    {
+      label: "Retest",
+      status: stageStatus(["ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"]),
+      value: zone?.low == null ? "--" : `${zone.kind ?? "Zone"} ${formatPriceValue(zone.low)}-${formatPriceValue(zone.high)}`
+    },
+    {
+      label: "Risk",
+      status: stageStatus(["RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"]),
+      value: setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100`
+    }
+  ];
+}
+
+function Module2CandidateMonitorPanel({ setup, trade }: { setup?: any; trade?: any }) {
+  const flags = setup?.scenario_flags ?? {};
+  const evaluations = Array.isArray(setup?.evaluations) ? setup.evaluations : [];
+  const currentPrice = setup?.current_price == null ? null : Number(setup.current_price);
+  const entry = setup?.entry_price == null ? null : Number(setup.entry_price);
+  const stop = setup?.stop_price == null ? null : Number(setup.stop_price);
+  const latestAt = setup?.latest_candle_at ?? setup?.current_price_at;
+  const detectedAt = setup?.detected_at;
+  const ageMinutes = detectedAt && latestAt
+    ? Math.max(0, Math.round((new Date(latestAt).getTime() - new Date(detectedAt).getTime()) / 60000))
+    : null;
+  const entryDistance = currentPrice != null && entry != null ? Math.abs(currentPrice - entry) : null;
+  const riskDistance = entry != null && stop != null ? Math.abs(entry - stop) : 0;
+  const probability = Number(setup?.favorability_score ?? flags.confidence ?? 0);
+  const output = module2OutputState(setup, undefined);
+  const blocker = firstBlockingEvaluation(evaluations);
+  const stages = module2MonitorStages(setup, evaluations);
+  const predictionReady = probability >= 80
+    && ageMinutes != null
+    && ageMinutes <= 90
+    && entryDistance != null
+    && entryDistance <= Math.max(10, riskDistance * 1.5);
+  const signalReady = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(String(setup?.status ?? ""));
+  const paperReady = trade?.outcome === "ACTIVE" || setup?.status === "PAPER_TRADE_OPENED";
+  return (
+    <Panel icon={<ShieldCheck />} title="Live Candidate Monitor">
+      <div className={`module2-live-hero ${paperReady || signalReady ? "good" : "warn"}`}>
+        <div>
+          <span>Candidate</span>
+          <strong>{setup ? output : "WAIT"}</strong>
+        </div>
+        <div>
+          <span>Chance</span>
+          <strong>{Number.isFinite(probability) && probability > 0 ? `${Math.round(probability)}%` : "--"}</strong>
+        </div>
+      </div>
+      <div className="module2-live-metrics">
+        <Metric label="Prediction" value={predictionReady ? "80%+ RECENT" : "WAIT"} />
+        <Metric label="BUY/SELL" value={paperReady ? "PAPER ACTIVE" : signalReady ? "SIGNAL READY" : "WAIT"} />
+        <Metric label="Current" value={currentPrice == null ? "--" : formatPriceValue(currentPrice)} />
+        <Metric label="Entry" value={entry == null ? "--" : formatPriceValue(entry)} />
+        <Metric label="Distance" value={entryDistance == null ? "--" : formatPriceValue(entryDistance)} />
+        <Metric label="Age" value={ageMinutes == null ? "--" : `${ageMinutes}m`} />
+      </div>
+      <div className="module2-live-missing">
+        <span>Why no trade?</span>
+        <strong>{paperReady ? "Paper trade is active." : signalReady ? "Signal is ready." : blocker?.name ?? setup?.final_reason ?? "Waiting for liquidity sweep + MSS retest evidence."}</strong>
+        <em>{blocker?.explanation ?? "BUY & SELL cards appear only after a valid setup creates an active paper trade."}</em>
+      </div>
+      <div className="module2-sequence">
+        {stages.map((stage) => (
+          <div className={`module2-step ${stage.status === "PASS" ? "good" : "warn"}`} key={stage.label}>
+            <span>{stage.label}</span>
+            <strong>{stage.value}</strong>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
 }
 
 function Module2LiveEvidencePanel({ setup }: { setup?: any }) {

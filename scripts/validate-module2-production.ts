@@ -29,6 +29,7 @@ try {
   await validateCandles();
   await validateLatestBacktest(tenant?.id ?? null);
   await validateSetupChain(tenant?.id ?? null);
+  await validateProductionProofReplay(tenant?.id ?? null);
   await validateLearningReviews(tenant?.id ?? null);
 
   const summary = summarize(checks);
@@ -513,6 +514,92 @@ async function validateLearningReviews(tenantId: string | null) {
     status: Number(row?.total ?? 0) > 0 ? "PASS" : "WARN",
     detail: `${row?.total ?? 0} review(s), ${row?.missed_trade_reviews ?? 0} missed-trade review(s), ${row?.pending ?? 0} pending.`,
     evidence: row
+  });
+}
+
+async function validateProductionProofReplay(tenantId: string | null) {
+  if (!tenantId) return;
+  const row = await one(
+    `SELECT
+       sc.id,
+       sc.status,
+       sc.scenario,
+       sc.direction,
+       sc.favorability_score,
+       sc.entry_price,
+       sc.stop_price,
+       sc.target_price,
+       sc.scenario_flags,
+       tp.id AS trade_plan_id,
+       t.id AS trade_id,
+       t.outcome AS trade_outcome,
+       n.id AS notification_id,
+       n.data AS notification_data,
+       j.id AS journal_id,
+       brain.id AS brain_event_id,
+       brain.metadata AS brain_metadata
+     FROM setup_candidates sc
+     LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+     LEFT JOIN trades t ON t.trade_plan_id = tp.id
+     LEFT JOIN notifications n ON n.tenant_id = sc.tenant_id
+       AND n.event_type = 'MODULE2_PRODUCTION_PROOF'
+       AND n.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
+     LEFT JOIN journal_entries j ON j.setup_candidate_id = sc.id
+     LEFT JOIN LATERAL (
+       SELECT id, metadata
+       FROM operational_events oe
+       WHERE oe.tenant_id = sc.tenant_id
+         AND oe.event_type = 'MAIN_BRAIN_DECISION'
+         AND oe.metadata->>'moduleCode' = $2
+         AND oe.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
+       ORDER BY oe.created_at DESC
+       LIMIT 1
+     ) brain ON true
+     WHERE sc.tenant_id = $1
+       AND sc.module_code = $2
+       AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'
+     ORDER BY sc.detected_at DESC
+     LIMIT 1`,
+    [tenantId, MODULE_CODE]
+  );
+  if (!row) {
+    checks.push({
+      name: "Module 2 production proof replay",
+      status: "WARN",
+      detail: "No production-proof replay has been run yet. Run POST /api/module2/production-proof/run from a subscriber session to verify setup -> paper trade -> journal -> notification -> Python brain."
+    });
+    return;
+  }
+  const data = row.notification_data ?? {};
+  const flags = row.scenario_flags ?? {};
+  const variantCode = flags.variantCode ?? flags.module2Variant?.code ?? null;
+  const failures = [
+    variantCode === "SWEEP_MSS_RETEST" ? null : "strict variant is not SWEEP_MSS_RETEST",
+    ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(row.status) ? null : "setup is not entry-ready",
+    row.entry_price != null && row.stop_price != null && row.target_price != null ? null : "entry, SL, or TP missing",
+    row.trade_plan_id ? null : "trade plan missing",
+    row.trade_id ? null : "paper trade missing",
+    row.journal_id ? null : "journal row missing",
+    row.notification_id ? null : "notification missing",
+    data.entry != null && data.stopLoss != null && (data.target != null || data.takeProfit != null) ? null : "notification payload missing entry details",
+    row.brain_event_id ? null : "Python brain proof decision missing"
+  ].filter(Boolean);
+  checks.push({
+    name: "Module 2 production proof replay",
+    status: failures.length === 0 ? "PASS" : "FAIL",
+    detail: failures.length === 0
+      ? "Latest production-proof replay completed the setup, BUY/SELL details, paper trade, journal, notification payload, and Python brain chain."
+      : `Production-proof replay incomplete: ${failures.join("; ")}.`,
+    evidence: {
+      setup: setupEvidence(row),
+      variantCode,
+      tradeId: row.trade_id,
+      journalId: row.journal_id,
+      notificationId: row.notification_id,
+      notificationData: data,
+      brainEventId: row.brain_event_id,
+      brainDecisionType: row.brain_metadata?.decisionType ?? null
+    }
   });
 }
 

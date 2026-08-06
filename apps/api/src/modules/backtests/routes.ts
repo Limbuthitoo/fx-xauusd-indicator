@@ -23,20 +23,22 @@ type BacktestTrade = {
 
 export async function backtestRoutes(app: FastifyInstance) {
   app.post("/api/backtests/memory-cache/run", async (request) => {
-    const body = request.body as { symbol?: string; timeframeMinutes?: number; moduleCode?: string };
+    const body = request.body as { symbol?: string; timeframeMinutes?: number; moduleCode?: string; limit?: number };
     const moduleCode = body.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
     const symbol = body.symbol ?? "XAUUSD";
     const timeframe = moduleCode === "orb_max_options" || moduleCode === "high_probability_strategy_2" ? 5 : body.timeframeMinutes ?? 5;
+    const candleLimit = Math.min(5000, Math.max(120, Number(body.limit ?? (moduleCode === "high_probability_strategy_2" ? 900 : 5000))));
     const version = await selectedStrategyVersion(moduleCode);
-    const candles = (await query(
+    const candleRows = (await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
        WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'
-       ORDER BY timestamp_utc ASC
-       LIMIT 5000`,
-      [symbol, timeframe]
-    )).rows.map((row: any) => ({
+       ORDER BY timestamp_utc DESC
+       LIMIT $3`,
+      [symbol, timeframe, candleLimit]
+    )).rows.reverse();
+    const candles = candleRows.map((row: any) => ({
       timestampUtc: new Date(row.timestamp_utc).toISOString(),
       open: Number(row.open),
       high: Number(row.high),

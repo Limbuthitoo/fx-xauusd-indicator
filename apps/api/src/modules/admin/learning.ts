@@ -88,7 +88,7 @@ export async function runDeterministicStrategyCoachPython(tenantId: string, modu
   return JSON.parse(stdout);
 }
 
-export async function runMainBrainPython(tenantId: string, moduleCode?: string) {
+export async function runMainBrainPython(tenantId: string, moduleCode?: string, options?: { proofMode?: boolean }) {
   const args = [
     "-m",
     "apps.quant.app.brain.main_brain",
@@ -98,6 +98,7 @@ export async function runMainBrainPython(tenantId: string, moduleCode?: string) 
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
+  if (options?.proofMode) args.push("--proof-mode");
   const { stdout } = await execFileAsync(pythonBin, args, {
     cwd: pythonCwd,
     timeout: 60_000

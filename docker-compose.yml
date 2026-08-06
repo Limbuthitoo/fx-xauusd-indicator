@@ -116,7 +116,7 @@ services:
     environment:
       VITE_API_BASE_URL: http://localhost:7070
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_HOST_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -130,7 +130,7 @@ services:
     build: ./apps/quant
     profiles: ["app"]
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${QUANT_HOST_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data
     healthcheck:

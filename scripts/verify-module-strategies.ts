@@ -1,7 +1,100 @@
 import assert from "node:assert/strict";
+import { buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
 import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { calculateCatchupRequestCount, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+
+const module1OpeningCandles: Candle[] = [
+  candle("2026-08-10T13:30:00Z", 100.0, 100.8, 99.4, 100.5),
+  candle("2026-08-10T13:35:00Z", 100.5, 101.0, 99.8, 100.1),
+  candle("2026-08-10T13:40:00Z", 100.1, 100.7, 99.6, 100.2)
+];
+const module1Range = buildOpeningRange(module1OpeningCandles, 0.01, 3);
+const module1Signal = candle("2026-08-10T13:45:00Z", 100.8, 101.9, 100.7, 101.55);
+const module1 = evaluateSetup({
+  now: module1Signal.timestampUtc,
+  symbol: "XAUUSD",
+  strategyVersionId: "module1-contract",
+  session: {
+    id: "module1-session",
+    symbol: "XAUUSD",
+    strategyVersionId: "module1-contract",
+    sessionDate: "2026-08-10",
+    sessionPreset: "NEW_YORK_ORB",
+    state: "OPENING_RANGE_LOCKED",
+    sessionStartAt: "2026-08-10T13:30:00Z",
+    openingRangeEndAt: "2026-08-10T13:45:00Z",
+    signalWindowEndAt: "2026-08-10T20:00:00Z",
+    dataStatus: "READY"
+  },
+  openingRange: module1Range,
+  currentCandle: module1Signal,
+  previousCandles: [],
+  spread: 0.01,
+  newsStatus: "CLEAR",
+  riskStatus: "PERMITTED",
+  configuration: {
+    name: "Module 1 ORB",
+    version: "module1-contract",
+    status: "ACTIVE",
+    symbol: "XAUUSD",
+    timezone: "America/New_York",
+    sessionStart: "09:30",
+    openingRangeMinutes: 15,
+    signalTimeframeMinutes: 5,
+    tradeWindowEnd: "16:00",
+    enabledScenarios: { doubleSidedSweep: "BLOCK_CONTINUATION" },
+    breakout: {
+      requireCompletedCandle: true,
+      requireCloseOutside: true,
+      allowWickOnly: false,
+      minimumBodyRatio: 0.45,
+      minimumCloseLocationRatio: 0.65,
+      maximumEntryExtensionPercentOfRange: 1
+    },
+    retest: {
+      enabled: true,
+      zonePercentOfRange: 0.1,
+      maximumCandles: 6,
+      confirmationRequired: false
+    },
+    rangeFilter: {
+      mode: "OFF",
+      minimumWidth: null,
+      maximumWidth: null
+    },
+    newsFilter: {
+      enabled: false,
+      mode: "OFF",
+      manualEvents: false
+    },
+    risk: {
+      riskPerTradePercent: 1,
+      maximumDailyLossPercent: 3,
+      maximumWeeklyLossPercent: 6,
+      maximumTradesPerSession: 1,
+      maximumConsecutiveLosses: 2,
+      mandatoryStopLoss: true,
+      minimumRewardToRisk: 2,
+      allowMartingale: false,
+      allowAddingToLoss: false
+    },
+    favorability: {
+      minimumScoreForPaperTrade: 0,
+      preferredSpreadPercentOfRange: 0.12,
+      minimumAtrPercentOfRange: 0.1
+    },
+    paperTrading: {
+      enabled: true,
+      maximumTradesPerSession: 1,
+      conservativeSameCandleExit: true
+    }
+  }
+});
+assert.equal(module1Range.status, "LOCKED", "Module 1 opening range must lock from three 5m candles");
+assert.equal(module1.status, "LONG SETUP READY", `Module 1 should produce a long setup, got ${module1.scenario}: ${module1.finalReason}`);
+assert.equal((module1.scenarioFlags.matrix as any)?.mandatoryChecklistMatched, true, "Module 1 mandatory checklist must be complete");
+assertTradePlan(module1, "LONG", "Module 1");
 
 const module2Candles: Candle[] = Array.from({ length: 24 }, (_, index) => {
   const base = 103.6 + Math.sin(index / 2) * 0.35;
@@ -64,6 +157,7 @@ assert.equal(summerFeedWindow.startAt, "2026-08-10T13:30:00.000Z", "Shared live 
 assert.equal(summerFeedWindow.endAt, "2026-08-10T20:00:00.000Z", "Shared live polling ends at 16:00 New York");
 console.log(JSON.stringify({
   status: "PASS",
+  module1: { scenario: module1.scenario, direction: module1.direction, score: module1.favorabilityScore },
   module2: { scenario: module2.scenario, direction: module2.direction, score: module2.favorabilityScore },
   catchup: "startup=2016, 5-minute gap=8, 10-hour gap=122"
 }, null, 2));
