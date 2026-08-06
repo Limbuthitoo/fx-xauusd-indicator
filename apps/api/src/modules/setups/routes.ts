@@ -1992,7 +1992,7 @@ async function ensureTodayModule2Session(tenantId: string | null) {
     [version.id, sessionDate, tenantId]
   );
   if (existing.rows[0]) return existing.rows[0] as any;
-  const times = sessionTimesForDate(sessionDate, version.session_start ?? "09:30", Number(version.opening_range_minutes ?? 0), version.trade_window_end ?? "16:00");
+  const times = sessionTimesForDate(sessionDate, "00:00", Number(version.opening_range_minutes ?? 0), "23:59");
   const { rows } = await query(
     `INSERT INTO trading_sessions (
       tenant_id, user_id, symbol, strategy_version_id, module_code, session_date, session_preset, state,
@@ -2455,7 +2455,7 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["DATA_HEALTHY", "Data health passed", "XAUUSD candle history is fresh enough for the setup engine."],
     ["MARKET_CONTEXT_READY", "Market context ready", "Session highs/lows, bias, and liquidity context are available."],
     ["MARKET_REGIME_CLASSIFIED", "Market regime classified", "The engine classified the current sweep/reversal regime."],
-    ["NY_SESSION_ACTIVE", "New York session active", "Current candle is inside the configured New York sweep window."],
+    ["NY_SESSION_ACTIVE", "Strategy cycle active", "Current candle is inside the configured all-session sweep cycle."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Session trade limit allows a paper trade."],
     ["ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", "No newer conflicting setup is blocking this candidate."],
     ["NO_ACTIVE_TRADE_CONFLICT", "No active trade conflict", "No active paper trade already occupies Module 2 for this tenant."],

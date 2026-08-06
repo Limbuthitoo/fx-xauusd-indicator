@@ -287,8 +287,8 @@ type SweepInvalidation = {
 
 const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
-  newYorkStartTime: "09:30",
-  newYorkEndTime: "11:30",
+  newYorkStartTime: "00:00",
+  newYorkEndTime: "23:59",
   nyPremarketStartTime: "08:00",
   orbStartTime: "09:30",
   orbEndTime: "09:45",
@@ -387,7 +387,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const marketContext = buildMarketContext(setupCandles, biasCandles, levels, current, atr, htfBias, internalStructure, externalStructure, context);
   const marketRegime = detectMarketRegime(setupCandles, biasCandles, internalStructure, externalStructure, atr, rollingAtrMedian, context.newsStatus);
   const pivots = detectPivots(setupCandles, config.pivotLeftBars, config.pivotRightBars);
-  const sessionActive = isInsideNewYorkWindow(current.timestampUtc, config.newYorkStartTime, config.newYorkEndTime);
+  const strategyCycleActive = isInsideNewYorkWindow(current.timestampUtc, config.newYorkStartTime, config.newYorkEndTime);
+  const activeSessionName = sessionContext.current?.name ?? "All-session";
   const spreadOk = context.spread == null || context.spread <= config.maximumSpread;
   const newsOk = !config.enableNewsFilter || !String(context.newsStatus ?? "CLEAR").includes("BLOCKED");
   const tradeLimitOk = (context.tradesTakenThisSession ?? 0) < config.maximumTradesPerSession;
@@ -418,22 +419,22 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "MARKET_REGIME_CLASSIFIED", "Market regime classified", marketRegime.primary !== "UNKNOWN" || config.marketContextMode !== "REQUIRED", config.marketContextMode === "REQUIRED", "AUTOMATIC", marketRegime.primary, "known regime or non-required mode", marketRegime.explanation.join(" "));
   push(evaluations, "STRUCTURE_ALIGNMENT_CONTEXT", "Internal/external structure alignment resolved", config.countertrendResolutionMode !== "BLOCK" || structureGraph.alignmentState !== "COUNTERTREND", config.countertrendResolutionMode === "BLOCK", "AUTOMATIC", structureGraph.alignmentState, config.countertrendResolutionMode, structureGraph.conflictReason);
   push(evaluations, "SESSION_CONTEXT_READY", "Session context engine ready", Boolean(sessionContext.current), false, "AUTOMATIC", sessionContext.current?.name ?? "UNKNOWN", "active or completed context", sessionContext.current ? `${sessionContext.current.name} session context is ${sessionContext.current.state}.` : "No current session context could be classified.");
-  push(evaluations, "NY_SESSION_ACTIVE", "New York session active", sessionActive, true, "AUTOMATIC", timeOnly(current.timestampUtc), `${config.newYorkStartTime}-${config.newYorkEndTime}`, sessionActive ? "Current candle is inside the configured New York sweep window." : "No Module 2 signal is allowed outside the configured New York window.");
+  push(evaluations, "NY_SESSION_ACTIVE", "Strategy cycle active", strategyCycleActive, true, "AUTOMATIC", `${activeSessionName} ${timeOnly(current.timestampUtc)}`, `${config.newYorkStartTime}-${config.newYorkEndTime}`, strategyCycleActive ? `Module 2 is evaluating the active ${activeSessionName} cycle.` : "Module 2 strategy cycle is outside the configured runtime window.");
   push(evaluations, "DAILY_TRADE_LIMIT", "Daily trade limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session trade limit allows another paper setup." : "The configured session trade limit has already been reached.");
   push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", activeSetupOk, true, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No active same-symbol setup conflict is present." : "Another active same-symbol setup already exists.");
   push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "No active paper trade conflict", activePositionOk, true, "AUTOMATIC", context.currentOpenPositions ?? 0, `<= ${config.maximumActivePositions}`, activePositionOk ? "No active paper position blocks a new Module 2 setup." : "An active position blocks new Module 2 entry.");
   push(evaluations, "RISK_LIMITS_CLEAR", "Daily, weekly, and consecutive-loss risk limits clear", riskLimitsOk, true, "AUTOMATIC", `D ${context.dailyLossPercent ?? 0}% / W ${context.weeklyLossPercent ?? 0}% / L ${context.consecutiveLosses ?? 0}`, `D < ${config.maximumDailyLossPercent}%, W < ${config.maximumWeeklyLossPercent}%, losses < ${config.maximumConsecutiveLosses}`, riskLimitsOk ? "Account/session risk limits allow a new paper setup." : "Risk limits block a new paper setup.");
   push(evaluations, "MANUAL_CONFIRMATION_COMPLETED", "Manual confirmation completed when required", manualConfirmationOk, config.manualConfirmationRequired, "AUTOMATIC", config.manualConfirmationRequired ? context.manualConfirmationCompleted === true : "AUTO_PAPER_MODE", config.manualConfirmationRequired ? "true" : "not required", manualConfirmationOk ? "Manual confirmation gate is satisfied for the configured mode." : "Manual confirmation is required before Module 2 can emit BUY_READY/SELL_READY.");
 
-  if (!sessionActive) {
+  if (!strategyCycleActive) {
     const nowMinutes = newYorkMinutes(current.timestampUtc);
     const startMinutes = parseTime(config.newYorkStartTime);
     const endMinutes = parseTime(config.newYorkEndTime);
     if (nowMinutes < startMinutes) {
-      return waitDecision("SESSION_INACTIVE", "Waiting for the New York Module 2 entry window before evaluating live sweep entries.", evaluations, flags);
+      return waitDecision("SESSION_INACTIVE", "Waiting for the configured Module 2 strategy cycle before evaluating live sweep entries.", evaluations, flags);
     }
     if (nowMinutes > endMinutes) {
-      return expiredDecision("SESSION_EXPIRED", "Module 2 entry window has expired for this session.", evaluations, flags);
+      return expiredDecision("SESSION_EXPIRED", "Module 2 strategy cycle has expired.", evaluations, flags);
     }
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
   }
@@ -501,7 +502,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const zone = sequence?.zone ?? null;
 
   const setupFresh = bos ? currentIndex - bos.index <= config.maximumBarsAfterBosForEntry : currentIndex - sweep.index <= config.maximumBarsAfterSweep;
-  if (!setupFresh) return expiredDecision("RETEST_EXPIRED", "Module 2 setup expired before a valid MSS retest entry.", evaluations, { ...flags, levels, htfBias, sweep, displacement, bos, entryZone: zone }, direction);
+  if (!setupFresh) {
+    flags.stateMachine = appendStateTransition(flags.stateMachine, "EXPIRED", current.timestampUtc, "Retest-based confirmation profiles expired; non-retest profiles may still be evaluated independently.");
+  }
 
   push(evaluations, "ENTRY_ZONE_READY", "MSS retest zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "protected structure +/- 0.05 ATR", zone ? "The broken protected structure created a strict MSS retest zone." : "No protected-structure retest zone is available after MSS.");
   if (zone) {
@@ -509,13 +512,13 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
   }
 
-  const retrace = zone ? current.low <= zone.high && current.high >= zone.low : false;
+  const retrace = zone && setupFresh ? current.low <= zone.high && current.high >= zone.low : false;
   push(evaluations, "ENTRY_ZONE_RETRACE", "Price retested MSS zone", retrace, true, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps MSS retest zone", retrace ? "Price has returned into the protected-structure MSS retest zone." : "Price has not returned into the MSS retest zone yet.");
   if (retrace) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
   }
 
-  const entryConfirmation = zone && bos ? confirmsMssRetest(current, direction, zone, bos.level, sweep) : false;
+  const entryConfirmation = setupFresh && zone && bos ? confirmsMssRetest(current, direction, zone, bos.level, sweep) : false;
   const engulfingOk = confirmsEngulfingReversal(setupCandles, currentIndex, direction);
   const pinBarOk = confirmsPinBarRejection(current, direction);
   const insideBarBreakOk = confirmsInsideBarBreak(setupCandles, currentIndex, direction);
@@ -608,8 +611,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     rrOk,
     stopValid: plan.stopValid,
     score,
+    scoreOk,
     dataHealthOk: dataHealth.status === "HEALTHY",
-    sessionActive,
+    sessionActive: strategyCycleActive,
     tradeLimitOk,
     activeSetupOk,
     activePositionOk,
@@ -619,7 +623,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     riskOk
   });
   const selectedVariant = selectModule2Variant(variants);
-  push(evaluations, "VARIANT_SELECTED", "Strict MSS retest profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "SWEEP_MSS_RETEST mandatory rules pass", selectedVariant ? selectedVariant.reason : "The only live paper profile is Sweep + MSS + Retest; sweep-only, pattern-only, EMA-only, or volume-only evidence is not enough.");
+  push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one paper-approved variant mandatory profile passes", selectedVariant ? selectedVariant.reason : "No paper-approved confirmation profile has completed. Variants are independent profiles; only one valid paper-approved profile is needed.");
   push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic paper entry." : "Module 2 signal score is below the automatic paper-entry threshold.");
   const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
   const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
@@ -651,7 +655,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.confidence = score;
   flags.profileEngine = {
     baseConditions: {
-      sessionActive,
+      sessionActive: strategyCycleActive,
       healthyData: setupCandles.length >= 20,
       validLiquidityLevel: Boolean(sweep?.level),
       sweepDetected: Boolean(sweep),
@@ -688,7 +692,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
         ]
       };
     }
-    return blockedDecision("NO_PAPER_PROFILE_SELECTED", "NO TRADE: no paper-approved confirmation profile is complete. Sweep-only control remains for backtesting comparison only.", evaluations, flags, direction, score);
+    return blockedDecision("NO_PAPER_PROFILE_SELECTED", "NO TRADE: no paper-approved confirmation profile is complete. Variants are independent; one approved variant must pass before entry.", evaluations, flags, direction, score);
   }
 
   if (!riskOk) {
@@ -700,14 +704,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
     return {
-      scenario: direction === "LONG" ? "MANDATORY_LIQUIDITY_SWEEP_MSS_RETEST_BUY" : "MANDATORY_LIQUIDITY_SWEEP_MSS_RETEST_SELL",
+      scenario: direction === "LONG" ? `MANDATORY_${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_BUY` : `MANDATORY_${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_SELL`,
       direction,
       status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
       state: "SIGNAL_ACTIVE",
       entryPrice: plan.entry,
       stopPrice: plan.stop,
       targetPrice: plan.target,
-      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "strict MSS retest"} checklist passed. Paper setup created from closed-candle sweep, reversal MSS, retest confirmation, and risk approval. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6, confidence ${score}%.`,
+      finalReason: `Mandatory Module 2 ${selectedVariant?.name ?? "selected profile"} checklist passed. Paper setup created from the completed confirmation profile and risk approval. Confirmations ${confirmationCount}/${confirmations.length}, quality ${qualityCount}/6, confidence ${score}%.`,
       evaluations,
       scenarioFlags: flags,
       favorabilityScore: score,
@@ -717,14 +721,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
 
   return {
-    scenario: direction === "LONG" ? "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY" : "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL",
+    scenario: direction === "LONG" ? `${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_BUY` : `${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_SELL`,
     direction,
     status: direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY",
     state: "SIGNAL_ACTIVE",
     entryPrice: plan.entry,
     stopPrice: plan.stop,
     targetPrice: plan.target,
-    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} strict Liquidity Sweep + MSS + Retest passed closed-candle mandatory rules, ${confirmationCount}/${confirmations.length} confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
+    finalReason: `Trade Grade ${gradeValue}: ${direction === "LONG" ? "BUY" : "SELL"} ${selectedVariant?.name ?? "Liquidity Sweep profile"} passed closed-candle mandatory rules, ${confirmationCount}/${confirmations.length} confirmations, and ${qualityCount}/6 quality filters. Confidence ${score}%.`,
     evaluations,
     scenarioFlags: flags,
     favorabilityScore: score,
@@ -2259,6 +2263,7 @@ function module2VariantCandidates(input: {
   rrOk: boolean;
   stopValid: boolean;
   score: number;
+  scoreOk: boolean;
   dataHealthOk: boolean;
   sessionActive: boolean;
   tradeLimitOk: boolean;
@@ -2274,46 +2279,63 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "RESEARCH", "RESEARCH_ONLY", false, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "PRODUCTION", "PRODUCTION_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
-    ], "Research evidence only: sweep and close-back-inside confirmed, but no live paper trade can open without reversal MSS and retest.", base, input.direction),
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant A passed: sweep and close-back-inside produced a risk-approved entry profile.", base, input.direction),
     variant("SWEEP_NO_CONFIRMATION", "Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
     ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction),
-    variant("SWEEP_ENGULFING", "Sweep + engulfing", "RESEARCH", "RESEARCH_ONLY", false, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
+    variant("SWEEP_ENGULFING", "Sweep + engulfing", "PRODUCTION", "PRODUCTION_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_ENGULFING", input.engulfingOk]
-    ], "Research evidence only: engulfing confirmation is not enough without the strict MSS retest path.", base, input.direction),
-    variant("SWEEP_BOS", "Sweep + BOS", "RESEARCH", "RESEARCH_ONLY", false, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
-      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)]
-    ], "Research evidence only: continuation BOS is not the live Module 2 MVP entry path.", base, input.direction),
-    variant("SWEEP_MSS", "Sweep + MSS", "RESEARCH", "RESEARCH_ONLY", false, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS"], [
+      ["CONFIRM_ENGULFING", input.engulfingOk],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant D passed: sweep plus engulfing rejection produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_BOS", "Sweep + BOS", "PRODUCTION", "PRODUCTION_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
-      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)]
-    ], "Research evidence only: reversal MSS is visible, but retest confirmation is still required.", base, input.direction),
-    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "RESEARCH", "RESEARCH_ONLY", false, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
+      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant B passed: sweep and continuation BOS produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_MSS", "Sweep + MSS", "PRODUCTION", "PRODUCTION_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "MSS_STRENGTH", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
-    ], "Research evidence only: provider volume is not sufficient for live entry.", base, input.direction),
-    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "RESEARCH", "RESEARCH_ONLY", false, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
+      ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
+      ["MSS_STRENGTH", Boolean(input.bos?.breakDistanceAtr != null && input.bos.breakDistanceAtr >= DEFAULT_CONFIG.minimumBosCloseDistanceATR && input.bos.bodyRatio >= 0.5)],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant C passed: sweep and reversal MSS produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "PRODUCTION", "PRODUCTION_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION", "RISK_OK", "SIGNAL_SCORE"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant H passed: sweep and provider volume expansion produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Research evidence only: displacement/retest without reversal MSS is not enough.", base, input.direction),
-    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "RESEARCH", "RESEARCH_ONLY", false, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant retest profile passed: sweep, displacement, and retest produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "PRODUCTION", "PRODUCTION_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_EMA_200", input.ema200Ok]
-    ], "Research evidence only: EMA alignment cannot issue a signal alone.", base, input.direction),
-    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "RESEARCH", "RESEARCH_ONLY", false, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
+      ["CONFIRM_EMA_200", input.ema200Ok],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant G passed: sweep and EMA alignment produced a risk-approved entry profile.", base, input.direction),
+    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Research evidence only: continuation BOS retest is tracked, but live Module 2 requires reversal MSS retest.", base, input.direction),
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant E passed: sweep, BOS, and retest produced a risk-approved entry profile.", base, input.direction),
     variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
       "DATA_HEALTHY",
       "NY_SESSION_ACTIVE",
@@ -2351,14 +2373,16 @@ function module2VariantCandidates(input: {
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
       ["DIRECTIONAL_CONFLICT_CLEAR", input.directionalConflictClear],
       ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.score >= DEFAULT_CONFIG.minimumSignalScore]
+      ["SIGNAL_SCORE", input.scoreOk]
     ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
-    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "RESEARCH", "RESEARCH_ONLY", false, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
+    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
-    ], "Research evidence only: displacement is context, not a separate live-entry profile.", base, input.direction)
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant I passed: sweep, MSS, displacement, and retest produced the highest-confirmation entry profile.", base, input.direction)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
@@ -2395,7 +2419,9 @@ function variant(
 }
 
 function selectModule2Variant(variants: Module2Variant[]) {
-  return variants.find((row) => row.code === "SWEEP_MSS_RETEST" && row.paperEligible) ?? null;
+  return variants
+    .filter((row) => row.paperEligible)
+    .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
 function scoreSetup(input: any) {

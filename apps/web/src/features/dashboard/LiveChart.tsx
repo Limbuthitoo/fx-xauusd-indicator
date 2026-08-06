@@ -459,8 +459,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
     ];
+    const orbLines = effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index));
     const lines = moduleCode === "orb_max_options"
-      ? defaultLines
+      ? [...orbLines, ...defaultLines]
       : priceLines?.length
         ? priceLines.map((line) => ({ ...line, price: numberValue(line.price) }))
         : defaultLines;
@@ -1069,12 +1070,12 @@ function buildPositionedOverlays(input: {
     return overlays;
   }
   if (input.moduleCode === "high_probability_strategy_2" && input.session?.session_start_at && input.session?.signal_window_end_at) {
-    addBox("ny-session", "New York", "session", input.session.session_start_at, input.session.signal_window_end_at, sessionLow, sessionHigh);
+    addBox("module2-cycle", "Strategy Cycle", "session", input.session.session_start_at, input.session.signal_window_end_at, sessionLow, sessionHigh);
   }
 
   if (input.setup?.module_code !== "high_probability_strategy_2" || !input.setup.scenario_flags) return overlays;
   const flags = input.setup.scenario_flags;
-  const core = input.setup.coreEvidence ?? {};
+  const core = input.setup.coreEvidence ?? flags.core ?? {};
   const evidenceEnd = input.setup.detected_at ?? latestTime;
   const zone = flags.entryZone;
   if (zone?.low != null && zone?.high != null) {

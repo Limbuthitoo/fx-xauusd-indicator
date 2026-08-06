@@ -3109,12 +3109,12 @@ function LiveSystemStatusPanel({ state, moduleCode, setup, trade, feedHealth }: 
         <Metric label="Timing" value={moduleTimingLabel(moduleCode)} />
         <Metric label="Provider" value={feedProviderLabel(state.feedStatus?.provider)} />
         <Metric label="Socket" value={state.feedStatus?.live ? "LIVE" : "WAIT"} />
-        <Metric label="NY phase" value={state.automationStatus?.phase ?? state.session?.state ?? "WAITING"} />
+        <Metric label="Cycle phase" value={state.automationStatus?.phase ?? state.session?.state ?? "WAITING"} />
         <Metric label="Latest candle" value={formatNepalTime(latestCandle)} />
         {module2FeedReady ? <Metric label="M2 5M candles" value={module2FeedReady} /> : null}
         <Metric label="News" value={state.newsStatus?.status ?? "CLEAR"} />
       </div>
-      <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid New York session setup."}</p>
+      <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid all-session setup."}</p>
     </Panel>
   );
 }
@@ -3224,7 +3224,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
   const cockpit = module2CockpitState(state, setup, trade);
   const signal = getSignal(setup, trade);
   const rows = liveScopedChecklistRows(liquiditySweepChecklistRows(setup?.evaluations ?? [], setup), setup);
-  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"].includes(row.rule_code ?? row.ruleCode));
+  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"].includes(row.rule_code ?? row.ruleCode));
   const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
   const passed = (items: any[]) => items.filter((row: any) => row.status === "PASS").length;
@@ -3246,7 +3246,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
       </div>
       <div className="module2-live-metrics">
         <Metric label="Feed" value={feedHealth} />
-        <Metric label="NY phase" value={cockpit.phase} />
+        <Metric label="Cycle phase" value={cockpit.phase} />
         <Metric label="Mandatory" value={`${passed(mandatory)}/${mandatory.length}`} />
         <Metric label="Confirmations" value={`${passed(confirmations)}/${confirmations.length}`} />
         <Metric label="Quality" value={`${passed(quality)}/${quality.length}`} />
@@ -4107,7 +4107,7 @@ function commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confide
   if (rehearsalStatus !== "GO") return "Run GO / NO-GO rehearsal.";
   if (auditStatus !== "PASS") return "Resolve production audit before trusting signals.";
   if (!confidence?.confidence?.trust) return "Feature-ready. Collect non-QA paper/backtest samples for trust.";
-  return "Ready. Wait for next valid NY session signal.";
+  return "Ready. Wait for the next valid all-session signal.";
 }
 
 function UnifiedLearningDashboard({
@@ -4385,7 +4385,7 @@ function Module2ProductionCockpit({
         </div>
       </div>
       <div className="cockpit-grid">
-        <Metric label="NY phase" value={cockpit.phase} />
+        <Metric label="Cycle phase" value={cockpit.phase} />
         <Metric label="Feed" value={cockpit.feedStatus} />
         <Metric label="Paper trading" value={cockpit.paperStatus} />
         <Metric label="Health" value={cockpit.healthStatus} />
@@ -7319,7 +7319,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Mandatory Entry Checklist",
-        description: "The complete engine sequence must pass before Module 2 can produce a production paper BUY/SELL.",
+        description: "Base market, liquidity, and risk conditions required before any Module 2 confirmation profile can produce a production paper BUY/SELL.",
         codes: [
           "DATA_HEALTHY",
           "MARKET_CONTEXT_READY",
@@ -7334,14 +7334,21 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
           "LIQUIDITY_SWEEP_CONFIRMED",
           "SWEEP_REJECTION_CONFIRMED",
           "SWEEP_ACCEPTANCE_BLOCK",
+          "RISK_OK"
+        ]
+      },
+      {
+        title: "Selected Variant Profile",
+        description: "Variants are independent confirmation profiles. One valid paper-approved profile is enough for a Module 2 entry signal.",
+        codes: [
+          "VARIANT_SELECTED",
           "PROTECTED_POINT_CONFIDENCE",
           "BOS_CHOCH_CONFIRMED",
           "MSS_STRENGTH",
           "ENTRY_ZONE_READY",
           "ENTRY_ZONE_RETRACE",
           "CONFIRM_ENTRY_CANDLE",
-          "DIRECTIONAL_CONFLICT_CLEAR",
-          "RISK_OK"
+          "DIRECTIONAL_CONFLICT_CLEAR"
         ]
       },
       {
@@ -7408,7 +7415,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
   const setupState = flags.state ?? setup?.status;
   const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
-    ["NY_SESSION_ACTIVE", "New York session active", "Module 2 only evaluates during its configured NY liquidity window."],
+    ["NY_SESSION_ACTIVE", "Strategy cycle active", "Module 2 evaluates during the configured all-session strategy cycle."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Only the configured number of paper trades can trigger per session."],
     ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "Previous week/day, Asian, London, NY premarket, ORB, swing, equal, round-number, or manual liquidity must be available."],
     ["LIQUIDITY_SWEEP_CONFIRMED", "Liquidity sweep confirmed", "Price must sweep liquidity and close back through the level."],
@@ -7439,7 +7446,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_FILTER_COUNT", "Quality layer passed", "At least 3 quality filters must pass."],
     ["EMA_FILTER_MODE", "EMA filter mode", "OFF, record-only, warning, alignment-required, or countertrend-required mode is respected."],
     ["VOLUME_FILTER_MODE", "Volume filter mode", "OFF, record-only, warning, or expansion-required mode is respected."],
-    ["VARIANT_SELECTED", "Production variant selected", "Only paper-eligible variants can open automatic paper trades."],
+    ["VARIANT_SELECTED", "Paper-approved variant selected", "Variants are independent. One paper-approved confirmation profile can open an automatic paper trade after risk approval."],
     ["SIGNAL_SCORE", "Minimum signal score", "The final Module 2 confidence score must pass the configured threshold."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
@@ -7484,9 +7491,9 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
   const rows = [
     {
       rule_code: "SESSION_READY",
-      name: "New York session active",
+      name: "Session cycle active",
       status: sessionActive ? "PASS" : "WAITING",
-      explanation: sessionActive ? "The full NY monitoring window is active." : "Waiting for the configured NY monitoring window."
+      explanation: sessionActive ? "The active ORB session cycle is available." : "Waiting for the next configured ORB session cycle."
     },
     {
       rule_code: "ORB_LOCKED",
@@ -8493,8 +8500,16 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
   const sweepPrice = flags.sweep?.level?.price;
   const bosLevel = flags.bos?.level;
   const zone = flags.entryZone ?? {};
-  const levelLines = Array.isArray(flags.levels)
-    ? flags.levels.slice(0, 8).map((level: any) => ({
+  const core = moduleSetup.coreEvidence ?? {};
+  const liquidityLevels = Array.isArray(core.liquidityLevels)
+    ? core.liquidityLevels
+    : Array.isArray(flags.core?.liquidityLevels)
+      ? flags.core.liquidityLevels
+      : Array.isArray(flags.levels)
+        ? flags.levels
+        : [];
+  const levelLines = liquidityLevels.length
+    ? liquidityLevels.slice(0, 8).map((level: any) => ({
         title: String(level.type ?? "Liquidity").replaceAll("_", " "),
         price: level.price,
         color: level.priority === "HIGH" ? "#f0b429" : level.priority === "MEDIUM" ? "#38bdf8" : "#64748b"

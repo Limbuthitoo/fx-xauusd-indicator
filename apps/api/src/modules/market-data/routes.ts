@@ -1593,14 +1593,13 @@ async function twelveDataCallPolicy(options: {
 async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings, tenantId?: string | null, moduleCode = "orb_max_options") {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const strategyVersion = await activeStrategyVersionForModule(moduleCode);
-  const moduleConfig = strategyVersion?.configuration_json ?? {};
   const moduleUsesStrategyWindow = moduleCode === "high_probability_strategy_2";
   const orbWindow = moduleCode === "orb_max_options" ? currentOrNextOrbSessionWindow(settings) : null;
   const sessionStart = moduleUsesStrategyWindow
-    ? String(moduleConfig.newYorkStartTime ?? "09:30")
+    ? "00:00"
     : orbWindow?.sessionStart ?? settings.orb.sessionStart;
   const tradeWindowEnd = moduleUsesStrategyWindow
-    ? String(moduleConfig.newYorkEndTime ?? "16:00")
+    ? "23:59"
     : orbWindow?.tradeWindowEnd ?? settings.orb.tradeWindowEnd;
   const openingRangeMinutes = moduleUsesStrategyWindow ? 0 : settings.orb.openingRangeMinutes;
   const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : orbWindow?.preset ?? "NEW_YORK_ORB";
@@ -2574,29 +2573,21 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   if (!session) return { sessionFound: false };
 
   const now = new Date();
-  const signalEnd = new Date(session.signal_window_end_at);
-  if (now > signalEnd && !["SESSION_EXPIRED", "SESSION_COMPLETED", "NO_TRADE"].includes(session.state)) {
-    await query("UPDATE trading_sessions SET state = 'SESSION_EXPIRED' WHERE id = $1", [session.id]);
-    await notifyTenantOnce(session.tenant_id, `module2-session-expired-${session.id}`, "MODULE2_SESSION_EXPIRED", "Module 2 window expired", "No new Ultimate Liquidity Sweep setups will be accepted for this session.");
-    await runModule2CloseoutAfterSession({ ...session, state: "SESSION_EXPIRED" });
-    return { sessionFound: true, state: "SESSION_EXPIRED" };
-  }
-  if (now < new Date(session.session_start_at) || now > signalEnd) return { sessionFound: true, evaluation: "OUTSIDE_MODULE2_WINDOW" };
+  const sessionStart = new Date(session.session_start_at);
+  if (now < sessionStart) return { sessionFound: true, evaluation: "WAITING_FOR_MODULE2_STRATEGY_CYCLE" };
 
   const completedAtOrBefore = new Date(now.getTime() - timeframe * 60_000).toISOString();
   const current =
-    latestCachedCandle(liveCandles, session.session_start_at, session.signal_window_end_at, completedAtOrBefore) ??
+    latestCachedCandle(liveCandles, new Date(now.getTime() - 72 * 60 * 60_000).toISOString(), completedAtOrBefore, completedAtOrBefore) ??
     ((await query(
       `SELECT timestamp_utc, open, high, low, close, volume, spread
        FROM candles
        WHERE symbol = $1
          AND timeframe_minutes = $2
-         AND timestamp_utc >= $3
-         AND timestamp_utc <= $4
-         AND timestamp_utc <= $5
+         AND timestamp_utc <= $3
        ORDER BY timestamp_utc DESC
        LIMIT 1`,
-      [symbol, timeframe, session.session_start_at, session.signal_window_end_at, completedAtOrBefore]
+      [symbol, timeframe, completedAtOrBefore]
     )).rows[0] as any);
   if (!current) return { sessionFound: true, evaluation: "WAITING_FOR_MODULE2_CANDLE" };
 
@@ -3638,6 +3629,10 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
   if (risk?.status !== "PERMITTED") return false;
+  if (setup.module_code === "high_probability_strategy_2") {
+    const flags = setup.scenario_flags ?? decision?.scenarioFlags ?? {};
+    return Boolean(flags.mandatoryChecklistMatched && flags.module2Variant?.paperEligible !== false);
+  }
   const tier = String(setup.scenario_flags?.setupTier ?? decision?.scenarioFlags?.setupTier ?? "FULL");
   if (tier === "MANDATORY") {
     return moduleMandatoryEntryPassed(setup.module_code, decision?.evaluations ?? []);
@@ -3750,6 +3745,9 @@ function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
     const closePassed = byCode.get("CLOSE_ABOVE_ORB_HIGH") === "PASS" || byCode.get("CLOSE_BELOW_ORB_LOW") === "PASS";
     return closePassed && required.every((code) => byCode.get(code) === "PASS");
   }
+  if (moduleCode === "high_probability_strategy_2") {
+    return required.every((code) => byCode.get(code) === "PASS");
+  }
   return required.every((code) => byCode.get(code) === "PASS");
 }
 
@@ -3771,13 +3769,6 @@ function requiredEntryRules(moduleCode: string) {
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE",
-    "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"

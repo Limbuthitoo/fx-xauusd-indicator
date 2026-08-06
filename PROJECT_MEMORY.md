@@ -539,6 +539,12 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Combined tenant proof validation command is `npm run validate:modules-flow`. It requires `TENANT_EMAIL`, `TENANT_PASSWORD`, optional `TENANT_OTP`, and optional `API_BASE_URL`; it runs Module 1 proof, Module 2 proof, then checks proof Predictions, BUY & SELL cards, Paper Trading rows, Notifications payloads, and dashboard bundles.
 - Broker execution remains out of scope. Manual execution reconciliation is allowed only to compare a tenant's manual trade with the generated plan.
 - Module 3 was intentionally removed completely; do not reintroduce it.
+- Superseding Module 2 architecture update, 2026-08-06: Module 2 is no longer New York-only and no longer strict-MSS-retest-only for production entry. It runs as an all-session liquidity sweep strategy cycle using the shared XAUUSD 5M candle feed.
+- Module 2 variants are independent confirmation profiles evaluated after base conditions pass. The system must not require every variant to pass. One paper-approved variant plus risk and score gates can generate BUY/SELL, paper trade, journal, notification, chart markers, and predictions.
+- Module 2 paper-approved profiles include sweep close-back, sweep engulfing, sweep BOS, sweep MSS, sweep volume expansion, displacement retest, EMA-aligned sweep, BOS retest, MSS retest, and MSS + displacement + retest. Sweep-only/no-confirmation remains research/control only.
+- Module 2 retest expiration only invalidates retest-based profiles. It must not kill simpler independent profiles that already passed their own mandatory rules.
+- Module 2 Strategy Center should display base mandatory gates, selected variant profile, confirmation checklist, quality filters, and final automation gate. It should never display variants as one impossible combined checklist.
+- Module 1 and Module 2 are both all-session strategy modules. Module 1 uses session-by-session ORB ranges and should show recent session ORB High/Mid/Low indicators; Module 2 should show liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target indicators when evidence exists.
 
 ## Operating Principles
 
