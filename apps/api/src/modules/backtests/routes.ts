@@ -95,11 +95,12 @@ export async function backtestRoutes(app: FastifyInstance) {
           });
 
       for (const trade of result.trades) {
-        await query(
+        const insertedTrade = await query(
           `INSERT INTO backtest_trades (
             backtest_run_id, session_date, scenario, direction, entry_price,
             stop_price, target_price, result_r, outcome, ambiguous, details
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          RETURNING id`,
           [
             run.id,
             trade.sessionDate,
@@ -114,6 +115,29 @@ export async function backtestRoutes(app: FastifyInstance) {
             trade.details
           ]
         );
+        if (moduleCode === "high_probability_strategy_2") {
+          await query(
+            `INSERT INTO backtest_events (backtest_run_id, event_type, candle_timestamp, payload)
+             VALUES ($1,'MODULE2_SIMULATED_TRADE',$2,$3)`,
+            [
+              run.id,
+              trade.sessionDate,
+              {
+                backtestTradeId: insertedTrade.rows[0]?.id ?? null,
+                moduleCode,
+                scenario: trade.scenario,
+                direction: trade.direction,
+                entryPrice: trade.entryPrice,
+                stopPrice: trade.stopPrice,
+                targetPrice: trade.targetPrice,
+                resultR: trade.resultR,
+                outcome: trade.outcome,
+                ambiguous: trade.ambiguous,
+                details: trade.details
+              }
+            ]
+          );
+        }
       }
       for (const [key, value] of Object.entries(result.metrics)) {
         await query(

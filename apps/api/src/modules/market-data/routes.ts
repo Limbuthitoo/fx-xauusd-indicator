@@ -4056,6 +4056,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     ]
   );
   const trade = tradeResult.rows[0] as any;
+  const position = await createModule2PositionFromPaperTrade(session, setup, plan, trade, plannedRiskAmount);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1", [setup.id]);
   await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_ENTRY',$2)", [
     trade.id,
@@ -4087,7 +4088,65 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     alert.data,
     "paperTradeOpened"
   );
-  return { trade, plan };
+  return { trade, plan, position };
+}
+
+async function createModule2PositionFromPaperTrade(session: any, setup: any, plan: any, trade: any, plannedRiskAmount: any) {
+  if (setup.module_code !== "high_probability_strategy_2") return null;
+  const existing = await query("SELECT * FROM positions WHERE trade_id = $1 LIMIT 1", [trade.id]);
+  if (existing.rows[0]) return existing.rows[0];
+  const positionResult = await query(
+    `INSERT INTO positions (
+      tenant_id, trade_plan_id, trade_id, symbol, direction, planned_entry, actual_entry,
+      initial_stop, current_stop, initial_target, planned_risk_amount, current_open_risk,
+      quantity, state, opened_at, metadata
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$10,$11,'OPEN',$12,$13::jsonb)
+    RETURNING *`,
+    [
+      session.tenant_id,
+      plan.id,
+      trade.id,
+      session.symbol,
+      setup.direction,
+      numericParam(plan.planned_entry, 5),
+      numericParam(trade.actual_entry ?? plan.planned_entry, 5),
+      numericParam(plan.planned_stop, 5),
+      numericParam(plan.planned_target, 5),
+      numericParam(plannedRiskAmount, 5),
+      numericParam(trade.actual_lot ?? plan.planned_lot ?? 1, 5),
+      trade.opened_at ?? new Date().toISOString(),
+      JSON.stringify({
+        mode: "PAPER",
+        managementModel: "FIXED_STOP_FIXED_TARGET",
+        setupCandidateId: setup.id,
+        scenario: setup.scenario,
+        setupTier: setup.scenario_flags?.setupTier ?? null
+      })
+    ]
+  );
+  await query(
+    `INSERT INTO position_events (position_id, event_type, after, reason)
+     VALUES ($1,'ENTRY_RECORDED',$2::jsonb,$3)`,
+    [
+      positionResult.rows[0].id,
+      JSON.stringify(positionResult.rows[0]),
+      `Paper position opened from ${setup.scenario}.`
+    ]
+  );
+  await query(
+    `INSERT INTO system_checkpoints (
+      tenant_id, module_code, symbol, checkpoint_type, candle_timestamp, state_hash, state, status
+    ) VALUES ($1,$2,$3,'TRADE_OPENED',$4,$5,$6::jsonb,'CONSISTENT')`,
+    [
+      session.tenant_id,
+      setup.module_code,
+      session.symbol,
+      trade.opened_at ?? new Date().toISOString(),
+      `trade-opened-${trade.id}`,
+      JSON.stringify({ positionId: positionResult.rows[0].id, tradeId: trade.id, setupCandidateId: setup.id })
+    ]
+  );
+  return positionResult.rows[0];
 }
 
 async function processOpenPaperTrades(symbol: string, timeframe: number, latestRow: any, tenantId?: string | null, moduleCode = "orb_max_options") {
@@ -4127,6 +4186,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
        RETURNING *`,
       [trade.id, exit.price, resultR, outcome, latest.timestampUtc]
     );
+    await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, latest.timestampUtc);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
     await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_EXIT',$2)", [
       trade.id,
@@ -4156,6 +4216,66 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
     closed.push(updated.rows[0]);
   }
   return { checked: openTrades.rows.length, closed };
+}
+
+async function closeModule2PositionFromPaperTrade(trade: any, closedTrade: any, exit: any, resultR: number, closedAt: string) {
+  if (trade.module_code !== "high_probability_strategy_2") return null;
+  const existing = await query("SELECT * FROM positions WHERE trade_id = $1 ORDER BY created_at DESC LIMIT 1", [trade.id]);
+  const position = existing.rows[0] as any;
+  if (!position || position.state?.startsWith("CLOSED")) return position ?? null;
+  const state = closedTrade.outcome === "WIN"
+    ? "CLOSED_WIN"
+    : closedTrade.outcome === "LOSS"
+      ? "CLOSED_LOSS"
+      : "CLOSED_BREAKEVEN";
+  const metadata = {
+    ...(position.metadata ?? {}),
+    closeReason: exit.reason,
+    ambiguousExit: Boolean(exit.ambiguous),
+    resultR,
+    tradeOutcome: closedTrade.outcome
+  };
+  const updated = await query(
+    `UPDATE positions SET
+       actual_exit = $2,
+       current_open_risk = 0,
+       state = $3,
+       closed_at = $4,
+       metadata = $5::jsonb
+     WHERE id = $1
+     RETURNING *`,
+    [position.id, numericParam(exit.price, 5), state, closedAt, JSON.stringify(metadata)]
+  );
+  await query(
+    `INSERT INTO position_events (position_id, event_type, before, after, reason)
+     VALUES ($1,'TRADE_CLOSED',$2::jsonb,$3::jsonb,$4)`,
+    [
+      position.id,
+      JSON.stringify(position),
+      JSON.stringify(updated.rows[0]),
+      `Paper position closed by ${exit.reason}${exit.ambiguous ? " with stop-first ambiguous candle handling" : ""}.`
+    ]
+  );
+  await query(
+    `INSERT INTO system_checkpoints (
+      tenant_id, module_code, symbol, checkpoint_type, candle_timestamp, state_hash, state, status
+    ) VALUES ($1,'high_probability_strategy_2',$2,'TRADE_CLOSED',$3,$4,$5::jsonb,'CONSISTENT')`,
+    [
+      trade.tenant_id,
+      trade.symbol,
+      closedAt,
+      `trade-closed-${trade.id}-${closedTrade.outcome}`,
+      JSON.stringify({
+        positionId: position.id,
+        tradeId: trade.id,
+        setupCandidateId: trade.setup_candidate_id,
+        outcome: closedTrade.outcome,
+        resultR,
+        exitReason: exit.reason
+      })
+    ]
+  );
+  return updated.rows[0];
 }
 
 function resolvePaperExit(trade: any, candle: Candle) {
@@ -4472,6 +4592,7 @@ async function saveModuleDecision(session: any, moduleCode: string, decision: an
   }
   if (moduleCode === "high_probability_strategy_2") {
     await persistModule2StateTransitions(saved.rows[0], decision);
+    await persistModule2PlatformCoreEvidence(session, saved.rows[0], decision, currentRow);
   }
   await query("UPDATE strategy_versions SET generated_signal_count = generated_signal_count + 1 WHERE id = $1", [session.strategy_version_id]);
   return { setup: saved.rows[0], decision, risk };
@@ -4507,6 +4628,331 @@ async function persistModule2StateTransitions(setup: any, decision: any) {
       ]
     );
   }
+}
+
+async function persistModule2PlatformCoreEvidence(session: any, setup: any, decision: any, currentRow: any) {
+  if (!setup?.tenant_id || setup.module_code !== "high_probability_strategy_2") return null;
+  const flags = decision?.scenarioFlags ?? {};
+  const platform = flags.platformEngines ?? {};
+  const candleTimestamp = rowTimestamp(currentRow);
+  const correlationId = setup.id;
+  const idempotencyKey = String(platform.idempotencyKey ?? `${setup.module_code}:${setup.symbol}:${candleTimestamp}`);
+
+  await persistModule2EventProcessing(setup, decision, idempotencyKey, candleTimestamp);
+  await persistModule2LiquidityEvidence(setup, flags, candleTimestamp);
+  await persistModule2StructureEvidence(setup, flags);
+  await persistModule2RegimeEvidence(setup, flags, candleTimestamp);
+  await persistModule2DomainEvent(setup, decision, idempotencyKey, correlationId, candleTimestamp);
+  await persistModule2Checkpoint(session, setup, decision, idempotencyKey, candleTimestamp);
+  await persistModule2Audit(setup, decision, platform, candleTimestamp);
+  return { idempotencyKey };
+}
+
+async function persistModule2EventProcessing(setup: any, decision: any, idempotencyKey: string, candleTimestamp: string) {
+  await query(
+    `INSERT INTO event_processing_log (idempotency_key, event_type, status, started_at, finished_at)
+     VALUES ($1,'CANDLE_CLOSED',$2,$3,now())
+     ON CONFLICT (idempotency_key) DO UPDATE SET
+       status = EXCLUDED.status,
+       finished_at = now(),
+       error_message = NULL`,
+    [idempotencyKey, decision.status === "BLOCKED" ? "BLOCKED" : "PROCESSED", candleTimestamp]
+  );
+}
+
+async function persistModule2LiquidityEvidence(setup: any, flags: any, candleTimestamp: string) {
+  const levels = Array.isArray(flags.levels)
+    ? flags.levels
+    : Array.isArray(flags.liquidityLifecycle?.activeLevels) ? flags.liquidityLifecycle.activeLevels : [];
+  for (const level of levels.slice(0, 80)) {
+    const levelKey = String(level.id ?? `${level.type}:${level.side}:${Number(level.price).toFixed(2)}`);
+    const state = String(level.state ?? level.status ?? "ACTIVE");
+    const previous = await query(
+      `SELECT id, state
+       FROM liquidity_levels
+       WHERE tenant_id = $1 AND module_code = $2 AND symbol = $3 AND level_key = $4
+       LIMIT 1`,
+      [setup.tenant_id, setup.module_code, setup.symbol, levelKey]
+    );
+    const saved = await query(
+      `INSERT INTO liquidity_levels (
+        tenant_id, module_code, symbol, level_key, type, side, timeframe, price,
+        lower_bound, upper_bound, formed_at, confirmed_at, last_touched_at, expires_at,
+        priority_score, freshness_score, reaction_score, overlap_score, quality_score,
+        touch_count, sweep_count, close_count_beyond, cluster_size, source_ids, state, metadata, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25,$26::jsonb,now())
+      ON CONFLICT (tenant_id, module_code, symbol, level_key) DO UPDATE SET
+        price = EXCLUDED.price,
+        lower_bound = EXCLUDED.lower_bound,
+        upper_bound = EXCLUDED.upper_bound,
+        last_touched_at = EXCLUDED.last_touched_at,
+        expires_at = EXCLUDED.expires_at,
+        priority_score = EXCLUDED.priority_score,
+        freshness_score = EXCLUDED.freshness_score,
+        reaction_score = EXCLUDED.reaction_score,
+        overlap_score = EXCLUDED.overlap_score,
+        quality_score = EXCLUDED.quality_score,
+        touch_count = EXCLUDED.touch_count,
+        sweep_count = EXCLUDED.sweep_count,
+        close_count_beyond = EXCLUDED.close_count_beyond,
+        cluster_size = EXCLUDED.cluster_size,
+        source_ids = EXCLUDED.source_ids,
+        state = EXCLUDED.state,
+        metadata = liquidity_levels.metadata || EXCLUDED.metadata,
+        updated_at = now()
+      RETURNING id, state`,
+      [
+        setup.tenant_id,
+        setup.module_code,
+        setup.symbol,
+        levelKey,
+        String(level.type ?? "UNKNOWN"),
+        String(level.side ?? "BUY_SIDE"),
+        String(level.timeframe ?? "5min"),
+        numericParam(level.price, 5),
+        numericParam(level.lowerBound ?? level.lower_bound, 5),
+        numericParam(level.upperBound ?? level.upper_bound, 5),
+        level.formedAt ?? level.formed_at ?? candleTimestamp,
+        level.confirmedAt ?? level.confirmed_at ?? candleTimestamp,
+        level.lastTouchedAt ?? level.last_touched_at ?? null,
+        level.expiresAt ?? level.expires_at ?? null,
+        numericParam(level.priorityScore ?? level.priority_score ?? 0, 2),
+        numericParam(level.freshnessScore ?? level.freshness_score ?? 100, 2),
+        numericParam(level.reactionScore ?? level.reaction_score ?? 0, 2),
+        numericParam(level.overlapScore ?? level.overlap_score ?? 0, 2),
+        numericParam(level.qualityScore ?? level.quality_score ?? level.priorityScore ?? 0, 2),
+        Number(level.touchCount ?? level.touch_count ?? 0),
+        Number(level.sweepCount ?? level.sweep_count ?? 0),
+        Number(level.closeCountBeyond ?? level.close_count_beyond ?? 0),
+        Number(level.clusterSize ?? level.cluster_size ?? 1),
+        JSON.stringify(level.sourceIds ?? level.source_ids ?? [level.source ?? levelKey]),
+        state,
+        JSON.stringify({
+          setupCandidateId: setup.id,
+          source: level.source ?? null,
+          side: level.side ?? null,
+          rawStatus: level.status ?? null
+        })
+      ]
+    );
+    const previousState = previous.rows[0]?.state ?? null;
+    if (previousState !== state) {
+      await query(
+        `INSERT INTO liquidity_level_events (
+          liquidity_level_id, tenant_id, module_code, event_type, previous_state, next_state, candle_timestamp, payload
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [
+          saved.rows[0].id,
+          setup.tenant_id,
+          setup.module_code,
+          `LIQUIDITY_${state}`,
+          previousState,
+          state,
+          candleTimestamp,
+          JSON.stringify({ setupCandidateId: setup.id, levelKey })
+        ]
+      );
+    }
+  }
+}
+
+async function persistModule2StructureEvidence(setup: any, flags: any) {
+  const graph = flags.structureGraph ?? {};
+  const points = Array.isArray(graph.points) ? graph.points : [];
+  const pointIds = new Map<string, string>();
+  for (const point of points.slice(-80)) {
+    const pointKey = String(point.id ?? `${point.timeframe}:${point.type}:${point.confirmedAt ?? point.formedAt}`);
+    const saved = await query(
+      `INSERT INTO structure_points (
+        tenant_id, module_code, symbol, point_key, timeframe, hierarchy, type, classification,
+        price, lower_bound, upper_bound, formed_at, confirmed_at, prominence_atr, confidence,
+        state, metadata
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)
+      ON CONFLICT (tenant_id, module_code, symbol, point_key) DO UPDATE SET
+        classification = EXCLUDED.classification,
+        price = EXCLUDED.price,
+        lower_bound = EXCLUDED.lower_bound,
+        upper_bound = EXCLUDED.upper_bound,
+        prominence_atr = EXCLUDED.prominence_atr,
+        confidence = EXCLUDED.confidence,
+        state = EXCLUDED.state,
+        metadata = structure_points.metadata || EXCLUDED.metadata
+      RETURNING id`,
+      [
+        setup.tenant_id,
+        setup.module_code,
+        setup.symbol,
+        pointKey,
+        String(point.timeframe ?? "5min"),
+        String(point.hierarchy ?? "INTERNAL"),
+        String(point.type ?? "HIGH"),
+        point.classification ?? null,
+        numericParam(point.price, 5),
+        numericParam(point.lowerBound ?? point.lower_bound, 5),
+        numericParam(point.upperBound ?? point.upper_bound, 5),
+        point.formedAt ?? point.formed_at ?? point.confirmedAt,
+        point.confirmedAt ?? point.confirmed_at ?? point.formedAt,
+        numericParam(point.prominenceAtr ?? point.prominence_atr ?? 0, 4),
+        numericParam(point.confidence ?? point.strengthScore ?? 0, 2),
+        String(point.state ?? "CONFIRMED"),
+        JSON.stringify({
+          setupCandidateId: setup.id,
+          candleIndex: point.candleIndex ?? null,
+          previousSameTypeId: point.previousSameTypeId ?? null,
+          previousOppositeTypeId: point.previousOppositeTypeId ?? null,
+          parentId: point.parentId ?? null
+        })
+      ]
+    );
+    pointIds.set(pointKey, saved.rows[0].id);
+  }
+
+  const breakEvents = Array.isArray(graph.breakEvents) ? graph.breakEvents : [];
+  for (const event of breakEvents.slice(-40)) {
+    await query(
+      `INSERT INTO structure_break_events (
+        tenant_id, module_code, symbol, direction, break_type, structure_point_id,
+        break_candle_timestamp, wick_break, close_confirmed, break_distance_atr,
+        body_ratio, displacement_passed, metadata, occurred_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)
+      ON CONFLICT DO NOTHING`,
+      [
+        setup.tenant_id,
+        setup.module_code,
+        setup.symbol,
+        String(event.direction ?? "UNKNOWN"),
+        String(event.type ?? "STRUCTURE_BREAK"),
+        event.structurePointId ? pointIds.get(String(event.structurePointId)) ?? null : null,
+        event.occurredAt ?? setup.detected_at,
+        Boolean(event.wickBreak),
+        event.closeConfirmed !== false,
+        numericParam(event.breakDistanceAtr ?? 0, 4),
+        numericParam(event.bodyRatio, 4),
+        Boolean(event.displacementPassed),
+        JSON.stringify({ setupCandidateId: setup.id, eventId: event.id ?? null }),
+        event.occurredAt ?? setup.detected_at
+      ]
+    );
+  }
+}
+
+async function persistModule2RegimeEvidence(setup: any, flags: any, candleTimestamp: string) {
+  const regime = flags.marketRegime;
+  if (!regime?.primary) return;
+  await query(
+    `INSERT INTO market_regimes (
+      tenant_id, module_code, symbol, timeframe, primary_regime, secondary_regimes,
+      confidence, actual_values, explanation, candle_timestamp
+    ) VALUES ($1,$2,$3,'5min',$4,$5::jsonb,$6,$7::jsonb,$8::jsonb,$9)
+    ON CONFLICT (tenant_id, module_code, symbol, timeframe, candle_timestamp) DO UPDATE SET
+      primary_regime = EXCLUDED.primary_regime,
+      secondary_regimes = EXCLUDED.secondary_regimes,
+      confidence = EXCLUDED.confidence,
+      actual_values = EXCLUDED.actual_values,
+      explanation = EXCLUDED.explanation`,
+    [
+      setup.tenant_id,
+      setup.module_code,
+      setup.symbol,
+      String(regime.primary),
+      JSON.stringify(regime.secondary ?? []),
+      numericParam(regime.confidence ?? 0, 2),
+      JSON.stringify(regime.actualValues ?? {}),
+      JSON.stringify(regime.explanation ?? []),
+      candleTimestamp
+    ]
+  );
+}
+
+async function persistModule2DomainEvent(setup: any, decision: any, idempotencyKey: string, correlationId: string, candleTimestamp: string) {
+  await query(
+    `INSERT INTO domain_events (event_type, aggregate_id, correlation_id, payload, version, occurred_at, idempotency_key)
+     VALUES ($1,$2,$3,$4::jsonb,1,$5,$6)
+     ON CONFLICT (idempotency_key) DO UPDATE SET
+       event_type = EXCLUDED.event_type,
+       payload = EXCLUDED.payload,
+       occurred_at = EXCLUDED.occurred_at`,
+    [
+      decisionEventType(decision),
+      setup.id,
+      correlationId,
+      JSON.stringify({
+        tenantId: setup.tenant_id,
+        setupCandidateId: setup.id,
+        moduleCode: setup.module_code,
+        status: decision.status,
+        state: decision.state,
+        scenario: decision.scenario,
+        direction: decision.direction,
+        score: decision.favorabilityScore,
+        platformEngines: decision.scenarioFlags?.platformEngines ?? null
+      }),
+      candleTimestamp,
+      idempotencyKey
+    ]
+  );
+}
+
+async function persistModule2Checkpoint(session: any, setup: any, decision: any, idempotencyKey: string, candleTimestamp: string) {
+  const state = {
+    setupCandidateId: setup.id,
+    sessionId: session.id,
+    status: decision.status,
+    state: decision.state,
+    scenario: decision.scenario,
+    flags: decision.scenarioFlags ?? {}
+  };
+  await query(
+    `INSERT INTO system_checkpoints (
+      tenant_id, module_code, symbol, checkpoint_type, candle_timestamp, state_hash, state, status
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'CONSISTENT')`,
+    [
+      setup.tenant_id,
+      setup.module_code,
+      setup.symbol,
+      checkpointTypeForDecision(decision),
+      candleTimestamp,
+      idempotencyKey,
+      JSON.stringify(state)
+    ]
+  );
+}
+
+async function persistModule2Audit(setup: any, decision: any, platform: any, candleTimestamp: string) {
+  await query(
+    `INSERT INTO audit_logs (entity_type, entity_id, action, details, created_at)
+     VALUES ('MODULE2_PLATFORM_ENGINE',$1,$2,$3::jsonb,$4)`,
+    [
+      setup.id,
+      decisionEventType(decision),
+      JSON.stringify({
+        tenantId: setup.tenant_id,
+        moduleCode: setup.module_code,
+        status: decision.status,
+        scenario: decision.scenario,
+        state: decision.state,
+        idempotencyKey: platform.idempotencyKey ?? null
+      }),
+      candleTimestamp
+    ]
+  );
+}
+
+function decisionEventType(decision: any) {
+  if (["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision?.status))) return "SETUP_READY";
+  if (decision?.status === "BLOCKED") return "SETUP_BLOCKED";
+  if (decision?.status === "INVALIDATED") return "SETUP_INVALIDATED";
+  if (decision?.status === "EXPIRED") return "SETUP_EXPIRED";
+  if (decision?.status === "NO TRADE") return "NO_TRADE";
+  return "SETUP_WAIT";
+}
+
+function checkpointTypeForDecision(decision: any) {
+  if (["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision?.status))) return "TRADE_READY";
+  if (decision?.state === "RETEST_REACHED") return "RETEST_CONFIRMED";
+  if (decision?.scenarioFlags?.bos) return "MSS_CONFIRMED";
+  if (decision?.scenarioFlags?.sweep) return "SWEEP_CONFIRMED";
+  return "CANDLE_EVALUATED";
 }
 
 async function calculateDecisionRisk(session: any, decision: any, currentRow: any) {
