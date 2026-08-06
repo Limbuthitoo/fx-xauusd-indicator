@@ -42,8 +42,31 @@ if (!headers.authorization.endsWith(" ")) {
     const failed = Object.entries(proof?.checks ?? {}).filter(([, value]) => value !== true).map(([key]) => key);
     return {
       ok: (proof?.status === "PASS" || proof?.finalStatus === "PASS") && failed.length === 0,
-      detail: failed.length === 0 ? "Module 2 created strict MSS retest setup, paper trade, journal, notification, and Python brain proof." : `Failed checks: ${failed.join(", ")}.`,
+      detail: failed.length === 0 ? "Module 2 created a selected-variant setup, paper trade, journal, notification, and Python brain proof." : `Failed checks: ${failed.join(", ")}.`,
       evidence: summarizeProof(proof)
+    };
+  });
+
+  await check("Module 2 A-J variant matrix proof", async () => {
+    const proof = await json("/api/module2/variant-matrix-proof/run", { method: "POST", headers });
+    const failed = Array.isArray(proof?.results) ? proof.results.filter((row) => row.finalStatus !== "PASS") : [];
+    return {
+      ok: proof?.finalStatus === "PASS" && failed.length === 0,
+      detail: failed.length === 0
+        ? "Module 2 A-I profiles produced paper-proof artifacts and J remained research-only."
+        : `${failed.length} variant profile proof row(s) failed.`,
+      evidence: {
+        summary: proof?.summary,
+        failed: failed.map((row) => ({ replayCase: row.replayCase, variantCode: row.variantCode, checks: row.checks })),
+        profiles: (proof?.results ?? []).map((row) => ({
+          profile: row.variantProfile,
+          variantCode: row.variantCode,
+          expectedPaperTrade: row.expectedPaperTrade,
+          finalStatus: row.finalStatus,
+          tradeId: row.tradeId,
+          notificationId: row.notificationId
+        }))
+      }
     };
   });
 
@@ -167,12 +190,17 @@ async function timedFetch(url, init = {}) {
 }
 
 function summarizeProof(proof) {
+  const flags = proof?.setup?.scenario_flags ?? {};
+  const variant = flags?.module2Variant ?? {};
   return {
     status: proof?.status ?? proof?.finalStatus,
     setupId: proof?.setup?.id,
     tradeId: proof?.trade?.id,
     setupStatus: proof?.setup?.status,
     scenario: proof?.setup?.scenario,
+    variantCode: variant?.code ?? flags?.variantCode ?? null,
+    variantName: variant?.name ?? null,
+    variantProfile: variant?.profileKey ?? null,
     direction: proof?.setup?.direction,
     entry: proof?.setup?.entry_price,
     stop: proof?.setup?.stop_price,

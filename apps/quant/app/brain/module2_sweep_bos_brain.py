@@ -4,7 +4,7 @@ from typing import Any
 
 
 MODULE_CODE = "high_probability_strategy_2"
-MODULE_NAME = "Module 2 Liquidity Sweep + MSS + Retest"
+MODULE_NAME = "Module 2 Ultimate Liquidity Sweep"
 
 MANDATORY_RULES = [
     "DATA_HEALTHY",
@@ -20,12 +20,6 @@ MANDATORY_RULES = [
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE",
     "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
@@ -66,10 +60,10 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if trade and trade.get("outcome") == "ACTIVE":
         setup_status = str(setup.get("status") or "") if setup else ""
         if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper trade whose originating setup did not pass the authoritative Ultimate Liquidity Sweep checklist.", False)
+            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper trade whose originating setup did not pass the selected liquidity-sweep variant checklist.", False)
         return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 paper trade is active. Manage the TP/SL lifecycle.", False)
     if not setup:
-        return payload("WAITING_FOR_SWEEP_MSS_RETEST_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for a New York liquidity sweep, close-back rejection, reversal MSS, and protected-structure retest.", False)
+        return payload("WAITING_FOR_LIQUIDITY_SWEEP_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for an all-session liquidity sweep plus one paper-approved confirmation profile.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
@@ -82,21 +76,22 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
         should_open = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         setup_tier = "FULL" if full else "MANDATORY"
-        decision_type = "SWEEP_MSS_RETEST_FULL_ENTRY_READY" if full else "SWEEP_MSS_RETEST_MANDATORY_ENTRY_READY"
+        selected_variant = selected_variant_name(flags)
+        decision_type = "LIQUIDITY_SWEEP_FULL_ENTRY_READY" if full else "LIQUIDITY_SWEEP_VARIANT_ENTRY_READY"
         reason = (
-            f"Module 2 {setup_tier} setup passed. {action} plan is ready from liquidity sweep, "
-            "close-back rejection, reversal MSS, protected-structure retest, and confirmation candle."
+            f"Module 2 {setup_tier} setup passed through {selected_variant}. {action} plan is ready from "
+            "liquidity sweep, close-back rejection, selected profile confirmation, and risk approval."
         )
-        return payload(decision_type if should_open else "SWEEP_MSS_RETEST_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
+        return payload(decision_type if should_open else "LIQUIDITY_SWEEP_SETUP_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_open else "INFO", reason, should_open)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
-        return payload("SWEEP_MSS_RETEST_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the mandatory Sweep + MSS + Retest checklist is not fully passed.", False)
+        return payload("LIQUIDITY_SWEEP_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the selected liquidity-sweep variant checklist is not fully passed.", False)
 
     blocker = first_blocker(checklist)
-    reason = setup.get("final_reason") or "Module 2 is waiting for mandatory Ultimate Sweep rules."
+    reason = setup.get("final_reason") or "Module 2 is waiting for a selected paper-approved liquidity-sweep profile."
     if blocker:
         reason = f"{reason} Current blocker: {blocker['ruleCode']}."
-    return payload("SWEEP_MSS_RETEST_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
+    return payload("LIQUIDITY_SWEEP_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
 
 
 def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -136,6 +131,22 @@ def checklist_summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def selected_variant_name(flags: dict[str, Any]) -> str:
+    variant = flags.get("module2Variant") if isinstance(flags.get("module2Variant"), dict) else {}
+    return str(variant.get("name") or flags.get("variantName") or flags.get("variantCode") or "the selected liquidity-sweep profile")
+
+
+def selected_variant_data(flags: dict[str, Any]) -> dict[str, Any]:
+    variant = flags.get("module2Variant") if isinstance(flags.get("module2Variant"), dict) else {}
+    return {
+        "variantCode": variant.get("code") or flags.get("variantCode"),
+        "variantName": variant.get("name") or flags.get("variantName"),
+        "variantProfile": variant.get("profileKey"),
+        "variantStatus": variant.get("approvalStatus") or variant.get("status"),
+        "variantPaperEligible": variant.get("paperEligible"),
+    }
+
+
 def rule_layer(rule_code: str) -> str:
     if rule_code in MANDATORY_RULES:
         return "MANDATORY"
@@ -157,6 +168,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
     stop = number(setup.get("stop_price")) if setup else None
     target = number(setup.get("target_price")) if setup else None
     flags = setup.get("scenario_flags") if setup else {}
+    variant_data = selected_variant_data(flags if isinstance(flags, dict) else {})
     setup_tier = flags.get("setupTier") or ("FULL" if checklist.get("fullPassed") else "MANDATORY" if checklist.get("mandatoryPassed") else "WATCH")
     title_action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else action
     return {
@@ -195,6 +207,7 @@ def base_payload(module_code: str, module_name: str, decision_type: str, action:
                 "tradeId": str(trade.get("id")) if trade and trade.get("id") else None,
                 "scenario": setup.get("scenario") if setup else None,
                 "setupTier": setup_tier,
+                **variant_data,
                 "finalReason": setup.get("final_reason") if setup else reason,
                 "mandatoryPassed": checklist.get("mandatoryPassed"),
                 "fullPassed": checklist.get("fullPassed"),

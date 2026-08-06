@@ -130,59 +130,47 @@ async function validateCatalog(tenantId: string | null) {
          count(*)::int AS total,
          count(*) FILTER (WHERE approval_status = 'PRODUCTION_APPROVED')::int AS production_approved,
          count(*) FILTER (WHERE paper_eligible = true)::int AS paper_eligible,
-         count(*) FILTER (WHERE code = 'SWEEP_MSS_RETEST' AND approval_status = 'PRODUCTION_APPROVED' AND paper_eligible = true)::int AS strict_mss_retest
+         count(*) FILTER (WHERE code = 'SWEEP_NO_CONFIRMATION' AND approval_status = 'RESEARCH_ONLY' AND paper_eligible = false)::int AS no_confirmation_control,
+         count(*) FILTER (WHERE code = 'SWEEP_DISPLACEMENT_RETEST')::int AS legacy_displacement_retest
        FROM module2_strategy_variants
        WHERE module_code = $1`,
       [MODULE_CODE]
     );
     checks.push({
       name: "Module 2 variant registry",
-      status: Number(registry?.total ?? 0) >= 10 && Number(registry?.strict_mss_retest ?? 0) === 1 && Number(registry?.paper_eligible ?? 0) === 1 ? "PASS" : "FAIL",
-      detail: `${registry?.total ?? 0} evidence profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. Strict MSS retest must be the only paper-eligible live entry profile.`,
+      status: Number(registry?.total ?? 0) === 10 && Number(registry?.paper_eligible ?? 0) === 9 && Number(registry?.no_confirmation_control ?? 0) === 1 && Number(registry?.legacy_displacement_retest ?? 0) === 0 ? "PASS" : "FAIL",
+      detail: `${registry?.total ?? 0} independent A-J profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. A-I can create signals after risk approval; J is research-only.`,
       evidence: registry
     });
-    const strict = await one(
-      `SELECT code, required_rules
+    const exactProfiles = await client.query(
+      `SELECT code, name, paper_eligible, sort_order
        FROM module2_strategy_variants
        WHERE module_code = $1
-         AND code = 'SWEEP_MSS_RETEST'
-       LIMIT 1`,
+       ORDER BY sort_order`,
       [MODULE_CODE]
     );
-    const requiredRules = Array.isArray(strict?.required_rules) ? strict.required_rules : [];
-    const expectedRules = [
-      "DATA_HEALTHY",
-      "MARKET_CONTEXT_READY",
-      "MARKET_REGIME_CLASSIFIED",
-      "NY_SESSION_ACTIVE",
-      "DAILY_TRADE_LIMIT",
-      "ACTIVE_SETUP_CONFLICT_CLEAR",
-      "NO_ACTIVE_TRADE_CONFLICT",
-      "RISK_LIMITS_CLEAR",
-      "MANUAL_CONFIRMATION_COMPLETED",
-      "LIQUIDITY_LEVEL_IDENTIFIED",
-      "LIQUIDITY_SWEEP_CONFIRMED",
-      "SWEEP_REJECTION_CONFIRMED",
-      "SWEEP_ACCEPTANCE_BLOCK",
-      "PROTECTED_POINT_CONFIDENCE",
-      "BOS_CHOCH_CONFIRMED",
-      "MSS_STRENGTH",
-      "ENTRY_ZONE_READY",
-      "ENTRY_ZONE_RETRACE",
-      "CONFIRM_ENTRY_CANDLE",
-      "DIRECTIONAL_CONFLICT_CLEAR",
-      "RISK_OK",
-      "SIGNAL_SCORE",
-      "VARIANT_SELECTED"
+    const expectedCodes = [
+      "SWEEP_CLOSE_BACK_INSIDE",
+      "SWEEP_BOS",
+      "SWEEP_MSS",
+      "SWEEP_ENGULFING",
+      "SWEEP_BOS_RETEST",
+      "SWEEP_MSS_RETEST",
+      "SWEEP_EMA_ALIGNMENT",
+      "SWEEP_VOLUME_EXPANSION",
+      "SWEEP_MSS_DISPLACEMENT_RETEST",
+      "SWEEP_NO_CONFIRMATION"
     ];
-    const missingRules = expectedRules.filter((rule) => !requiredRules.includes(rule));
+    const actualCodes = exactProfiles.rows.map((row: any) => row.code);
+    const missingProfiles = expectedCodes.filter((code) => !actualCodes.includes(code));
+    const extraProfiles = actualCodes.filter((code: string) => !expectedCodes.includes(code));
     checks.push({
-      name: "Module 2 complete entry contract",
-      status: missingRules.length === 0 ? "PASS" : "FAIL",
-      detail: missingRules.length === 0
-        ? "Strict MSS retest profile includes every production architecture gate."
-        : `Strict MSS retest profile is missing ${missingRules.join(", ")}.`,
-      evidence: { expectedRules, requiredRules, missingRules }
+      name: "Module 2 exact A-J profile contract",
+      status: missingProfiles.length === 0 && extraProfiles.length === 0 ? "PASS" : "FAIL",
+      detail: missingProfiles.length === 0 && extraProfiles.length === 0
+        ? "The registry contains exactly the requested A-J independent confirmation profiles."
+        : `Profile mismatch. Missing: ${missingProfiles.join(", ") || "none"}. Extra: ${extraProfiles.join(", ") || "none"}.`,
+      evidence: { expectedCodes, actualCodes, missingProfiles, extraProfiles }
     });
   }
 

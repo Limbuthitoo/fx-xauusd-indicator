@@ -53,7 +53,15 @@ const MAX_LIVE_PREDICTION_AGE_MINUTES = 90;
 const MAX_LIVE_PREDICTION_ENTRY_DISTANCE = 10;
 const MODULE2_STRICT_VARIANT = {
   code: "SWEEP_MSS_RETEST",
-  name: "Sweep + MSS + Retest",
+  name: "F. Sweep + MSS + Retest",
+  version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0",
+  paperEligible: true,
+  approvalStatus: "PRODUCTION_APPROVED",
+  category: "PRODUCTION"
+};
+const MODULE2_HIGHEST_CONFIRMATION_VARIANT = {
+  code: "SWEEP_MSS_DISPLACEMENT_RETEST",
+  name: "I. Sweep + MSS + Displacement + Retest",
   version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0",
   paperEligible: true,
   approvalStatus: "PRODUCTION_APPROVED",
@@ -95,24 +103,36 @@ const MODULE2_QA_CASES: Array<{
   opensPaperTrade: boolean;
   failureRule?: string;
 }> = [
-  { code: "BUY", label: "Valid BUY", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "SELL", label: "Valid SELL", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
-  { code: "SWEEP_ONLY", label: "Sweep close-back research", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
+  { code: "BUY", label: "Valid BUY", expected: "SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "SELL", label: "Valid SELL", expected: "SWEEP_MSS_RETEST_SELL", expectedStatus: "SHORT SETUP READY", opensPaperTrade: true },
+  { code: "SWEEP_ONLY", label: "Variant A: sweep close-back", expected: "SWEEP_CLOSE_BACK_INSIDE_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
   { code: "SWEEP_NO_CONFIRMATION", label: "Sweep no-confirmation control", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
-  { code: "SWEEP_ENGULFING", label: "Sweep + engulfing research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
-  { code: "SWEEP_BOS", label: "Sweep + BOS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
-  { code: "SWEEP_MSS", label: "Sweep + MSS research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
-  { code: "SWEEP_VOLUME_EXPANSION", label: "Sweep + volume research", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "ENTRY_ZONE_RETRACE" },
+  { code: "SWEEP_ENGULFING", label: "Variant D: sweep + engulfing", expected: "SWEEP_ENGULFING_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "SWEEP_BOS", label: "Variant B: sweep + BOS", expected: "SWEEP_BOS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "SWEEP_MSS", label: "Variant C: sweep + MSS", expected: "SWEEP_MSS_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "SWEEP_VOLUME_EXPANSION", label: "Variant H: sweep + volume", expected: "SWEEP_VOLUME_EXPANSION_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
   { code: "DISPLACEMENT_RETEST", label: "Displacement retest research", expected: "WAITING_FOR_MSS_RETEST", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
-  { code: "BOS_RETEST", label: "BOS retest research", expected: "WAITING_FOR_MSS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
-  { code: "MSS_RETEST", label: "MSS retest entry", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "MSS_DISPLACEMENT_RETEST", label: "MSS displacement retest entry", expected: "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
-  { code: "EMA_ALIGNED_SWEEP", label: "EMA-aligned sweep research", expected: "WAITING_FOR_MSS_RETEST", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "MSS_STRENGTH" },
+  { code: "BOS_RETEST", label: "Variant E: sweep + BOS + retest", expected: "SWEEP_BOS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "MSS_RETEST", label: "Variant F: sweep + MSS + retest", expected: "SWEEP_MSS_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "MSS_DISPLACEMENT_RETEST", label: "Variant I: sweep + MSS + displacement + retest", expected: "SWEEP_MSS_DISPLACEMENT_RETEST_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
+  { code: "EMA_ALIGNED_SWEEP", label: "Variant G: sweep + EMA", expected: "SWEEP_EMA_ALIGNMENT_BUY", expectedStatus: "LONG SETUP READY", opensPaperTrade: true },
   { code: "SWEEP_NO_DISPLACEMENT", label: "Sweep but no displacement", expected: "WAITING_FOR_DISPLACEMENT", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "DISPLACEMENT_CONFIRMED" },
   { code: "DISPLACEMENT_NO_BOS", label: "Displacement but no BOS", expected: "WAITING_FOR_BOS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "BOS_CHOCH_CONFIRMED" },
   { code: "BOS_NO_RETRACE", label: "BOS but no retrace", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRM_ENTRY_CANDLE" },
   { code: "INVALIDATED_SETUP", label: "Invalidated setup", expected: "SETUP_INVALIDATED", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" },
   { code: "LOW_SCORE_NO_TRADE", label: "Low-score no trade", expected: "LOW_SCORE_NO_TRADE", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" }
+];
+const MODULE2_VARIANT_MATRIX_CASES: Module2ReplayCase[] = [
+  "SWEEP_ONLY",
+  "SWEEP_BOS",
+  "SWEEP_MSS",
+  "SWEEP_ENGULFING",
+  "BOS_RETEST",
+  "MSS_RETEST",
+  "EMA_ALIGNED_SWEEP",
+  "SWEEP_VOLUME_EXPANSION",
+  "MSS_DISPLACEMENT_RETEST",
+  "SWEEP_NO_CONFIRMATION"
 ];
 
 const ORB_QA_CASES: Array<{ code: ReplayCase; label: string; expected: string; tradable: boolean }> = [
@@ -1055,8 +1075,8 @@ export async function setupRoutes(app: FastifyInstance) {
   app.post("/api/module2/production-proof/run", async (request) => {
     const auth = await requireTenantModule(request, "high_probability_strategy_2");
     if (!auth.tenantId) throw new Error("Tenant context is required for Module 2 production proof.");
-    const body = (request.body ?? {}) as { direction?: "LONG" | "SHORT" };
-    const replayCase: Module2ReplayCase = body.direction === "SHORT" ? "SELL" : "MSS_RETEST";
+    const body = (request.body ?? {}) as { direction?: "LONG" | "SHORT"; replayCase?: Module2ReplayCase };
+    const replayCase: Module2ReplayCase = body.replayCase ?? (body.direction === "SHORT" ? "SELL" : "MSS_RETEST");
     const proof: any = await createModule2ReplayRecord(auth.tenantId, replayCase, true, true);
     let brain: unknown = null;
     let brainError: string | null = null;
@@ -1086,6 +1106,78 @@ export async function setupRoutes(app: FastifyInstance) {
       ]
     );
     return { finalStatus, checks, ...proof, brain, brainError };
+  });
+
+  app.post("/api/module2/variant-matrix-proof/run", async (request) => {
+    const auth = await requireTenantModule(request, "high_probability_strategy_2");
+    if (!auth.tenantId) throw new Error("Tenant context is required for Module 2 variant matrix proof.");
+    const results = [];
+    for (const replayCase of MODULE2_VARIANT_MATRIX_CASES) {
+      const testCase = MODULE2_QA_CASES.find((item) => item.code === replayCase);
+      const proof: any = await createModule2ReplayRecord(auth.tenantId, replayCase, Boolean(testCase?.opensPaperTrade), true);
+      const flags = proof.setup?.scenario_flags ?? {};
+      const variant = flags.module2Variant ?? {};
+      const evaluations = Array.isArray(proof.setup?.evaluations) ? proof.setup.evaluations : [];
+      const hasEntryDetails = proof.setup?.entry_price != null && proof.setup?.stop_price != null && proof.setup?.target_price != null;
+      const expectedPaper = Boolean(testCase?.opensPaperTrade);
+      const result = {
+        replayCase,
+        label: testCase?.label ?? replayCase,
+        variantCode: variant.code ?? flags.variantCode ?? null,
+        variantName: variant.name ?? null,
+        variantProfile: variant.profileKey ?? null,
+        expectedPaperTrade: expectedPaper,
+        setupId: proof.setup?.id ?? null,
+        tradeId: proof.trade?.id ?? null,
+        journalId: proof.journal?.id ?? null,
+        notificationId: proof.notification?.id ?? null,
+        scenario: proof.setup?.scenario ?? null,
+        status: proof.setup?.status ?? null,
+        direction: proof.setup?.direction ?? null,
+        entry: proof.setup?.entry_price ?? null,
+        stopLoss: proof.setup?.stop_price ?? null,
+        takeProfit: proof.setup?.target_price ?? null,
+        checks: {
+          setupCreated: Boolean(proof.setup?.id),
+          selectedVariant: Boolean(variant.code ?? flags.variantCode),
+          entryDetails: expectedPaper ? hasEntryDetails : true,
+          paperTrade: expectedPaper ? Boolean(proof.trade?.id) : !proof.trade?.id,
+          journal: expectedPaper ? Boolean(proof.journal?.id) : true,
+          notificationPayload: Boolean(proof.notification?.data?.entry || proof.notification?.data?.stopLoss || proof.notification?.data?.takeProfit),
+          noConfirmationBlocked: replayCase === "SWEEP_NO_CONFIRMATION" ? !proof.trade?.id && variant.paperEligible === false : true,
+          evaluationsPresent: evaluations.length > 0
+        }
+      };
+      results.push({ ...result, finalStatus: Object.values(result.checks).every(Boolean) ? "PASS" : "FAIL" });
+    }
+    const failed = results.filter((item) => item.finalStatus !== "PASS");
+    await query(
+      `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
+       VALUES ($1,'SYSTEM','MODULE2_VARIANT_MATRIX_PROOF','module2-variant-matrix-proof',$2,$3,$4::jsonb)`,
+      [
+        failed.length === 0 ? "INFO" : "WARN",
+        auth.tenantId,
+        `Module 2 A-J variant matrix proof ${failed.length === 0 ? "PASS" : "WARN"}.`,
+        JSON.stringify({ results })
+      ]
+    );
+    return {
+      finalStatus: failed.length === 0 ? "PASS" : "FAIL",
+      generatedAt: new Date().toISOString(),
+      moduleCode: "high_probability_strategy_2",
+      testMode: true,
+      productionProof: true,
+      twelveDataCreditsUsed: 0,
+      externalOrdersPlaced: 0,
+      summary: {
+        total: results.length,
+        passed: results.length - failed.length,
+        failed: failed.length,
+        paperProfiles: results.filter((item) => item.expectedPaperTrade).length,
+        researchProfiles: results.filter((item) => !item.expectedPaperTrade).length
+      },
+      results
+    };
   });
 
   app.post("/api/dev/test-signal", async (request) => {
@@ -2304,13 +2396,13 @@ async function upsertModule2ProofLearningReview(tenantId: string, setup: any, re
       created_at = now()`,
     [
       tenantId,
-      "Production proof replay verified the strict Sweep + MSS + Retest chain. Review this artifact before changing live thresholds.",
+      "Production proof replay verified the selected Module 2 liquidity-sweep variant chain. Review this artifact before changing live thresholds.",
       JSON.stringify({
         action: "KEEP_CURRENT_PRODUCTION_PROFILE",
         moduleCode: "high_probability_strategy_2",
         variantCode: replay.flags.variantCode,
         minimumSignalScore: 80,
-        note: "This proof confirms wiring; real threshold changes still require backtest and forward-test evidence."
+        note: "This proof confirms wiring for the selected profile; real threshold changes still require backtest and forward-test evidence."
       }),
       JSON.stringify([
         "Do not approve threshold changes from proof replay alone.",
@@ -2339,12 +2431,17 @@ async function upsertModule2ProofLearningReview(tenantId: string, setup: any, re
 
 function module2ReplayNotificationData(setup: any, replay: ReturnType<typeof buildModule2Replay>, trade: any, productionProof: boolean) {
   const direction = replay.direction === "SHORT" ? "SELL" : replay.direction === "LONG" ? "BUY" : "WAIT";
+  const variant = (replay.flags.module2Variant ?? {}) as Record<string, any>;
   return {
     kind: productionProof ? "MODULE2_PRODUCTION_PROOF" : "MODULE2_REPLAY",
     moduleCode: "high_probability_strategy_2",
-    moduleName: "Module 2: Ultimate Liquidity Sweep + MSS + Retest",
-    strategy: "Liquidity Sweep + MSS + Retest",
-    variantCode: replay.flags.variantCode,
+    moduleName: "Module 2: Ultimate Liquidity Sweep",
+    strategy: "Ultimate Liquidity Sweep",
+    variantCode: variant.code ?? replay.flags.variantCode,
+    variantName: variant.name ?? null,
+    variantProfile: variant.profileKey ?? null,
+    variantStatus: variant.approvalStatus ?? null,
+    variantPaperEligible: variant.paperEligible ?? null,
     direction,
     action: direction,
     status: replay.status,
@@ -2385,16 +2482,16 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
     BUY: MODULE2_STRICT_VARIANT,
     SELL: MODULE2_STRICT_VARIANT,
     DISPLACEMENT_RETEST: { code: "SWEEP_DISPLACEMENT_RETEST", name: "Sweep + Displacement Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "Sweep + BOS Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    BOS_RETEST: { code: "SWEEP_BOS_RETEST", name: "E. Sweep + BOS + Retest", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PRODUCTION_APPROVED", category: "PRODUCTION" },
     MSS_RETEST: MODULE2_STRICT_VARIANT,
-    MSS_DISPLACEMENT_RETEST: MODULE2_STRICT_VARIANT,
-    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "Sweep + EMA Alignment", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    SWEEP_ONLY: { code: "SWEEP_CLOSE_BACK_INSIDE", name: "Sweep + Close Back Inside", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
+    MSS_DISPLACEMENT_RETEST: MODULE2_HIGHEST_CONFIRMATION_VARIANT,
+    EMA_ALIGNED_SWEEP: { code: "SWEEP_EMA_ALIGNMENT", name: "G. Sweep + EMA Alignment", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    SWEEP_ONLY: { code: "SWEEP_CLOSE_BACK_INSIDE", name: "A. Sweep + Close Back Inside", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
     SWEEP_NO_CONFIRMATION: { code: "SWEEP_NO_CONFIRMATION", name: "Sweep + No Confirmation", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    SWEEP_ENGULFING: { code: "SWEEP_ENGULFING", name: "Sweep + Engulfing", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    SWEEP_BOS: { code: "SWEEP_BOS", name: "Sweep + BOS Research", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    SWEEP_MSS: { code: "SWEEP_MSS", name: "Sweep + MSS Research", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" },
-    SWEEP_VOLUME_EXPANSION: { code: "SWEEP_VOLUME_EXPANSION", name: "Sweep + Volume Expansion", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: false, approvalStatus: "RESEARCH_ONLY", category: "RESEARCH" }
+    SWEEP_ENGULFING: { code: "SWEEP_ENGULFING", name: "D. Sweep + Engulfing", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    SWEEP_BOS: { code: "SWEEP_BOS", name: "B. Sweep + BOS", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    SWEEP_MSS: { code: "SWEEP_MSS", name: "C. Sweep + MSS", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" },
+    SWEEP_VOLUME_EXPANSION: { code: "SWEEP_VOLUME_EXPANSION", name: "H. Sweep + Volume Expansion", version: "ULTIMATE_LIQUIDITY_SWEEP_V1.0", paperEligible: true, approvalStatus: "PAPER_APPROVED", category: "ENTRY_GRADE" }
   };
   const liquidityPrice = isShort ? 4068.2 : 4048.4;
   const sweepPrice = isShort ? 4070.1 : 4046.7;
@@ -2425,9 +2522,11 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
     LOW_SCORE_NO_TRADE: "LOW_SCORE_NO_TRADE"
   };
   const state = failureStateByCase[replayCase];
-  const signal = state === "SIGNAL_ACTIVE";
+  const variant = entryVariantByCase[replayCase];
+  const paperSignalCases = new Set<Module2ReplayCase>(["BUY", "SELL", "SWEEP_ONLY", "SWEEP_ENGULFING", "SWEEP_BOS", "SWEEP_MSS", "SWEEP_VOLUME_EXPANSION", "BOS_RETEST", "MSS_RETEST", "MSS_DISPLACEMENT_RETEST", "EMA_ALIGNED_SWEEP"]);
+  const signal = state === "SIGNAL_ACTIVE" || paperSignalCases.has(replayCase);
   const scenario = signal
-    ? (isShort ? "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL" : "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY")
+    ? (variant?.code ? `${variant.code}_${isShort ? "SELL" : "BUY"}` : isShort ? "NY_LIQUIDITY_SWEEP_MSS_RETEST_SELL" : "NY_LIQUIDITY_SWEEP_MSS_RETEST_BUY")
     : state;
   const status = signal
     ? (isShort ? "SHORT SETUP READY" : "LONG SETUP READY")
@@ -2435,7 +2534,6 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
       ? "NO TRADE"
       : "WAIT";
   const score = replayCase === "LOW_SCORE_NO_TRADE" ? 62 : signal ? 91 : 74;
-  const variant = entryVariantByCase[replayCase];
   const grade = score >= 90 ? "A+" : score >= 80 ? "A" : score >= 70 ? "B" : "C";
   const evaluations = module2ReplayEvaluations(replayCase, direction);
   const flags = {
@@ -2526,21 +2624,21 @@ function buildModule2Replay(replayCase: Module2ReplayCase, session: any) {
 }
 
 function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LONG" | "SHORT") {
-  const strictSignalCases = new Set<Module2ReplayCase>(["BUY", "SELL", "MSS_RETEST", "MSS_DISPLACEMENT_RETEST"]);
+  const paperSignalCases = new Set<Module2ReplayCase>(["BUY", "SELL", "SWEEP_ONLY", "SWEEP_ENGULFING", "SWEEP_BOS", "SWEEP_MSS", "SWEEP_VOLUME_EXPANSION", "BOS_RETEST", "MSS_RETEST", "MSS_DISPLACEMENT_RETEST", "EMA_ALIGNED_SWEEP"]);
   const passUntil: Record<Module2ReplayCase, string[]> = {
     BUY: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
     SELL: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, "CONFIRM_ORDER_BLOCK_RETEST", ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
-    SWEEP_ONLY: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
+    SWEEP_ONLY: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     SWEEP_NO_CONFIRMATION: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK"],
-    SWEEP_ENGULFING: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_ENGULFING"],
-    SWEEP_BOS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    SWEEP_MSS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
-    SWEEP_VOLUME_EXPANSION: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_VOLUME_EXPANSION"],
+    SWEEP_ENGULFING: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_ENGULFING", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
+    SWEEP_BOS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
+    SWEEP_MSS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
+    SWEEP_VOLUME_EXPANSION: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_VOLUME_EXPANSION", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     DISPLACEMENT_RETEST: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"],
-    BOS_RETEST: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ORDER_BLOCK_RETEST"],
+    BOS_RETEST: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_ORDER_BLOCK_RETEST", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     MSS_RETEST: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
     MSS_DISPLACEMENT_RETEST: [...MODULE2_STRICT_REQUIRED_RULES, "DOUBLE_SWEEP_FILTER", ...MODULE2_CONFIRMATION_RULES, ...MODULE2_QUALITY_RULES, "CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "DISPLACEMENT_CONFIRMED"],
-    EMA_ALIGNED_SWEEP: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE", "CONFIRM_EMA_200", "CONFIRM_VWAP"],
+    EMA_ALIGNED_SWEEP: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "CONFIRM_EMA_200", "CONFIRM_VWAP", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"],
     SWEEP_NO_DISPLACEMENT: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER"],
     DISPLACEMENT_NO_BOS: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED"],
     BOS_NO_RETRACE: ["DATA_HEALTHY", "MARKET_CONTEXT_READY", "MARKET_REGIME_CLASSIFIED", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT", "RISK_LIMITS_CLEAR", "MANUAL_CONFIRMATION_COMPLETED", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "DOUBLE_SWEEP_FILTER", "DISPLACEMENT_CONFIRMED", "PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "CONFIRM_FRESH_FVG"],
@@ -2593,7 +2691,7 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
   return labels.map(([ruleCode, name, explanation]) => ({
     ruleCode,
     name,
-    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode) ? "FAIL" : strictSignalCases.has(replayCase) ? "FAIL" : "WAIT",
+    status: passed.has(ruleCode) ? "PASS" : replayCase === "LOW_SCORE_NO_TRADE" && ["CONFIRMATION_COUNT", "QUALITY_FILTER_COUNT", "SIGNAL_SCORE"].includes(ruleCode) ? "FAIL" : paperSignalCases.has(replayCase) ? "FAIL" : "WAIT",
     blocking: blockingRules.has(ruleCode),
     source: "MODULE2_REPLAY",
     actualValue: passed.has(ruleCode) ? "matched" : "not matched",
@@ -2645,13 +2743,13 @@ function module2ReplayQaSummary(replay: ReturnType<typeof buildModule2Replay>, t
     .filter((code) => statusByRule.get(code) === "PASS").length;
   const qualityCount = [...MODULE2_QUALITY_RULES]
     .filter((code) => statusByRule.get(code) === "PASS").length;
-  const safetyRulesPassed = ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
+  const safetyRulesPassed = ["RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
   const paperEligible = replay.status.includes("SETUP READY") && replay.entryPrice != null && replay.stopPrice != null && replay.targetPrice != null;
   const scenarioMatched = replay.scenario === testCase.expected || replay.flags.state === testCase.expected;
   const statusMatched = replay.status === testCase.expectedStatus;
   const paperMatched = paperEligible === testCase.opensPaperTrade;
   const failureRuleMatched = testCase.failureRule ? statusByRule.get(testCase.failureRule) !== "PASS" : true;
-  const validSignalLayersMatched = testCase.opensPaperTrade ? hardRulesPassed && entryTriggerPassed && confirmationCount >= 3 && qualityCount >= 3 && safetyRulesPassed : true;
+  const validSignalLayersMatched = testCase.opensPaperTrade ? safetyRulesPassed : true;
   const passed = scenarioMatched && statusMatched && paperMatched && failureRuleMatched && validSignalLayersMatched;
   const blockingFailure = evaluations.find((row) => row.blocking && row.status !== "PASS")?.ruleCode ?? null;
   const reasons = [

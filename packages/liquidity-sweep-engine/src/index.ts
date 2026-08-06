@@ -231,19 +231,20 @@ export type LiquiditySweepDecision = {
 
 type Module2VariantCode =
   | "SWEEP_CLOSE_BACK_INSIDE"
-  | "SWEEP_NO_CONFIRMATION"
-  | "SWEEP_ENGULFING"
   | "SWEEP_BOS"
   | "SWEEP_MSS"
-  | "SWEEP_VOLUME_EXPANSION"
+  | "SWEEP_ENGULFING"
   | "SWEEP_BOS_RETEST"
   | "SWEEP_MSS_RETEST"
   | "SWEEP_EMA_ALIGNMENT"
-  | "SWEEP_DISPLACEMENT_RETEST"
-  | "SWEEP_MSS_DISPLACEMENT_RETEST";
+  | "SWEEP_VOLUME_EXPANSION"
+  | "SWEEP_MSS_DISPLACEMENT_RETEST"
+  | "SWEEP_NO_CONFIRMATION";
 
 type Module2Variant = {
   code: Module2VariantCode;
+  profileKey: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J";
+  sortOrder: number;
   version: string;
   name: string;
   category: "RESEARCH" | "ENTRY_GRADE" | "PRODUCTION";
@@ -489,9 +490,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const structureType = bos?.subtype ?? (htfBias === "NEUTRAL"
     ? "REVERSAL_MSS"
     : htfBias === (direction === "LONG" ? "BULLISH" : "BEARISH") ? "CONTINUATION_BOS" : "REVERSAL_MSS");
-  push(evaluations, "PROTECTED_POINT_CONFIDENCE", "Protected structure point has usable confidence", Boolean(bos?.protectedPoint && protectedConfidenceRank(bos.protectedPoint.confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)), true, "AUTOMATIC", bos?.protectedPoint?.confidence ?? null, `>= ${config.protectedPointMinimumConfidence}`, bos?.protectedPoint ? `${bos.protectedPoint.type} at ${bos.protectedPoint.price.toFixed(2)} selected with ${bos.protectedPoint.confidence} confidence.` : "No protected structure point is available yet.");
-  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), true, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close reversal MSS has confirmed yet.");
-  push(evaluations, "MSS_STRENGTH", "MSS strength confirmed", Boolean(bos?.breakDistanceAtr != null && bos.breakDistanceAtr >= config.minimumBosCloseDistanceATR && bos.bodyRatio >= 0.5), true, "AUTOMATIC", bos ? `${bos.breakDistanceAtr.toFixed(2)} ATR / ${Math.round(bos.bodyRatio * 100)}% body` : null, `>= ${config.minimumBosCloseDistanceATR} ATR and >= 50% body`, bos ? "The MSS close has enough break distance and body strength." : "Waiting for a strong closed-candle MSS.");
+  push(evaluations, "PROTECTED_POINT_CONFIDENCE", "Protected structure point has usable confidence", Boolean(bos?.protectedPoint && protectedConfidenceRank(bos.protectedPoint.confidence) >= protectedConfidenceRank(config.protectedPointMinimumConfidence)), false, "AUTOMATIC", bos?.protectedPoint?.confidence ?? null, `>= ${config.protectedPointMinimumConfidence}`, bos?.protectedPoint ? `${bos.protectedPoint.type} at ${bos.protectedPoint.price.toFixed(2)} selected with ${bos.protectedPoint.confidence} confidence.` : "No protected structure point is available yet. This blocks only variants that require MSS/BOS.");
+  push(evaluations, "BOS_CHOCH_CONFIRMED", `${structureType} confirmed by candle close`, Boolean(bos), false, "AUTOMATIC", bos?.level ?? null, `close beyond structure by ${config.minimumBosCloseDistanceATR} ATR`, bos ? `Candle body closed beyond the protected ${bos.protectedPoint?.type?.toLowerCase() ?? "structure point"}; classified ${structureType}.` : "No candle-close reversal MSS has confirmed yet. This blocks only variants that require MSS/BOS.");
+  push(evaluations, "MSS_STRENGTH", "MSS strength confirmed", Boolean(bos?.breakDistanceAtr != null && bos.breakDistanceAtr >= config.minimumBosCloseDistanceATR && bos.bodyRatio >= 0.5), false, "AUTOMATIC", bos ? `${bos.breakDistanceAtr.toFixed(2)} ATR / ${Math.round(bos.bodyRatio * 100)}% body` : null, `>= ${config.minimumBosCloseDistanceATR} ATR and >= 50% body`, bos ? "The MSS close has enough break distance and body strength." : "Waiting for a strong closed-candle MSS. This blocks only variants that require MSS.");
   if (bos) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "STRUCTURE_BREAK_CONFIRMED", bos.candle.timestampUtc, `${structureType} confirmed by candle close beyond protected structure.`);
   }
@@ -506,14 +507,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     flags.stateMachine = appendStateTransition(flags.stateMachine, "EXPIRED", current.timestampUtc, "Retest-based confirmation profiles expired; non-retest profiles may still be evaluated independently.");
   }
 
-  push(evaluations, "ENTRY_ZONE_READY", "MSS retest zone ready", Boolean(zone), true, "AUTOMATIC", zone?.kind ?? null, "protected structure +/- 0.05 ATR", zone ? "The broken protected structure created a strict MSS retest zone." : "No protected-structure retest zone is available after MSS.");
+  push(evaluations, "ENTRY_ZONE_READY", "MSS retest zone ready", Boolean(zone), false, "AUTOMATIC", zone?.kind ?? null, "protected structure +/- 0.05 ATR", zone ? "The broken protected structure created a strict MSS retest zone." : "No protected-structure retest zone is available after MSS. This blocks only retest-based variants.");
   if (zone) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "ENTRY_ZONE_READY", zone.createdAt, `${zone.kind} entry zone prepared after structure break.`);
     flags.stateMachine = appendStateTransition(flags.stateMachine, "WAITING_FOR_RETEST", zone.createdAt, "Entry zone is ready; waiting for price to revisit the zone without invalidation.");
   }
 
   const retrace = zone && setupFresh ? current.low <= zone.high && current.high >= zone.low : false;
-  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retested MSS zone", retrace, true, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps MSS retest zone", retrace ? "Price has returned into the protected-structure MSS retest zone." : "Price has not returned into the MSS retest zone yet.");
+  push(evaluations, "ENTRY_ZONE_RETRACE", "Price retested MSS zone", retrace, false, "AUTOMATIC", retrace && zone ? `${zone.low.toFixed(2)}-${zone.high.toFixed(2)}` : candleShape(current), "current candle overlaps MSS retest zone", retrace ? "Price has returned into the protected-structure MSS retest zone." : "Price has not returned into the MSS retest zone yet. This blocks only retest-based variants.");
   if (retrace) {
     flags.stateMachine = appendStateTransition(flags.stateMachine, "RETEST_REACHED", current.timestampUtc, "Price overlapped the selected entry zone.");
   }
@@ -554,10 +555,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     { code: "CONFIRM_INSIDE_BAR_BREAK", name: "Inside bar break", passed: insideBarBreakOk, points: 8, actual: candleShape(current), required: "inside-bar break in setup direction", explanation: insideBarBreakOk ? "The latest candle broke the prior inside-bar range in the setup direction." : "No inside-bar break confirmation is present." },
     { code: "CONFIRM_DOJI_REJECTION", name: "Doji rejection", passed: dojiRejectionOk, points: 6, actual: candleShape(current), required: "doji rejection with directional close", explanation: dojiRejectionOk ? "A small-body rejection candle closed in the setup direction." : "No doji-style rejection confirmation is present." },
     { code: "CONFIRM_VOLUME_EXPANSION", name: "Volume expansion record", passed: config.volumeFilterMode === "OFF" ? false : volumeExpansionOk, points: 5, actual: `${config.volumeFilterMode} / ${current.volume ?? "unavailable"}`, required: ">= 1.25x recent average volume", explanation: config.volumeFilterMode === "OFF" ? "Volume mode is OFF; provider volume is not counted." : volumeExpansionOk ? "Provider volume expanded versus the recent average." : "Provider volume is unavailable or has not expanded enough; this remains record-only unless required by mode." },
-    { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm entry." }
+    { code: "CONFIRM_ENTRY_CANDLE", name: "Entry confirmation candle", passed: entryConfirmation, points: 10, actual: candleShape(current), required: "directional confirmation", explanation: entryConfirmation ? "The latest completed candle confirms the intended direction." : "The latest completed candle does not confirm retest entry. This blocks only variants that require an entry-zone confirmation candle." }
   ];
   for (const item of confirmations) {
-    push(evaluations, item.code, item.name, item.passed, item.code === "CONFIRM_ENTRY_CANDLE", "AUTOMATIC", item.actual, item.required, `${item.explanation} (+${item.points})`);
+    push(evaluations, item.code, item.name, item.passed, false, "AUTOMATIC", item.actual, item.required, `${item.explanation} (+${item.points})`);
   }
   const confirmationCount = confirmations.filter((item) => item.passed).length;
   const confirmationScore = confirmations.reduce((sum, item) => sum + (item.passed ? item.points : 0), 0);
@@ -699,7 +700,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     return blockedDecision("RISK_ENGINE_BLOCK", `BLOCK: ${selectedVariant?.name ?? "selected profile"} mandatory rules passed, but risk engine blocked entry.`, evaluations, flags, direction, score);
   }
   if (!scoreOk) {
-    return blockedDecision("LOW_SETUP_QUALITY", `NO TRADE: strict MSS retest path passed, but confidence ${score}% is below ${config.minimumSignalScore}%.`, evaluations, flags, direction, score);
+    return blockedDecision("LOW_SETUP_QUALITY", `NO TRADE: ${selectedVariant?.name ?? "selected Module 2 profile"} passed, but confidence ${score}% is below ${config.minimumSignalScore}%.`, evaluations, flags, direction, score);
   }
 
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
@@ -752,12 +753,6 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE",
     "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
@@ -783,12 +778,6 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "PROTECTED_POINT_CONFIDENCE",
-    "BOS_CHOCH_CONFIRMED",
-    "MSS_STRENGTH",
-    "ENTRY_ZONE_READY",
-    "ENTRY_ZONE_RETRACE",
-    "CONFIRM_ENTRY_CANDLE",
     "DIRECTIONAL_CONFLICT_CLEAR",
     "RISK_OK",
     "SIGNAL_SCORE",
@@ -797,7 +786,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
-  if (ruleCode === "PROTECTED_POINT_CONFIDENCE") return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (["PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(ruleCode)) return { ruleLayer: "EVIDENCE", requiredForEntry: false };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
@@ -2279,30 +2268,20 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("SWEEP_CLOSE_BACK_INSIDE", "Sweep + close-back inside", "PRODUCTION", "PRODUCTION_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("A", "SWEEP_CLOSE_BACK_INSIDE", "A. Sweep + close-back inside", "ENTRY_GRADE", "PAPER_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
     ], "Variant A passed: sweep and close-back-inside produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_NO_CONFIRMATION", "Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
-    ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction),
-    variant("SWEEP_ENGULFING", "Sweep + engulfing", "PRODUCTION", "PRODUCTION_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING", "RISK_OK", "SIGNAL_SCORE"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_ENGULFING", input.engulfingOk],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant D passed: sweep plus engulfing rejection produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_BOS", "Sweep + BOS", "PRODUCTION", "PRODUCTION_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("B", "SWEEP_BOS", "B. Sweep + BOS", "ENTRY_GRADE", "PAPER_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
     ], "Variant B passed: sweep and continuation BOS produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_MSS", "Sweep + MSS", "PRODUCTION", "PRODUCTION_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "MSS_STRENGTH", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("C", "SWEEP_MSS", "C. Sweep + MSS", "ENTRY_GRADE", "PAPER_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "MSS_STRENGTH", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
@@ -2310,33 +2289,20 @@ function module2VariantCandidates(input: {
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
     ], "Variant C passed: sweep and reversal MSS produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_VOLUME_EXPANSION", "Sweep + volume expansion", "PRODUCTION", "PRODUCTION_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("D", "SWEEP_ENGULFING", "D. Sweep + engulfing", "ENTRY_GRADE", "PAPER_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk],
+      ["CONFIRM_ENGULFING", input.engulfingOk],
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant H passed: sweep and provider volume expansion produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_DISPLACEMENT_RETEST", "Sweep + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 70, ["LIQUIDITY_SWEEP_CONFIRMED", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant retest profile passed: sweep, displacement, and retest produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_EMA_ALIGNMENT", "Sweep + EMA alignment", "PRODUCTION", "PRODUCTION_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "RISK_OK", "SIGNAL_SCORE"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_EMA_200", input.ema200Ok],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant G passed: sweep and EMA alignment produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_BOS_RETEST", "Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
+    ], "Variant D passed: sweep plus engulfing rejection produced a risk-approved entry profile.", base, input.direction),
+    variant("E", "SWEEP_BOS_RETEST", "E. Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
     ], "Variant E passed: sweep, BOS, and retest produced a risk-approved entry profile.", base, input.direction),
-    variant("SWEEP_MSS_RETEST", "Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
+    variant("F", "SWEEP_MSS_RETEST", "F. Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
       "DATA_HEALTHY",
       "NY_SESSION_ACTIVE",
       "DAILY_TRADE_LIMIT",
@@ -2375,19 +2341,36 @@ function module2VariantCandidates(input: {
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
     ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
-    variant("SWEEP_MSS_DISPLACEMENT_RETEST", "Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("G", "SWEEP_EMA_ALIGNMENT", "G. Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "RISK_OK", "SIGNAL_SCORE"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_EMA_200", input.ema200Ok],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant G passed: sweep and EMA alignment produced a risk-approved entry profile.", base, input.direction),
+    variant("H", "SWEEP_VOLUME_EXPANSION", "H. Sweep + volume expansion", "ENTRY_GRADE", "PAPER_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION", "RISK_OK", "SIGNAL_SCORE"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk],
+      ["RISK_OK", input.riskOk],
+      ["SIGNAL_SCORE", input.scoreOk]
+    ], "Variant H passed: sweep and provider volume expansion produced a risk-approved entry profile.", base, input.direction),
+    variant("I", "SWEEP_MSS_DISPLACEMENT_RETEST", "I. Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["RISK_OK", input.riskOk],
       ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant I passed: sweep, MSS, displacement, and retest produced the highest-confirmation entry profile.", base, input.direction)
+    ], "Variant I passed: sweep, MSS, displacement, and retest produced the highest-confirmation entry profile.", base, input.direction),
+    variant("J", "SWEEP_NO_CONFIRMATION", "J. Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
+    ], "Variant J passed: sweep-only control for backtesting comparison, not paper trading.", base, input.direction)
   ];
   return rows.map((row) => ({ ...row, score: row.status === "PASS" ? row.score + Math.min(10, Math.round(input.score / 10)) : row.score }));
 }
 
 function variant(
+  profileKey: Module2Variant["profileKey"],
   code: Module2VariantCode,
   name: string,
   category: Module2Variant["category"],
@@ -2404,6 +2387,8 @@ function variant(
   const passed = missingRules.length === 0;
   return {
     code,
+    profileKey,
+    sortOrder: profileKey.charCodeAt(0) - 64,
     version: base.version,
     name,
     category,

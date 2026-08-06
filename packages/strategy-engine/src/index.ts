@@ -377,6 +377,33 @@ function selectBreakoutScenario(context: RuleContext, direction: Direction, rete
   };
 }
 
+function relaxSweepReversalExtensionRule(
+  evaluations: ReturnType<typeof evaluateMandatoryBreakoutRules>,
+  selection: ScenarioSelection,
+  context: RuleContext,
+  direction: Direction
+) {
+  if (selection.scenario !== "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED") return evaluations;
+  const width = context.openingRange.width ?? 0;
+  const boundary = direction === "LONG" ? context.openingRange.high : context.openingRange.low;
+  if (boundary == null || width <= 0) return evaluations;
+  const extension = Math.abs(context.currentCandle.close - boundary);
+  const reversalExtensionLimit = width * 2;
+  return evaluations.map((evaluation) => {
+    if (evaluation.ruleCode !== "ENTRY_NOT_OVEREXTENDED") return evaluation;
+    return {
+      ...evaluation,
+      status: extension <= reversalExtensionLimit ? ("PASS" as const) : ("FAIL" as const),
+      actualValue: Number(extension.toFixed(3)),
+      requiredValue: Number(reversalExtensionLimit.toFixed(3)),
+      explanation:
+        extension <= reversalExtensionLimit
+          ? "The sweep-reversal entry is within the wider reversal extension limit and uses the failed sweep for stop placement."
+          : "The sweep-reversal travelled too far beyond the ORB boundary for a controlled paper entry."
+    };
+  });
+}
+
 function favorability(context: RuleContext, direction: Direction | null, evaluations: ReturnType<typeof evaluateMandatoryBreakoutRules>) {
   const { openingRange, currentCandle, previousCandles, configuration } = context;
   const allCandles = [...previousCandles, currentCandle];
@@ -524,17 +551,20 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
     };
   }
 
-  const evaluations = evaluateMandatoryBreakoutRules(context, direction);
+  const initialEvaluations = evaluateMandatoryBreakoutRules(context, direction);
+  const initialOverextended = initialEvaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
+  const retest = retestState(allCandles, openingRange, direction);
+  const baseSelection = selectBreakoutScenario(context, direction, retest);
+  const evaluations = relaxSweepReversalExtensionRule(initialEvaluations, baseSelection, context, direction);
   const unmatchedChecklistRules = evaluations.filter((evaluation) => !["PASS", "NOT_APPLICABLE"].includes(evaluation.status));
   const ready = unmatchedChecklistRules.length === 0;
   const mandatoryReady = orbMandatoryEntryReady(evaluations, direction);
   const score = favorability(context, direction, evaluations);
   const minimumScore = configuration.favorability?.minimumScoreForPaperTrade ?? 70;
-  const retest = retestState(allCandles, openingRange, direction);
   const retestInfo = retestDetails(allCandles, openingRange, direction);
   const overextended = evaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
   const lowFavorability = ready && score.score < minimumScore;
-  const selection = overextended
+  const selection = overextended && baseSelection.scenario !== "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED"
     ? {
         scenario: "OVEREXTENDED_BREAKOUT_NO_TRADE",
         status: "WAIT FOR RETEST" as const,
@@ -543,7 +573,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
         tags: ["overextended", "breakout", "no-chase"],
         finalReason: "Breakout candle closed too far beyond the ORB boundary. The system will not chase this entry."
       }
-    : selectBreakoutScenario(context, direction, retest);
+    : baseSelection;
   const trendAlignedScenario =
     selection.scenario === "CLEAN_BREAKOUT_CONTINUATION" && score.flags.trendAligned ? "TREND_ALIGNED_CLEAN_BREAKOUT" : selection.scenario;
   const tradePlan = buildTradePlan(context, direction, { ...selection, scenario: trendAlignedScenario }, retestInfo, priorFailedBreakout);
@@ -591,6 +621,10 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
         mandatoryChecklistMatched: mandatoryReady,
         setupTier: autoReady ? "FULL" : mandatoryOnlyReady ? "MANDATORY" : "WATCH",
         fullChecklistMatched: autoReady,
+        reversalExtensionRelaxed:
+          initialOverextended &&
+          baseSelection.scenario === "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED" &&
+          !overextended,
         unmatchedChecklistRules: unmatchedChecklistRules.map((rule) => rule.ruleCode),
         selectedScenario: trendAlignedScenario,
         tags: selection.tags,

@@ -126,6 +126,13 @@ const cases = [
     status: "SHORT SETUP READY"
   },
   {
+    name: "low sweep reversal buys even after strong recovery extension",
+    previous: [...trendUp, candle("2026-07-31T14:00:00Z", 95, 102, 84, 98)],
+    current: candle("2026-07-31T14:15:00Z", 101, 130, 99, 128),
+    scenario: "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED",
+    status: "LONG SETUP READY"
+  },
+  {
     name: "breakout retest confirmation buys",
     previous: [...trendUp, candle("2026-07-31T14:00:00Z", 107, 114, 106, 113)],
     current: candle("2026-07-31T14:15:00Z", 111, 113, 110.5, 112.8),
