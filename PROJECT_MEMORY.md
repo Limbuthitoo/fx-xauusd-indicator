@@ -68,6 +68,8 @@ Expected daily usage target:
 - Opening range: 15-minute New York opening range.
 - Entry trigger: 5-minute trigger candles.
 - Must show New York ORB High, ORB Mid, ORB Low on chart, starting at the New York ORB session open rather than full-width across unrelated history.
+- Tenant setting `orb.strategy.chart.showOrbSessionLevels` controls whether Module 1 ORB High/Mid/Low are visible on the live chart. Default is ON, and disabling it hides chart indicators only; it does not disable ORB calculation, signals, predictions, or paper trading.
+- Module 1 live chart indicators are module-owned: ORB levels and horizontal range can be toggled independently. They must not leak into Module 2.
 - Paper trade opens only when module rules pass.
 
 ### Module 2: Ultimate Liquidity Sweep
@@ -88,6 +90,7 @@ Expected daily usage target:
   - BOS/MSS classification.
   - Configurable confirmation plugins.
   - Optional retest.
+- Module 2 live chart indicators are module-owned: EMA, liquidity, sweep, FVG/entry zone, displacement, and MSS/BOS can be toggled independently. ORB-derived liquidity/labels must be filtered out of Module 2 chart overlays and price labels.
   - Risk validation.
   - Trade decision and automatic paper trade when setup-ready.
 - Module 2 variant-driven production model:

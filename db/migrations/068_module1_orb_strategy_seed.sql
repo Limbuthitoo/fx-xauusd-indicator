@@ -91,8 +91,8 @@ VALUES (
       "blockMinutesBefore":15,
       "blockMinutesAfter":15
     },
-    "paperTrading":{"enabled":true,"maximumTradesPerSession":1,"conservativeSameCandleExit":true}
-    ,
+    "paperTrading":{"enabled":true,"maximumTradesPerSession":1,"conservativeSameCandleExit":true},
+    "chart":{"showOrbSessionLevels":true,"showHorizontalRange":true},
     "rangeEngine":{
       "enabled":true,
       "detectorVersion":"GENERIC_RANGE_ENGINE_V1",

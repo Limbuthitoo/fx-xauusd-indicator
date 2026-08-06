@@ -267,6 +267,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   if (moduleCode === "high_probability_strategy_2" && key === "liquiditySweep.strategy") {
     const input = objectValue(value) as Record<string, any>;
     const paperTrading = objectValue(input.paperTrading);
+    const chart = objectValue(input.chart);
     return {
       ...input,
       moduleCode: "high_probability_strategy_2",
@@ -329,6 +330,15 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
         enabled: booleanValue(paperTrading.enabled, true),
         maximumTradesPerSession: positiveInteger(paperTrading.maximumTradesPerSession, 1, 10),
         conservativeSameCandleExit: booleanValue(paperTrading.conservativeSameCandleExit, true)
+      },
+      chart: {
+        ...chart,
+        showEma: booleanValue(chart.showEma, true),
+        showLiquidity: booleanValue(chart.showLiquidity, true),
+        showSweep: booleanValue(chart.showSweep, true),
+        showEntryZone: booleanValue(chart.showEntryZone, true),
+        showDisplacement: booleanValue(chart.showDisplacement, true),
+        showBos: booleanValue(chart.showBos, true)
       }
     };
   }
@@ -342,6 +352,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const paperTrading = objectValue(base.paperTrading);
   const rangeEngine = objectValue(base.rangeEngine);
   const horizontalRange = objectValue(rangeEngine.horizontalRange);
+  const chart = objectValue(base.chart);
 
   return {
     ...base,
@@ -389,6 +400,11 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       enabled: booleanValue(paperTrading.enabled, true),
       maximumTradesPerSession: positiveInteger(paperTrading.maximumTradesPerSession, 1, 20),
       conservativeSameCandleExit: booleanValue(paperTrading.conservativeSameCandleExit, true)
+    },
+    chart: {
+      ...chart,
+      showOrbSessionLevels: booleanValue(chart.showOrbSessionLevels, true),
+      showHorizontalRange: booleanValue(chart.showHorizontalRange, true)
     },
     rangeEngine: {
       ...rangeEngine,

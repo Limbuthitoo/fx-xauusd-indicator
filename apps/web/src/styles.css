@@ -1123,6 +1123,37 @@ button:hover,
   border-radius: 4px;
 }
 
+.indicator-toggle-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-bottom: 1px solid #253027;
+  background: #0d110f;
+}
+
+.indicator-toggle-strip label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid #26382f;
+  border-radius: 6px;
+  background: #121a15;
+  color: #aeb9b2;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.indicator-toggle-strip input {
+  width: 13px;
+  height: 13px;
+  accent-color: #16c784;
+}
+
 .data-status {
   display: grid;
   grid-template-columns: auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr;

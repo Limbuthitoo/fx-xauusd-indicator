@@ -68,6 +68,17 @@ export type ChartPriceLine = {
   color: string;
 };
 
+export type ChartIndicatorVisibility = {
+  ema?: boolean;
+  orbLevels?: boolean;
+  horizontalRange?: boolean;
+  liquidity?: boolean;
+  sweep?: boolean;
+  entryZone?: boolean;
+  displacement?: boolean;
+  bos?: boolean;
+};
+
 export type TwelveDataChartProps = {
   symbol: string;
   timeframeMinutes: number;
@@ -111,6 +122,8 @@ export type TwelveDataChartProps = {
   } | null;
   priceLines?: ChartPriceLine[];
   showEma?: boolean;
+  showOrbSessionLevels?: boolean;
+  indicatorDefaults?: ChartIndicatorVisibility;
   onMessage: (message: string) => void;
 };
 
@@ -130,12 +143,83 @@ const lineColors = {
   ema200: "#a78bfa"
 };
 
+const module1IndicatorDefaults: ChartIndicatorVisibility = {
+  orbLevels: true,
+  horizontalRange: true
+};
+
+const module2IndicatorDefaults: ChartIndicatorVisibility = {
+  ema: true,
+  liquidity: true,
+  sweep: true,
+  entryZone: true,
+  displacement: true,
+  bos: true
+};
+
+function defaultIndicatorVisibility(moduleCode: string, showEma: boolean, showOrbSessionLevels: boolean, defaults?: ChartIndicatorVisibility): ChartIndicatorVisibility {
+  const base = moduleCode === "orb_max_options"
+    ? { ...module1IndicatorDefaults, orbLevels: showOrbSessionLevels }
+    : moduleCode === "high_probability_strategy_2"
+      ? { ...module2IndicatorDefaults, ema: showEma }
+      : { ema: showEma };
+  return { ...base, ...(defaults ?? {}) };
+}
+
+function chartIndicatorOptions(moduleCode: string, showEma: boolean): Array<{ key: keyof ChartIndicatorVisibility; label: string }> {
+  if (moduleCode === "orb_max_options") {
+    return [
+      { key: "orbLevels", label: "ORB levels" },
+      { key: "horizontalRange", label: "Horizontal range" }
+    ];
+  }
+  if (moduleCode === "high_probability_strategy_2") {
+    return [
+      ...(showEma ? [{ key: "ema" as const, label: "EMA" }] : []),
+      { key: "liquidity", label: "Liquidity" },
+      { key: "sweep", label: "Sweep" },
+      { key: "entryZone", label: "FVG / zone" },
+      { key: "displacement", label: "Displacement" },
+      { key: "bos", label: "MSS / BOS" }
+    ];
+  }
+  return showEma ? [{ key: "ema", label: "EMA" }] : [];
+}
+
+function isOrbDerivedLiquidityLevel(level: any) {
+  const label = `${level?.type ?? ""} ${level?.label ?? ""} ${level?.name ?? ""}`.toUpperCase();
+  return label.includes("ORB");
+}
+
+function shouldShowEvidenceMarker(moduleCode: string, marker: SeriesMarker<Time>, visibility: ChartIndicatorVisibility) {
+  if (moduleCode !== "high_probability_strategy_2") return true;
+  const text = String(marker.text ?? "").toUpperCase();
+  if (text.includes("ORB")) return false;
+  if ((text.includes("FVG") || text.includes("OB") || text.includes("ZONE")) && visibility.entryZone === false) return false;
+  if (text.includes("SWEEP") && visibility.sweep === false) return false;
+  if ((text.includes("BOS") || text.includes("MSS")) && visibility.bos === false) return false;
+  if (text.includes("DISPLACEMENT") && visibility.displacement === false) return false;
+  return true;
+}
+
+function shouldShowPriceLine(moduleCode: string, line: ChartPriceLine, visibility: ChartIndicatorVisibility) {
+  if (moduleCode !== "high_probability_strategy_2") return true;
+  const title = String(line.title ?? "").toUpperCase();
+  if (title.includes("ORB")) return false;
+  if (["ENTRY", "STOP", "TARGET"].includes(title)) return true;
+  if ((title.includes("ZONE") || title.includes("FVG") || title.includes("ORDER BLOCK")) && visibility.entryZone === false) return false;
+  if ((title.includes("BOS") || title.includes("MSS")) && visibility.bos === false) return false;
+  if (title.includes("LIQUIDITY") && (visibility.sweep === false || visibility.liquidity === false)) return false;
+  if (["ASIAN", "LONDON", "PREVIOUS", "SWING", "ROUND", "EQUAL"].some((token) => title.includes(token)) && visibility.liquidity === false) return false;
+  return true;
+}
+
 const CHART_BAR_SPACING = 2.5;
 const CHART_RIGHT_OFFSET = 16;
 const INITIAL_CHART_CANDLES = 300;
 const OLDER_CANDLE_PAGE = 300;
 
-export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, orbRanges = [], setup, priceLines, showEma = true, onMessage }: TwelveDataChartProps) {
+export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, orbRanges = [], setup, priceLines, showEma = true, showOrbSessionLevels = true, indicatorDefaults, onMessage }: TwelveDataChartProps) {
   const chartCandleLimit = Math.ceil(7 * 24 * (60 / timeframeMinutes)) + 10;
   const activeSetup = !setup?.module_code || setup.module_code === moduleCode ? setup : null;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -164,6 +248,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [chartLoading, setChartLoading] = useState(true);
   const [overlays, setOverlays] = useState<PositionedOverlay[]>([]);
   const [evidenceSetup, setEvidenceSetup] = useState<TwelveDataChartProps["setup"] | null>(null);
+  const [indicatorVisibility, setIndicatorVisibility] = useState<ChartIndicatorVisibility>(() => defaultIndicatorVisibility(moduleCode, showEma, showOrbSessionLevels, indicatorDefaults));
+  const effectiveShowEma = showEma && indicatorVisibility.ema !== false;
+  const effectiveShowOrbSessionLevels = showOrbSessionLevels && indicatorVisibility.orbLevels !== false;
   const activeEvidenceSetup = useMemo(() => {
     if (moduleCode !== "high_probability_strategy_2") return activeSetup;
     if (!activeSetup) return evidenceSetup;
@@ -191,6 +278,10 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     () => moduleCode === "orb_max_options" ? normalizeOrbRanges(orbRanges, effectiveOpeningRange) : [],
     [moduleCode, orbRanges, effectiveOpeningRange]
   );
+
+  useEffect(() => {
+    setIndicatorVisibility(defaultIndicatorVisibility(moduleCode, showEma, showOrbSessionLevels, indicatorDefaults));
+  }, [moduleCode, showEma, showOrbSessionLevels, JSON.stringify(indicatorDefaults ?? {})]);
 
   async function loadChartMetadata() {
     const [nextIndicators, nextTradeMarkers, nextFeedStatus, nextEvidenceSetup] = await Promise.all([
@@ -408,12 +499,12 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       && cleanCandles[0]?.timestampUtc === previouslyRendered[0]?.timestampUtc;
     const appendsLatest = cleanCandles.length === previouslyRendered.length + 1
       && cleanCandles.at(-2)?.timestampUtc === previouslyRendered.at(-1)?.timestampUtc;
-    const indicatorModeChanged = renderedShowEmaRef.current !== showEma;
+    const indicatorModeChanged = renderedShowEmaRef.current !== effectiveShowEma;
     const incremental = !indicatorModeChanged && (replacesLatest || appendsLatest);
     if (incremental) {
       const latestCandle = chartCandles.at(-1);
       if (latestCandle) candleSeriesRef.current.update(latestCandle);
-      if (showEma) {
+      if (effectiveShowEma) {
         updateLatestLinePoint(ema20Ref.current, emaSeries(cleanCandles, 20));
         updateLatestLinePoint(ema50Ref.current, emaSeries(cleanCandles, 50));
         updateLatestLinePoint(ema200Ref.current, emaSeries(cleanCandles, 200));
@@ -421,9 +512,9 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     } else {
       const preservedRange = visibleLogicalRangeRef.current;
       candleSeriesRef.current.setData(chartCandles);
-      ema20Ref.current.setData(showEma ? emaSeries(cleanCandles, 20) : []);
-      ema50Ref.current.setData(showEma ? emaSeries(cleanCandles, 50) : []);
-      ema200Ref.current.setData(showEma ? emaSeries(cleanCandles, 200) : []);
+      ema20Ref.current.setData(effectiveShowEma ? emaSeries(cleanCandles, 20) : []);
+      ema50Ref.current.setData(effectiveShowEma ? emaSeries(cleanCandles, 50) : []);
+      ema200Ref.current.setData(effectiveShowEma ? emaSeries(cleanCandles, 200) : []);
       const prepended = pendingPrependCountRef.current;
       if (prepended > 0 && preservedRange && userAdjustedRangeRef.current) {
         applyVisibleLogicalRange({
@@ -434,9 +525,13 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       pendingPrependCountRef.current = 0;
     }
     renderedCandlesRef.current = cleanCandles;
-    renderedShowEmaRef.current = showEma;
+    renderedShowEmaRef.current = effectiveShowEma;
     candleSeriesRef.current.setMarkers(
-      [...moduleEvidenceMarkers(activeEvidenceSetup), ...validSetupMarker(activeSetup), ...paperTradeMarkers(tradeMarkers)]
+      [
+        ...moduleEvidenceMarkers(activeEvidenceSetup).filter((marker) => shouldShowEvidenceMarker(moduleCode, marker, indicatorVisibility)),
+        ...validSetupMarker(activeSetup),
+        ...paperTradeMarkers(tradeMarkers)
+      ]
         .sort((left, right) => Number(left.time) - Number(right.time))
     );
     if (cleanCandles.length > 0 && !didSetInitialRangeRef.current) {
@@ -444,11 +539,11 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       didSetInitialRangeRef.current = true;
     }
     window.requestAnimationFrame(() => refreshOverlays(cleanCandles));
-  }, [candles, setup, evidenceSetup, tradeMarkers, showEma]);
+  }, [candles, setup, evidenceSetup, tradeMarkers, effectiveShowEma, effectiveShowOrbSessionLevels, indicatorVisibility, moduleCode]);
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
-  }, [activeEvidenceSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges]);
+  }, [activeEvidenceSetup, session, moduleCode, effectiveOpeningRange, effectiveOrbRanges, effectiveShowOrbSessionLevels, indicatorVisibility]);
 
   useEffect(() => {
     if (!candleSeriesRef.current) return;
@@ -459,11 +554,13 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
       { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
     ];
-    const orbLines = effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index));
+    const orbLines = effectiveShowOrbSessionLevels ? effectiveOrbRanges.flatMap((range, index) => sessionOrbPriceLines(range, index)) : [];
     const lines = moduleCode === "orb_max_options"
       ? [...orbLines, ...defaultLines]
       : priceLines?.length
-        ? priceLines.map((line) => ({ ...line, price: numberValue(line.price) }))
+        ? priceLines
+            .filter((line) => shouldShowPriceLine(moduleCode, line, indicatorVisibility))
+            .map((line) => ({ ...line, price: numberValue(line.price) }))
         : defaultLines;
     for (const line of lines) {
       if (line.price == null) continue;
@@ -478,7 +575,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [effectiveOpeningRange, effectiveOrbRanges, activeEvidenceSetup, priceLines, moduleCode]);
+  }, [effectiveOpeningRange, effectiveOrbRanges, activeEvidenceSetup, priceLines, moduleCode, effectiveShowOrbSessionLevels, indicatorVisibility]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -533,6 +630,8 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       openingRange: effectiveOpeningRange,
       orbRanges: effectiveOrbRanges,
       setup: activeEvidenceSetup,
+      indicatorVisibility,
+      showOrbSessionLevels: effectiveShowOrbSessionLevels,
       chart: chartRef.current,
       series: candleSeriesRef.current,
       container: containerRef.current
@@ -543,7 +642,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     <div className="live-chart-wrap">
       <div className="chart-toolbar">
         <div className="legend">
-          {showEma ? (
+          {effectiveShowEma ? (
             <>
               <span><i style={{ background: lineColors.ema20 }} />EMA 20</span>
               <span><i style={{ background: lineColors.ema50 }} />EMA 50</span>
@@ -551,9 +650,15 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
             </>
           ) : (
             <>
-              <span><i style={{ background: "#1f7a8c" }} />NY ORB High</span>
-              <span><i style={{ background: "#f0b429" }} />NY ORB Mid</span>
-              <span><i style={{ background: "#e05252" }} />NY ORB Low</span>
+              {effectiveShowOrbSessionLevels ? (
+                <>
+                  <span><i style={{ background: "#1f7a8c" }} />NY ORB High</span>
+                  <span><i style={{ background: "#f0b429" }} />NY ORB Mid</span>
+                  <span><i style={{ background: "#e05252" }} />NY ORB Low</span>
+                </>
+              ) : (
+                <span><i style={{ background: "#56616b" }} />NY ORB levels hidden</span>
+              )}
               <span><i style={{ background: "#8b5cf6" }} />NY horizontal observation</span>
             </>
           )}
@@ -564,6 +669,18 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
           <button title="Show latest candles" onClick={showLatestRange}><Maximize2 size={15} /></button>
           <button title="Refresh chart" onClick={() => refreshChartData().catch(() => onMessage("Refresh failed."))}><RefreshCcw size={15} /></button>
         </div>
+      </div>
+      <div className="indicator-toggle-strip">
+        {chartIndicatorOptions(moduleCode, showEma).map((option) => (
+          <label key={option.key}>
+            <input
+              type="checkbox"
+              checked={indicatorVisibility[option.key] !== false}
+              onChange={(event) => setIndicatorVisibility((current) => ({ ...current, [option.key]: event.target.checked }))}
+            />
+            {option.label}
+          </label>
+        ))}
       </div>
       <div className="data-status">
         <span>Market feed</span>
@@ -991,6 +1108,8 @@ function buildPositionedOverlays(input: {
   openingRange?: TwelveDataChartProps["openingRange"];
   orbRanges?: ReturnType<typeof normalizeOrbRanges>;
   setup?: TwelveDataChartProps["setup"];
+  indicatorVisibility?: ChartIndicatorVisibility;
+  showOrbSessionLevels?: boolean;
   chart: IChartApi | null;
   series: ISeriesApi<"Candlestick"> | null;
   container: HTMLDivElement | null;
@@ -1061,16 +1180,18 @@ function buildPositionedOverlays(input: {
   const sessionHigh = Math.max(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.high));
   const sessionLow = Math.min(...(visibleCandles.length ? visibleCandles : input.candles).map((candle) => candle.low));
   if (input.moduleCode === "orb_max_options") {
-    const ranges = input.orbRanges?.length ? input.orbRanges : normalizeOrbRanges([], input.openingRange);
-    ranges.forEach((range, index) => {
-      const prefix = range.shortLabel ?? "ORB";
-      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.session_start_at, range.high);
-      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.session_start_at, range.midpoint);
-      addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.session_start_at, range.low);
-    });
+    if (input.showOrbSessionLevels !== false) {
+      const ranges = input.orbRanges?.length ? input.orbRanges : normalizeOrbRanges([], input.openingRange);
+      ranges.forEach((range, index) => {
+        const prefix = range.shortLabel ?? "ORB";
+        addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-high-${index}`, `${prefix} ORB High`, "orbHigh", range.session_start_at, range.high);
+        addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-mid-${index}`, `${prefix} ORB Mid`, "orbMid", range.session_start_at, range.midpoint);
+        addTimedHorizontalLine(`${prefix.toLowerCase()}-orb-low-${index}`, `${prefix} ORB Low`, "orbLow", range.session_start_at, range.low);
+      });
+    }
     const horizontal = input.setup?.scenario_flags?.horizontalRangeObservation ?? input.setup?.scenario_flags?.genericRangeEngine?.horizontal;
     const horizontalRange = horizontal?.range;
-    if (horizontal?.enabled === true && horizontalRange?.low != null && horizontalRange?.high != null) {
+    if (input.indicatorVisibility?.horizontalRange !== false && horizontal?.enabled === true && horizontalRange?.low != null && horizontalRange?.high != null) {
       addBox(
         "module1-horizontal-observation",
         "NY horizontal observation",
@@ -1092,7 +1213,7 @@ function buildPositionedOverlays(input: {
   const core = input.setup.coreEvidence ?? flags.core ?? {};
   const evidenceEnd = input.setup.detected_at ?? latestTime;
   const zone = flags.entryZone;
-  if (zone?.low != null && zone?.high != null) {
+  if (input.indicatorVisibility?.entryZone !== false && zone?.low != null && zone?.high != null) {
     addBox(
       `entry-zone-${zone.kind ?? "zone"}`,
       zone.kind === "ORDER_BLOCK" ? "Order Block" : zone.kind === "MSS_RETEST" ? "MSS Retest" : "FVG",
@@ -1106,7 +1227,7 @@ function buildPositionedOverlays(input: {
 
   const sweep = flags.sweep;
   const sweepLevel = numberValue(sweep?.level?.price);
-  if (sweepLevel != null) {
+  if (input.indicatorVisibility?.sweep !== false && sweepLevel != null) {
     const pad = Math.max(0.18, (sessionHigh - sessionLow) * 0.006);
     addBox(
       "swept-liquidity",
@@ -1118,7 +1239,9 @@ function buildPositionedOverlays(input: {
       sweepLevel + pad
     );
   }
-  const liquidityLevels = Array.isArray(core.liquidityLevels) ? core.liquidityLevels.slice(0, 6) : [];
+  const liquidityLevels = input.indicatorVisibility?.liquidity === false
+    ? []
+    : (Array.isArray(core.liquidityLevels) ? core.liquidityLevels.filter((level: any) => !isOrbDerivedLiquidityLevel(level)).slice(0, 6) : []);
   liquidityLevels.forEach((level: any, index: number) => {
     const price = numberValue(level.price);
     if (price == null) return;
@@ -1131,12 +1254,12 @@ function buildPositionedOverlays(input: {
   });
 
   const displacement = flags.displacement?.candle;
-  if (displacement?.timestampUtc) {
+  if (input.indicatorVisibility?.displacement !== false && displacement?.timestampUtc) {
     addBox("module2-displacement", "Displacement", "displacement", displacement.timestampUtc, flags.bos?.candle?.timestampUtc ?? evidenceEnd, displacement.low, displacement.high);
   }
 
   const bos = flags.bos;
-  if (bos?.candle?.timestampUtc && bos?.level != null) {
+  if (input.indicatorVisibility?.bos !== false && bos?.candle?.timestampUtc && bos?.level != null) {
     const pad = Math.max(0.18, (sessionHigh - sessionLow) * 0.006);
     addBox("module2-bos", "Reversal MSS", "bos", bos.candle.timestampUtc, evidenceEnd, Number(bos.level) - pad, Number(bos.level) + pad);
   }

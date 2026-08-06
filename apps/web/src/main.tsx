@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
-import { TwelveDataChart, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
+import { TwelveDataChart, type ChartIndicatorVisibility, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
 import { API_BASE_URL, ApiError, api, apiWebSocketUrl, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
 
@@ -367,6 +367,24 @@ function App() {
   const currentModuleTradePlan = state.tradePlan?.module_code === selectedModuleCode ? state.tradePlan : undefined;
   const signal = getSignal(currentModuleSetup, currentModuleTrade);
   const orb = state.session?.opening_range;
+  const orbStrategyConfig = (state.orbModuleSettings ?? []).find((item: any) => item.key === "orb.strategy")?.value ?? {};
+  const showModule1OrbSessionLevels = orbStrategyConfig?.chart?.showOrbSessionLevels !== false;
+  const liquiditySweepConfig = (state.activeModuleSettings ?? []).find((item: any) => item.key === "liquiditySweep.strategy")?.value ?? {};
+  const chartIndicatorDefaults: ChartIndicatorVisibility = selectedModuleCode === "orb_max_options"
+    ? {
+        orbLevels: showModule1OrbSessionLevels,
+        horizontalRange: orbStrategyConfig?.chart?.showHorizontalRange !== false
+      }
+    : selectedModuleCode === "high_probability_strategy_2"
+      ? {
+          ema: liquiditySweepConfig?.chart?.showEma !== false,
+          liquidity: liquiditySweepConfig?.chart?.showLiquidity !== false,
+          sweep: liquiditySweepConfig?.chart?.showSweep !== false,
+          entryZone: liquiditySweepConfig?.chart?.showEntryZone !== false,
+          displacement: liquiditySweepConfig?.chart?.showDisplacement !== false,
+          bos: liquiditySweepConfig?.chart?.showBos !== false
+        }
+      : {};
   const latestWeek = state.weeklyReport?.[0];
   const latestMonth = state.monthlyReport?.[0];
   const reasons = currentModuleSetup?.favorability_reasons ?? [];
@@ -1142,6 +1160,8 @@ function App() {
                 setup={currentModuleSetup}
                 priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, orb)}
                 showEma={selectedModuleCode !== "orb_max_options"}
+                showOrbSessionLevels={showModule1OrbSessionLevels}
+                indicatorDefaults={chartIndicatorDefaults}
                 onMessage={setMessage}
               />
             </section>
@@ -7009,6 +7029,8 @@ function OrbStrategySettings({ settings, onUpdate }: { settings: any[]; onUpdate
           <label>Max session trades<input type="number" min="1" max="20" value={draft?.risk?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("risk.maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.retest?.enabled !== false} onChange={(event) => patch("retest.enabled", event.target.checked)} /> Retest scenarios</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>
+          <label><input type="checkbox" checked={draft?.chart?.showOrbSessionLevels !== false} onChange={(event) => patch("chart.showOrbSessionLevels", event.target.checked)} /> ORB High/Mid/Low on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showHorizontalRange !== false} onChange={(event) => patch("chart.showHorizontalRange", event.target.checked)} /> Horizontal range on chart</label>
         </div>
         <button onClick={() => onUpdate("orb.strategy", draft).catch(() => undefined)}>Save Strategy</button>
       </div>
@@ -7100,6 +7122,12 @@ function LiquiditySweepSettings({ settings, onUpdate }: { settings: any[]; onUpd
           <label>Max trades<input type="number" min="1" max="10" value={draft?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.enableNewsFilter !== false} onChange={(event) => patch("enableNewsFilter", event.target.checked)} /> News filter</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>
+          <label><input type="checkbox" checked={draft?.chart?.showEma !== false} onChange={(event) => patch("chart.showEma", event.target.checked)} /> EMA on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showLiquidity !== false} onChange={(event) => patch("chart.showLiquidity", event.target.checked)} /> Liquidity on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showSweep !== false} onChange={(event) => patch("chart.showSweep", event.target.checked)} /> Sweep on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showEntryZone !== false} onChange={(event) => patch("chart.showEntryZone", event.target.checked)} /> FVG / zone on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showDisplacement !== false} onChange={(event) => patch("chart.showDisplacement", event.target.checked)} /> Displacement on chart</label>
+          <label><input type="checkbox" checked={draft?.chart?.showBos !== false} onChange={(event) => patch("chart.showBos", event.target.checked)} /> MSS / BOS on chart</label>
         </div>
         <div className="manual-level-editor">
           <div>
@@ -8568,8 +8596,9 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
       : Array.isArray(flags.levels)
         ? flags.levels
         : [];
-  const levelLines = liquidityLevels.length
-    ? liquidityLevels.slice(0, 8).map((level: any) => ({
+  const chartLiquidityLevels = liquidityLevels.filter((level: any) => !isOrbDerivedLiquidityLevel(level));
+  const levelLines = chartLiquidityLevels.length
+    ? chartLiquidityLevels.slice(0, 8).map((level: any) => ({
         title: String(level.type ?? "Liquidity").replaceAll("_", " "),
         price: level.price,
         color: level.priority === "HIGH" ? "#f0b429" : level.priority === "MEDIUM" ? "#38bdf8" : "#64748b"
@@ -8586,6 +8615,11 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
     { title: "Stop", price: moduleSetup.stop_price, color: "#e05252" },
     { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" }
   ];
+}
+
+function isOrbDerivedLiquidityLevel(level: any) {
+  const label = `${level?.type ?? ""} ${level?.label ?? ""} ${level?.name ?? ""}`.toUpperCase();
+  return label.includes("ORB");
 }
 
 function moduleShortName(moduleCode: string, name?: string) {
