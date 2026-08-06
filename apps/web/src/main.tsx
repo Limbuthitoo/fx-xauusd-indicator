@@ -8585,7 +8585,7 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
   const moduleSetup = setup?.module_code === moduleCode ? setup : null;
   if (!moduleSetup) return [];
   const flags = moduleSetup.scenario_flags ?? {};
-  const sweepPrice = flags.sweep?.level?.price;
+  const sweepPrice = isOrbDerivedLiquidityLevel(flags.sweep?.level) ? null : flags.sweep?.level?.price;
   const bosLevel = flags.bos?.level;
   const zone = flags.entryZone ?? {};
   const core = moduleSetup.coreEvidence ?? {};
@@ -8618,7 +8618,22 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, _openingRange?: 
 }
 
 function isOrbDerivedLiquidityLevel(level: any) {
-  const label = `${level?.type ?? ""} ${level?.label ?? ""} ${level?.name ?? ""}`.toUpperCase();
+  const label = [
+    level?.type,
+    level?.label,
+    level?.name,
+    level?.source,
+    level?.kind,
+    level?.session_preset,
+    level?.sessionPreset,
+    level?.referenceType,
+    level?.reference_type,
+    level?.displayName,
+    level?.shortLabel,
+    level?.level?.type,
+    level?.level?.label,
+    level?.level?.name
+  ].map((value) => String(value ?? "")).join(" ").toUpperCase();
   return label.includes("ORB");
 }
 

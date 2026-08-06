@@ -91,6 +91,7 @@ Expected daily usage target:
   - Configurable confirmation plugins.
   - Optional retest.
 - Module 2 live chart indicators are module-owned: EMA, liquidity, sweep, FVG/entry zone, displacement, and MSS/BOS can be toggled independently. ORB-derived liquidity/labels must be filtered out of Module 2 chart overlays and price labels.
+- Module 2 must not render ORB High/Mid/Low, ORB-derived sweep levels, or ORB-derived liquidity labels on its live chart, including during zoom/scale redraws.
   - Risk validation.
   - Trade decision and automatic paper trade when setup-ready.
 - Module 2 variant-driven production model:

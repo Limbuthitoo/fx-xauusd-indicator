@@ -187,7 +187,22 @@ function chartIndicatorOptions(moduleCode: string, showEma: boolean): Array<{ ke
 }
 
 function isOrbDerivedLiquidityLevel(level: any) {
-  const label = `${level?.type ?? ""} ${level?.label ?? ""} ${level?.name ?? ""}`.toUpperCase();
+  const label = [
+    level?.type,
+    level?.label,
+    level?.name,
+    level?.source,
+    level?.kind,
+    level?.session_preset,
+    level?.sessionPreset,
+    level?.referenceType,
+    level?.reference_type,
+    level?.displayName,
+    level?.shortLabel,
+    level?.level?.type,
+    level?.level?.label,
+    level?.level?.name
+  ].map((value) => String(value ?? "")).join(" ").toUpperCase();
   return label.includes("ORB");
 }
 
@@ -1227,7 +1242,7 @@ function buildPositionedOverlays(input: {
 
   const sweep = flags.sweep;
   const sweepLevel = numberValue(sweep?.level?.price);
-  if (input.indicatorVisibility?.sweep !== false && sweepLevel != null) {
+  if (input.indicatorVisibility?.sweep !== false && sweepLevel != null && !isOrbDerivedLiquidityLevel(sweep?.level)) {
     const pad = Math.max(0.18, (sessionHigh - sessionLow) * 0.006);
     addBox(
       "swept-liquidity",
