@@ -288,8 +288,8 @@ type SweepInvalidation = {
 
 const DEFAULT_CONFIG: LiquiditySweepConfig = {
   timezone: "America/New_York",
-  newYorkStartTime: "00:00",
-  newYorkEndTime: "23:59",
+  newYorkStartTime: "09:30",
+  newYorkEndTime: "16:00",
   nyPremarketStartTime: "08:00",
   orbStartTime: "09:30",
   orbEndTime: "09:45",
@@ -1294,6 +1294,8 @@ function analyzeSweepCandidates(candles: Candle[], levels: LiquidityLevel[], atr
     const candle = candles[index];
     if (!isInsideNewYorkWindow(candle.timestampUtc, config.newYorkStartTime, config.newYorkEndTime)) continue;
     for (const level of levels) {
+      const levelAvailableAt = new Date(level.confirmedAt ?? level.formedAt ?? candle.timestampUtc).getTime();
+      if (Number.isFinite(levelAvailableAt) && new Date(candle.timestampUtc).getTime() < levelAvailableAt) continue;
       const lowerBound = level.lowerBound ?? level.price;
       const upperBound = level.upperBound ?? level.price;
       const penetration = level.side === "SELL_SIDE" ? lowerBound - candle.low : candle.high - upperBound;

@@ -141,7 +141,7 @@ def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False
               FROM candles c
               WHERE c.symbol = sc.symbol
                 AND c.timeframe_minutes = 5
-                AND c.source LIKE 'TWELVE_DATA%'
+                AND c.source LIKE 'TWELVE_DATA%%'
             )
           )
     """

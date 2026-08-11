@@ -10,6 +10,16 @@ The system does not execute broker orders. All broker/MT5 behavior has been remo
 
 ## Core Architecture
 
+### 2026-08-11 MVP runtime repair
+
+- Module 1 and Module 2 strategy evaluation is New York-session only; the shared XAUUSD chart remains completed 5-minute candles with 15-minute context where required.
+- The primary product chain is signal first: fresh prediction -> actionable BUY/SELL signal -> notification. Automatic paper tracking follows the same accepted signal and exists to measure outcomes and win rate.
+- A database-backed audit found that valid Module 1 opportunities were being calculated but lost because subscribers had no active `risk_profiles` row. Migration `076_seed_tenant_paper_risk_profiles.sql` seeds conservative paper-only defaults, while runtime evaluation also has a safe fallback.
+- The Python main brain had a psycopg SQL formatting crash caused by an unescaped `%` in a `LIKE` expression. It is escaped and production verification now checks recent `MAIN_BRAIN_FAILED` events.
+- Module 2 sweep candidates are strictly time-ordered: a sweep candle cannot precede the liquidity level's formation or confirmation time. The default execution window is New York 09:30-16:00.
+- `npm run validate:mvp-runtime -- .env.production` verifies risk-profile coverage, fresh runtime failures, stored candles, saved-candle NY opportunity replay, stale-price guards, and the setup -> notification -> paper-tracking artifact chain.
+- Trade frequency is measured from saved candles; the runtime must never fabricate a setup to satisfy a daily quota.
+
 - `apps/api`: Node/Fastify backend, PostgreSQL access, auth, dashboards, market-data scheduler, strategy evaluation, paper trades, notifications, app update uploads.
 - `apps/web`: React tenant dashboard and platform admin dashboard.
 - `apps/mobile`: Expo/React Native mobile app for tenant login, module views, chart, journal, notifications, push settings, app update flow.
@@ -479,7 +489,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 1 should evaluate only the `NEW_YORK_ORB` session for BUY/SELL signals, predictions, paper trades, journal rows, reports, and notifications.
 - Module 1 keeps the existing MAX Options behavior: 15-minute New York opening range built from three 5-minute candles, then 5-minute closed-candle triggers.
 - Module 1 horizontal range detection is active only during the New York ORB session and is now an MVP signal path, not observation-only. ORB remains the first-priority signal, but when ORB is not ready and a locked horizontal range has breakout + retest + clear conflict + valid risk, it can create predictions, BUY/SELL cards, paper trades, journal rows, notifications, and chart markers.
-- Module 2 remains the all-session Liquidity Sweep + MSS/Retest module and must not depend on Module 1 ORB sessions.
+- Module 2 is independent from Module 1, but both strategy runtimes are now restricted to the New York window. The shared chart history may continue catching up outside New York.
 - All market sessions use the shared XAUUSD 5-minute Twelve Data candle feed. The platform requests one 5M candle sync per 5-minute cadence on market weekdays, then all modules evaluate from PostgreSQL.
 - Sydney/Tokyo/London/New York ORB evaluation all use the same shared 5-minute candle cadence to protect the 800/day Twelve Data credit budget.
 - Module 2 remains separate and now uses the Ultimate Liquidity Sweep + MSS + Retest production model, not the old `Liquidity Sweep + BOS` strategy.
@@ -545,7 +555,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Combined tenant proof validation command is `npm run validate:modules-flow`. It requires `TENANT_EMAIL`, `TENANT_PASSWORD`, optional `TENANT_OTP`, and optional `API_BASE_URL`; it runs Module 1 proof, Module 2 proof, then checks proof Predictions, BUY & SELL cards, Paper Trading rows, Notifications payloads, and dashboard bundles.
 - Broker execution remains out of scope. Manual execution reconciliation is allowed only to compare a tenant's manual trade with the generated plan.
 - Module 3 was intentionally removed completely; do not reintroduce it.
-- Superseding Module 2 architecture update, 2026-08-06: Module 2 is no longer New York-only and no longer strict-MSS-retest-only for production entry. It runs as an all-session liquidity sweep strategy cycle using the shared XAUUSD 5M candle feed.
+- Superseding runtime update, 2026-08-11: Module 2 keeps its independent variant matrix but evaluates live signals only during the New York session using completed shared XAUUSD 5M candles and 15M context.
 - Module 2 variants are independent confirmation profiles evaluated after base conditions pass. The system must not require every variant to pass. One signal-approved variant plus risk and score gates can generate predictions, BUY/SELL, notifications, chart markers, and paper-trade tracking.
 - Module 2 signal-approved profiles include A sweep close-back, B sweep + BOS, C sweep + MSS, D sweep + engulfing, E sweep + BOS + retest, F sweep + MSS + retest, G sweep + EMA alignment, H sweep + volume expansion, and I sweep + MSS + displacement + retest. J sweep + no-confirmation remains research/control only.
 - Module 2 proof endpoint `/api/module2/variant-matrix-proof/run` validates the full A-J matrix without Twelve Data credits or broker orders. A-I must create setup evidence and paper-proof artifacts; J must remain blocked from paper trade creation.
@@ -553,7 +563,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Module 2 retest expiration only invalidates retest-based profiles. It must not kill simpler independent profiles that already passed their own mandatory rules.
 - Module 2 Python brain must approve the selected signal-approved variant profile, not force every setup through strict MSS + retest. Protected point, BOS/CHoCH, MSS strength, entry zone, retrace, and entry candle are variant evidence unless the selected variant requires them.
 - Module 2 Strategy Center should display base mandatory gates, selected variant profile, confirmation checklist, quality filters, and final automation gate. It should never display variants as one impossible combined checklist.
-- Module 1 is New York-only; Module 2 is all-session. Module 1 should show New York ORB High/Mid/Low indicators and NY-only active horizontal range breakout/retest evidence when present. Module 2 should show liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target indicators when evidence exists.
+- Module 1 and Module 2 are New York-only strategy runtimes. Module 1 shows New York ORB High/Mid/Low and active horizontal-range evidence. Module 2 shows liquidity, sweep, displacement, BOS/MSS, FVG/order-block/retest zone, entry, stop, and target evidence. Their strategy state, indicators, checklists, signals, predictions, and trades remain isolated.
 - Module 1 now has a generic range-engine foundation around the existing MAX Options ORB logic. ORB remains the authoritative detector and keeps the existing 15M opening range / 5M trigger behavior. The shared normalized range contract is stored in setup `scenario_flags.genericRangeEngine` and `scenario_flags.tradingRange`.
 - Module 1 horizontal range breakout is a New York-session active signal detector (`rangeEngine.horizontalRange.enabled=true`, `scope=NEW_YORK_SESSION_ONLY`, `observationOnly=false`). It can trigger the MVP chain when `HORIZONTAL_RANGE_LOCKED`, `HORIZONTAL_BREAKOUT_CONFIRMED`, `HORIZONTAL_RETEST_CONFIRMED`, `HORIZONTAL_CONFLICT_CLEAR`, `ENTRY_NOT_OVEREXTENDED`, and `RISK_PERMISSION` pass. The normal ORB signal still takes priority when ready.
 - Module 1 horizontal range detection must be strict enough for production: confirmed independent upper/lower reactions, opposite-half movement between repeated touches, close containment inside boundaries, no accepted breakout close during formation, low directional efficiency, flat reaction-point slope, ATR-normalized width, midpoint crosses, balanced time above/below midpoint, and minimum quality score. Horizontal breakout setups expire if retest does not occur within the configured candle limit.

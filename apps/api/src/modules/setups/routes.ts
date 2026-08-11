@@ -60,6 +60,14 @@ const DAY_TRADING_HOLD_WINDOW = {
 const MINIMUM_VISIBLE_PREDICTION_PROBABILITY = 80;
 const MAX_LIVE_PREDICTION_AGE_MINUTES = 90;
 const MAX_LIVE_PREDICTION_ENTRY_DISTANCE = 10;
+const SETUP_DEFAULT_PAPER_RISK_PROFILE = {
+  account_balance: 10_000,
+  account_equity: 10_000,
+  risk_per_trade_percent: 0.25,
+  maximum_daily_loss_percent: 0.75,
+  maximum_weekly_loss_percent: 2,
+  minimum_reward_to_risk: 1.5
+} as const;
 const MODULE2_STRICT_VARIANT = {
   code: "SWEEP_MSS_RETEST",
   name: "F. Sweep + MSS + Retest",
@@ -1376,16 +1384,25 @@ export async function setupRoutes(app: FastifyInstance) {
     const body = request.body as { sessionId: string; currentCandle: any; previousCandles: any[]; spread?: number; newsStatus?: any };
     const sessionResult = await query(
       `SELECT ts.*, orr.status AS range_status, orr.high, orr.low, orr.midpoint, orr.width, orr.width_ticks,
-        sv.configuration_json, rp.*
+        sv.configuration_json
        FROM trading_sessions ts
        JOIN opening_ranges orr ON orr.session_id = ts.id
        JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
-       JOIN risk_profiles rp ON rp.is_active = true
-       WHERE ts.id = $1 AND ts.tenant_id = $2 AND rp.tenant_id = $2
+       WHERE ts.id = $1 AND ts.tenant_id = $2
        LIMIT 1`,
       [body.sessionId, auth.tenantId]
     );
     const row = sessionResult.rows[0] as any;
+    if (!row) throw new Error("Trading session or opening range was not found for this subscriber.");
+    const riskProfileResult = await query(
+      `SELECT *
+       FROM risk_profiles
+       WHERE tenant_id = $1 AND is_active = true
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [auth.tenantId]
+    );
+    const riskProfile = (riskProfileResult.rows[0] as any) ?? SETUP_DEFAULT_PAPER_RISK_PROFILE;
     const openingRange = {
       status: row.range_status,
       high: Number(row.high),
@@ -1400,9 +1417,9 @@ export async function setupRoutes(app: FastifyInstance) {
     const entry = Number(body.currentCandle.close);
     const target = entry > Number(stop) ? entry + Math.abs(entry - Number(stop)) * 2 : entry - Math.abs(entry - Number(stop)) * 2;
     const risk = calculateRisk({
-      accountBalance: Number(row.account_balance),
-      accountEquity: Number(row.account_equity),
-      riskPerTradePercent: Number(row.risk_per_trade_percent),
+      accountBalance: Number(riskProfile.account_balance),
+      accountEquity: Number(riskProfile.account_equity),
+      riskPerTradePercent: Number(riskProfile.risk_per_trade_percent),
       entry,
       stop: Number(stop),
       target,
@@ -1414,9 +1431,9 @@ export async function setupRoutes(app: FastifyInstance) {
       maximumLot: XAUUSD_PAPER_SPEC.maximumLot,
       spread: Number(body.spread ?? 0),
       commissionPerLot: XAUUSD_PAPER_SPEC.commissionPerLot,
-      minimumRewardToRisk: Number(row.minimum_reward_to_risk),
-      maximumDailyLossPercent: Number(row.maximum_daily_loss_percent),
-      maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
+      minimumRewardToRisk: Number(riskProfile.minimum_reward_to_risk),
+      maximumDailyLossPercent: Number(riskProfile.maximum_daily_loss_percent),
+      maximumWeeklyLossPercent: Number(riskProfile.maximum_weekly_loss_percent)
     });
     const configuration = await getTenantOrbStrategyConfiguration(auth.tenantId, row.configuration_json);
     const decision = evaluateSetup({
@@ -3006,7 +3023,7 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["DATA_HEALTHY", "Data health passed", "XAUUSD candle history is fresh enough for the setup engine."],
     ["MARKET_CONTEXT_READY", "Market context ready", "Session highs/lows, bias, and liquidity context are available."],
     ["MARKET_REGIME_CLASSIFIED", "Market regime classified", "The engine classified the current sweep/reversal regime."],
-    ["NY_SESSION_ACTIVE", "Strategy cycle active", "Current candle is inside the configured all-session sweep cycle."],
+    ["NY_SESSION_ACTIVE", "New York strategy window active", "Current candle is inside the configured New York liquidity-sweep window."],
     ["DAILY_TRADE_LIMIT", "Daily trade limit not reached", "Session trade limit allows a paper trade."],
     ["ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", "No newer conflicting setup is blocking this candidate."],
     ["NO_ACTIVE_TRADE_CONFLICT", "No active trade conflict", "No active paper trade already occupies Module 2 for this tenant."],

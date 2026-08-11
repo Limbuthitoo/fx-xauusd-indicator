@@ -1804,7 +1804,7 @@ async function twelveDataCallPolicy(options: {
       allowed: true,
       reason: options.triggerSource === "MARKET_DATA_CATCH_UP" ? "SHARED_CANDLE_CATCH_UP" : "SHARED_CANDLE_LIVE_WINDOW",
       message: options.triggerSource === "MARKET_DATA_CATCH_UP"
-        ? "Shared Twelve Data call is the scheduled 5-minute all-session candle sync."
+        ? "Shared Twelve Data call is the scheduled 5-minute chart-history catch-up. Strategy signals remain New York-session only."
         : "Shared Twelve Data call is inside an active strategy monitoring window.",
       sessionDate,
       forced: false
@@ -1826,10 +1826,10 @@ async function ensureTodayAutoSession(symbol: string, settings: RuntimeSettings,
   const moduleUsesStrategyWindow = moduleCode === "high_probability_strategy_2";
   const orbWindow = moduleCode === "orb_max_options" ? currentOrNextOrbSessionWindow(settings) : null;
   const sessionStart = moduleUsesStrategyWindow
-    ? "00:00"
+    ? "09:30"
     : orbWindow?.sessionStart ?? settings.orb.sessionStart;
   const tradeWindowEnd = moduleUsesStrategyWindow
-    ? "23:59"
+    ? "16:00"
     : orbWindow?.tradeWindowEnd ?? settings.orb.tradeWindowEnd;
   const openingRangeMinutes = moduleUsesStrategyWindow ? 0 : settings.orb.openingRangeMinutes;
   const sessionPreset = moduleCode === "high_probability_strategy_2" ? "NY_SWEEP_BOS" : orbWindow?.preset ?? "NEW_YORK_ORB";
@@ -2074,13 +2074,46 @@ async function runTwelveDataCycle() {
         state.latestCandleAt = candles.at(-1)?.timestampUtc ?? null;
         state.lastActionAt = new Date().toISOString();
         try {
-          const evaluation = await processModuleLiveSession(tenant.module_code, settings.symbol, timeframe, [], tenant.id);
+          const evaluation: any = await processModuleLiveSession(tenant.module_code, settings.symbol, timeframe, [], tenant.id);
           state.latestSetupId = evaluation.setupId ?? state.latestSetupId ?? null;
           state.lastError = result.connected ? null : result.error ?? null;
-          state.reason = evaluation.evaluation ?? evaluation.setupStatus ?? state.reason;
+          state.reason = evaluation.evaluation ?? evaluation.setupStatus ?? evaluation.rangeStatus ?? state.reason;
+          await recordOperationalEvent({
+            severity: "INFO",
+            category: "WORKER",
+            eventType: "STRATEGY_EVALUATION_COMPLETE",
+            source: "market-data-worker",
+            tenantId: tenant.id,
+            message: `${moduleDisplayName(tenant.module_code)} completed a strategy evaluation.`,
+            metadata: {
+              moduleCode: tenant.module_code,
+              timeframeMinutes: timeframe,
+              latestCandleAt: state.latestCandleAt,
+              sessionFound: evaluation.sessionFound ?? null,
+              evaluation: evaluation.evaluation ?? null,
+              rangeStatus: evaluation.rangeStatus ?? null,
+              setupId: evaluation.setupId ?? null,
+              setupStatus: evaluation.setupStatus ?? null,
+              paperTrade: evaluation.paperTrade ?? null
+            }
+          });
         } catch (error) {
           state.lastError = (error as Error).message;
           state.reason = `${moduleDisplayName(tenant.module_code)} evaluation failed after candle import.`;
+          await recordOperationalEvent({
+            severity: "ERROR",
+            category: "WORKER",
+            eventType: "STRATEGY_EVALUATION_FAILED",
+            source: "market-data-worker",
+            tenantId: tenant.id,
+            message: `${moduleDisplayName(tenant.module_code)} failed while evaluating the latest completed candle.`,
+            metadata: {
+              moduleCode: tenant.module_code,
+              timeframeMinutes: timeframe,
+              latestCandleAt: state.latestCandleAt,
+              error: state.lastError
+            }
+          });
         }
         await persistTenantAutomationState(state);
       }
@@ -2723,8 +2756,20 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
     [session.id, current.timestamp_utc]
   );
   if (duplicate.rows[0]) {
+    const existingSetup = await loadSetupForProductionGate(duplicate.rows[0].id);
+    const paperTrade = await attemptProductionPaperTrade({
+      session,
+      moduleCode: "orb_max_options",
+      setup: existingSetup,
+      decision: existingSetup,
+      risk: null,
+      current,
+      timeframe,
+      liveCandles,
+      settings
+    });
     const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId);
-    return { sessionFound: true, rangeStatus: range.status, evaluation: "ALREADY_EVALUATED", tradeLifecycle };
+    return { sessionFound: true, rangeStatus: range.status, evaluation: "ALREADY_EVALUATED", paperTrade, tradeLifecycle };
   }
 
   const previousRows = cachedCandlesBetween(liveCandles, session.opening_range_end_at, current.timestamp_utc, { exclusiveEnd: true });
@@ -2745,34 +2790,19 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   const evaluationRange = await selectModule1EvaluationRange(session, current, range);
   const saved = await evaluateAndSaveSetup(session, evaluationRange, current, previousResult.rows);
   const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options");
-  let paperTrade = null;
-  const productionReady = isProductionReadySetup(saved?.setup, saved?.decision, saved?.risk);
-  const brainApproved = brainApprovesSignal(brainDecision, saved?.setup);
-  await auditBrainSignalGate(session.tenant_id, "orb_max_options", saved?.setup, productionReady, brainDecision, brainApproved);
-  if (productionReady && brainApproved) {
-    await saveSetupCandleSnapshot(saved.setup, session, timeframe, liveCandles, current);
-    const alert = entryAlertDetails("orb_max_options", saved.setup, null, Number(saved.risk?.rewardToRisk ?? 0));
-    const entryGuard = paperEntryPriceGuard(saved.setup, current);
-    if (!entryGuard.ok) {
-      paperTrade = { skipped: true, reason: "ENTRY_PRICE_TOO_FAR_FROM_LIVE_MARKET", guard: entryGuard };
-    } else {
-      await notifyTenantOnce(
-        session.tenant_id,
-        `setup-ready-${saved.setup.id}`,
-        "SETUP_READY",
-        `${alert.title} signal ready`,
-        `${alert.body} | ${settings.paperTradingEnabled ? "Paper tracking will simulate this setup for win-rate measurement." : "Paper tracking is disabled in Settings."}`,
-        "HIGH",
-        alert.data,
-        "validEntries"
-      );
-    }
-    paperTrade = settings.paperTradingEnabled
-      ? entryGuard.ok
-        ? await createAutomaticPaperTrade(session, saved.setup, saved.risk, current)
-        : paperTrade
-      : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
-  } else if (saved?.setup?.status === "NO TRADE") {
+  const paperTrade = await attemptProductionPaperTrade({
+    session,
+    moduleCode: "orb_max_options",
+    setup: saved?.setup,
+    decision: saved?.decision,
+    risk: saved?.risk,
+    current,
+    timeframe,
+    liveCandles,
+    settings,
+    brainDecision
+  });
+  if (saved?.setup?.status === "NO TRADE") {
     await notifyTenantOnce(session.tenant_id, `no-trade-${saved.setup.id}`, "NO_TRADE", "No trade classification", saved.setup.final_reason);
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId);
@@ -2811,6 +2841,9 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   const now = new Date();
   const sessionStart = new Date(session.session_start_at);
   if (now < sessionStart) return { sessionFound: true, evaluation: "WAITING_FOR_MODULE2_STRATEGY_CYCLE" };
+  if (now > new Date(session.signal_window_end_at)) {
+    return { sessionFound: true, evaluation: "OUTSIDE_NEW_YORK_SIGNAL_WINDOW" };
+  }
 
   const completedAtOrBefore = new Date(now.getTime() - timeframe * 60_000).toISOString();
   const current =
@@ -2820,10 +2853,11 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
        FROM candles
        WHERE symbol = $1
          AND timeframe_minutes = $2
+         AND timestamp_utc >= $4
          AND timestamp_utc <= $3
        ORDER BY timestamp_utc DESC
        LIMIT 1`,
-      [symbol, timeframe, completedAtOrBefore]
+      [symbol, timeframe, completedAtOrBefore, session.session_start_at]
     )).rows[0] as any);
   if (!current) return { sessionFound: true, evaluation: "WAITING_FOR_MODULE2_CANDLE" };
 
@@ -3585,10 +3619,29 @@ async function runProductionBrainSweep(tenantId: string | null, moduleCode: stri
 function brainApprovesSignal(brainDecision: any, setup: any) {
   if (!setup?.direction) return false;
   const expectedAction = setup.direction === "LONG" ? "BUY" : "SELL";
-  return brainDecision?.status === "COMPLETED"
+  return ["COMPLETED", "DETERMINISTIC_FALLBACK"].includes(brainDecision?.status)
     && (brainDecision?.shouldEmitSignal === true || brainDecision?.shouldOpenPaperTrade === true)
     && brainDecision?.action === expectedAction
     && [brainDecision.entry, brainDecision.stop, brainDecision.target].every((value) => Number.isFinite(Number(value)));
+}
+
+function deterministicBrainFallback(brainDecision: any, setup: any, productionReady: boolean) {
+  if (brainDecision?.status !== "FAILED" || !productionReady || !setup?.direction) return brainDecision;
+  const values = [setup.entry_price, setup.stop_price, setup.target_price].map(Number);
+  if (!values.every(Number.isFinite)) return brainDecision;
+  return {
+    status: "DETERMINISTIC_FALLBACK",
+    moduleCode: setup.module_code,
+    action: setup.direction === "LONG" ? "BUY" : "SELL",
+    shouldEmitSignal: true,
+    shouldTrackPaperTrade: true,
+    shouldOpenPaperTrade: true,
+    mvpPriority: "SIGNAL_FIRST",
+    entry: values[0],
+    stop: values[1],
+    target: values[2],
+    fallbackReason: "Python brain was unavailable; the deterministic strategy and risk engines approved the setup."
+  };
 }
 
 async function auditBrainSignalGate(
@@ -3953,11 +4006,24 @@ async function attemptProductionPaperTrade({
   };
   const effectiveRisk = risk ?? await calculateDecisionRisk(session, effectiveDecision, current);
   const productionReady = isProductionReadySetup(setup, effectiveDecision, effectiveRisk);
-  const effectiveBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode);
+  const primaryBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode);
+  const effectiveBrainDecision = deterministicBrainFallback(primaryBrainDecision, setup, productionReady);
   const brainApproved = brainApprovesSignal(effectiveBrainDecision, setup);
   await auditBrainSignalGate(session.tenant_id, moduleCode, setup, productionReady, effectiveBrainDecision, brainApproved);
   if (!productionReady) return { skipped: true, reason: "SETUP_NOT_PRODUCTION_READY", riskStatus: effectiveRisk?.status ?? "MISSING" };
   if (!brainApproved) return { skipped: true, reason: "PYTHON_BRAIN_NOT_APPROVED", brainDecision: effectiveBrainDecision };
+
+  if (effectiveBrainDecision.status === "DETERMINISTIC_FALLBACK") {
+    await recordOperationalEvent({
+      severity: "WARN",
+      category: "WORKER",
+      eventType: "SIGNAL_BRAIN_FALLBACK",
+      source: "market-data-worker",
+      tenantId: session.tenant_id,
+      message: `${moduleDisplayName(moduleCode)} used deterministic signal failover after the Python brain failed.`,
+      metadata: { moduleCode, setupId: setup.id, primaryBrainStatus: primaryBrainDecision?.status ?? null }
+    });
+  }
 
   await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
   const alert = entryAlertDetails(moduleCode, setup, null, Number(effectiveRisk?.rewardToRisk ?? 0));
@@ -4750,16 +4816,7 @@ function nearlyEqual(left: unknown, right: unknown, tolerance = 0.00001) {
 }
 
 async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, previousRows: any[]) {
-  const profile = await query(
-    `SELECT rp.*
-     FROM risk_profiles rp
-     WHERE rp.is_active = true
-       AND rp.tenant_id = $1
-     ORDER BY rp.created_at DESC
-     LIMIT 1`,
-    [session.tenant_id]
-  );
-  const row = profile.rows[0] as any;
+  const row = await resolveTenantRiskProfile(session.tenant_id);
   const currentCandle = toCandle(currentRow);
   const openingRange = {
     status: range.status,
@@ -5916,17 +5973,7 @@ function checkpointTypeForDecision(decision: any) {
 
 async function calculateDecisionRisk(session: any, decision: any, currentRow: any) {
   if (decision.entryPrice == null || decision.stopPrice == null || decision.targetPrice == null) return null;
-  const profile = await query(
-    `SELECT rp.*
-     FROM risk_profiles rp
-     WHERE rp.is_active = true
-       AND rp.tenant_id = $1
-     ORDER BY rp.created_at DESC
-     LIMIT 1`,
-    [session.tenant_id]
-  );
-  const row = profile.rows[0] as any;
-  if (!row) return null;
+  const row = await resolveTenantRiskProfile(session.tenant_id);
   return calculateRisk({
     accountBalance: Number(row.account_balance),
     accountEquity: Number(row.account_equity),
@@ -5946,6 +5993,35 @@ async function calculateDecisionRisk(session: any, decision: any, currentRow: an
     maximumDailyLossPercent: Number(row.maximum_daily_loss_percent),
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
   });
+}
+
+const DEFAULT_PAPER_RISK_PROFILE = {
+  account_balance: 10_000,
+  account_equity: 10_000,
+  risk_per_trade_percent: 0.25,
+  maximum_daily_loss_percent: 0.75,
+  maximum_weekly_loss_percent: 2,
+  maximum_trades_per_session: 1,
+  maximum_consecutive_losses: 3,
+  mandatory_stop_loss: true,
+  minimum_reward_to_risk: 1.5,
+  allow_martingale: false,
+  allow_adding_to_loss: false,
+  allow_moving_stop_farther: false,
+  fallback: true
+} as const;
+
+async function resolveTenantRiskProfile(tenantId: string) {
+  const profile = await query(
+    `SELECT rp.*
+     FROM risk_profiles rp
+     WHERE rp.is_active = true
+       AND rp.tenant_id = $1
+     ORDER BY rp.created_at DESC
+     LIMIT 1`,
+    [tenantId]
+  );
+  return (profile.rows[0] as any) ?? DEFAULT_PAPER_RISK_PROFILE;
 }
 
 async function tradesTakenForSession(sessionId: string, moduleCode: string, setupTier?: string | null) {
@@ -6147,8 +6223,8 @@ function tenantStateKey(tenantId: string, moduleCode: string) {
 }
 
 function moduleDisplayName(moduleCode: string) {
-  if (moduleCode === "high_probability_strategy_2") return "Module 2 Ultimate Liquidity Sweep";
-  return "Module 1 ORB MAX";
+  if (moduleCode === "high_probability_strategy_2") return "Module 2 NY Ultimate Liquidity Sweep";
+  return "Module 1 NY ORB MAX";
 }
 
 function moduleTimeframeMinutes(moduleCode: string, settings: RuntimeSettings) {

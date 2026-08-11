@@ -3135,7 +3135,7 @@ function LiveSystemStatusPanel({ state, moduleCode, setup, trade, feedHealth }: 
         {module2FeedReady ? <Metric label="M2 5M candles" value={module2FeedReady} /> : null}
         <Metric label="News" value={state.newsStatus?.status ?? "CLEAR"} />
       </div>
-      <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid all-session setup."}</p>
+      <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid New York-session setup."}</p>
     </Panel>
   );
 }
@@ -3685,17 +3685,17 @@ function AllDayStrategyCenterPanel({
 }) {
   const rows = modules.map((module: any) => commandModuleRow(state, module));
   const activeSignals = state.tradeSignals?.signals ?? [];
-  const allDayRows = rows.filter((row) => strategyRuntimeMode(row.moduleCode) === "All-day");
+  const nyRows = rows.filter((row) => strategyRuntimeMode(row.moduleCode) === "New York");
   const activeTrades = rows.filter((row) => row.trade?.outcome === "ACTIVE").length;
   const liveSignals = activeSignals.length;
   const selectedRow = rows.find((row) => row.moduleCode === activeModuleCode) ?? rows[0];
   const selectedSignal = selectedRow ? activeSignals.find((item: any) => item.moduleCode === selectedRow.moduleCode) : null;
   return (
-    <Panel icon={<Layers />} title="All-Day Strategy Center">
+    <Panel icon={<Layers />} title="New York Strategy Center">
       <div className="strategy-validation-hero">
         <div>
           <span>Runtime coverage</span>
-          <strong>{allDayRows.length}/{rows.length} all-day</strong>
+          <strong>{nyRows.length}/{rows.length} NY-only</strong>
         </div>
         <em>{activeTrades} active paper trade{activeTrades === 1 ? "" : "s"} · {liveSignals} live setup{liveSignals === 1 ? "" : "s"}</em>
       </div>
@@ -3776,7 +3776,7 @@ function checklistCountLabel(setup: any) {
 }
 
 function strategyRuntimeMode(moduleCode: string) {
-  return moduleCode === "orb_max_options" ? "All-session" : "All-day";
+  return ["orb_max_options", "high_probability_strategy_2"].includes(moduleCode) ? "New York" : "Scheduled";
 }
 
 function CrossModuleCommandCenter({
@@ -4210,7 +4210,7 @@ function commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confide
   if (rehearsalStatus !== "GO") return "Run GO / NO-GO rehearsal.";
   if (auditStatus !== "PASS") return "Resolve production audit before trusting signals.";
   if (!confidence?.confidence?.trust) return "Feature-ready. Collect non-QA paper/backtest samples for trust.";
-  return "Ready. Wait for the next valid all-session signal.";
+  return "Ready. Wait for the next valid New York-session signal.";
 }
 
 function UnifiedLearningDashboard({
@@ -4389,7 +4389,7 @@ function OrbCompletionCenter({ state, qaSuite }: { state: PanelState; qaSuite?: 
     { phase: "QA replay suite", status: qaPass ? "COMPLETE" : "READY", detail: qaPass ? `${qaSuite.summary?.passed ?? 0}/${qaSuite.summary?.total ?? 0} cases passed.` : "Run Full ORB QA Suite from Data Admin to refresh proof." },
     { phase: "GO / NO-GO rehearsal", status: rehearsalStatus === "GO" ? "COMPLETE" : "READY", detail: rehearsalStatus === "GO" ? "End-to-end ORB replay, paper trade, close, journal, notification, and isolation proof passed." : "Run Module 1 launch rehearsal." },
     { phase: "Production audit", status: auditStatusValue === "PASS" ? "COMPLETE" : "READY", detail: auditStatusValue === "PASS" ? "Module 1 audit is clean." : "Run rehearsal and confidence audit." },
-    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for all-session ORB timeframe candles." },
+    { phase: "Data readiness", status: dataUsable ? "COMPLETE" : "NEEDS_DATA", detail: dataReady.reason ?? "Waiting for New York ORB timeframe candles." },
     { phase: "Backtest confidence", status: performanceProven ? "COMPLETE" : backtestRan ? "NEEDS_DATA" : "READY", detail: latestBacktest.confidence?.recommendation ?? "Run Module 1 backtest after candles are ready." },
     { phase: "Learning system", status: state.orbLearning?.status === "COMPLETED" || state.orbLearning?.id ? "COMPLETE" : "READY", detail: "ORB learning reviews closed paper-trade outcomes and scenario performance." },
     { phase: "Reports", status: (state.weeklyReport?.length ?? 0) > 0 || (state.monthlyReport?.length ?? 0) > 0 ? "COMPLETE" : "READY", detail: "Weekly and monthly ORB reports are available from real non-QA paper trades." },
@@ -7551,7 +7551,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
   const setupState = flags.state ?? setup?.status;
   const hasTerminalSetup = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "NO TRADE", "BLOCKED"].includes(String(setup?.status ?? ""));
   const defaults = [
-    ["NY_SESSION_ACTIVE", "Strategy cycle active", "Module 2 evaluates during the configured all-session strategy cycle."],
+    ["NY_SESSION_ACTIVE", "New York strategy window active", "Module 2 evaluates completed 5-minute candles only during the configured New York window."],
     ["STRATEGY_CYCLE_ACTIVE", "All-session cycle active", "Module 2 is not NY-only; it can evaluate London, New York, Tokyo, and Sydney when the shared feed is healthy."],
     ["DAILY_TRADE_LIMIT", "Daily signal limit not reached", "Only the configured number of signal-tracked entries can trigger per session."],
     ["LIQUIDITY_LEVEL_IDENTIFIED", "Meaningful liquidity level identified", "Previous week/day, Asian, London, NY premarket, ORB, swing, equal, round-number, or manual liquidity must be available."],
@@ -8652,7 +8652,7 @@ function module2CockpitState(state: PanelState, setup?: any, trade?: any) {
     rehearsalStatus,
     blockers: blockers.length > 0 ? blockers : ["No blocking items. Wait for a valid completed Module 2 setup."],
     verdict: launchStatus === "TRUST NEXT VALID SIGNAL"
-      ? "Module 2 is ready for the active all-session strategy cycle. Only act on signals after the selected variant checklist is valid."
+      ? "Module 2 is ready for the active New York strategy window. Only act on signals after one selected variant and risk plan are valid."
       : launchStatus === "CAUTION"
         ? "Module 2 can be monitored, but review the blocking items before trusting the next signal."
         : "Do not trust Module 2 signals yet. Resolve the blocking items first.",
