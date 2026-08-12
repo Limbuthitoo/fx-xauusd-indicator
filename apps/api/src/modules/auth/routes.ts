@@ -612,7 +612,13 @@ export async function writeAudit(adminUserId: string | null, action: string, res
 }
 
 export async function enforceSessionRevocation(request: FastifyRequest, reply: FastifyReply) {
-  if (request.url.startsWith("/api/auth/logout")) return;
+  const path = request.url.split("?")[0];
+  if (
+    path === "/api/auth/login"
+    || path === "/api/auth/password-reset/request"
+    || path === "/api/auth/password-reset/confirm"
+    || path.startsWith("/api/auth/logout")
+  ) return;
   const token = tokenFromRequest(request);
   if (!token) return;
   if (isTokenRevoked(token)) {
