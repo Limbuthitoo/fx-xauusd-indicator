@@ -157,6 +157,14 @@ API_BASE_URL=http://localhost:7073 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=
 
 Verification checks API health, PostgreSQL, Redis, dedicated worker heartbeat, Platform System Health, backup status, Twelve Data guardrail, and push provider status.
 
+For upgrades on a database that already has the checksum ledger, prefer:
+
+```bash
+ADMIN_OTP='current-six-digit-code' npm run deploy:vps-production -- .env.production
+```
+
+This guarded command performs `npm ci`, production environment checks, a PostgreSQL backup, a rebuilt migration run, service rebuild/restart, deterministic BUY/SELL target-sequence tests, migration `082` lifecycle validation, platform health validation, and an HTTP `101` WebSocket upgrade check. Add `TENANT_TOKEN`, or `TENANT_EMAIL` plus `TENANT_PASSWORD`, to include authenticated Prediction, BUY/SELL, notification, paper, and journal proof surfaces.
+
 After Firebase credentials are set, open Platform Admin > Settings and run **Send Platform Push Test**.
 
 ## Backup

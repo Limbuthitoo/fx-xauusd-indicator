@@ -345,6 +345,23 @@ docker compose --env-file .env.production -f docker-compose.yml -f docker-compos
 
 Use `DATABASE_MIGRATION_BASELINE` only for the first ledger-enabled migration run on an established database. New databases and later deployments must omit it. A checksum mismatch is a deployment failure; create a new migration instead of editing applied SQL history.
 
+For normal upgrades after the ledger is established, use the complete guarded rollout. It creates a backup, explicitly rebuilds the migration image so new SQL cannot be omitted by Docker cache, applies migrations, rebuilds services, and verifies PostgreSQL lifecycle integrity plus the public WebSocket:
+
+```bash
+ADMIN_OTP='current-six-digit-code' npm run deploy:vps-production -- .env.production
+```
+
+To include authenticated Module 1/2 proof surfaces, also provide a subscriber token or subscriber credentials:
+
+```bash
+ADMIN_OTP='current-six-digit-code' \
+TENANT_EMAIL='subscriber@example.com' \
+TENANT_PASSWORD='subscriber-password' \
+npm run deploy:vps-production -- .env.production
+```
+
+The lifecycle validator may return `WARN` until a genuine post-deployment candle reaches TP1/TP2/TP3 or SL. That warning does not fabricate a trade and does not fail deployment; schema, geometry, duplicate-event, notification, and realized-R inconsistencies do fail it.
+
 Start the production services:
 
 ```bash

@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+
+loadEnv(process.argv[2] ?? ".env.production");
+
 const baseUrl = process.env.API_BASE_URL ?? process.env.PUBLIC_API_BASE_URL ?? "http://localhost:7073";
 const email = process.env.ADMIN_EMAIL ?? "admin@orb.local";
 const password = process.env.ADMIN_PASSWORD ?? process.env.LOCAL_PIN ?? "1234";
@@ -55,3 +59,16 @@ main().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });
+
+function loadEnv(path) {
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}

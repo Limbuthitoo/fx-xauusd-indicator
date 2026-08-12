@@ -603,6 +603,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - A completed 5M candle that touches both SL and any pending TP has unknowable intrabar ordering, so paper tracking uses the conservative stop-first result. This prevents overstating win rate from candle ambiguity.
 - The tenant web/mobile Paper Trading views and notification details must show the same persisted TP1/TP2/TP3 statuses. Initial BUY/SELL notifications carry all three targets. TP1/TP2 notifications are lifecycle updates, not fresh entry signals.
 - Multi-target persistence is secondary to the signal-first MVP: Predictions and BUY & SELL are emitted from the approved Module 1/2 strategy thesis; paper milestones measure what happened afterward and must never manufacture, suppress, or duplicate the original signal.
+- Production upgrades use `ADMIN_OTP='current-code' npm run deploy:vps-production -- .env.production`. The guarded rollout installs locked dependencies, validates production configuration, creates a PostgreSQL backup, rebuilds the migration image, applies checksum-ledger migrations, rebuilds/restarts services, proves BUY/SELL target sequences, audits migration `082` lifecycle integrity, verifies platform health, and requires a successful WebSocket HTTP 101 upgrade. A lack of genuine post-deployment TP/SL events is a monitoring warning; schema, geometry, duplicate-event, notification, and realized-R inconsistencies are deployment failures.
 
 ## Operating Principles
 
