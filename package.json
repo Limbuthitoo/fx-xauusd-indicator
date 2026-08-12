@@ -50,7 +50,9 @@
     "launch:validate": "tsx scripts/launch-validate.ts",
     "validate:module2-production": "tsx scripts/validate-module2-production.ts",
     "validate:mvp-runtime": "node --import tsx scripts/validate-mvp-runtime.ts",
+    "validation:history": "node --import tsx scripts/historical-strategy-validation.ts",
     "validate:modules-flow": "node scripts/validate-modules-production-flow.mjs",
+    "validate:mvp-predeploy": "npm run verify:modules && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web && npm run build:api && npm run build:web && npm run validate:mvp-runtime",
     "verify:orb": "node --import tsx scripts/verify-orb-scenarios.ts",
     "verify:modules": "node --import tsx scripts/verify-module-strategies.ts && python3 scripts/verify-python-brains.py",
     "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/range-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"

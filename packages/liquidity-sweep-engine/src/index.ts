@@ -22,6 +22,8 @@ export type LiquiditySweepState =
   | "WAITING_FOR_RETRACE"
   | "ENTRY_CONFIRMATION"
   | "SIGNAL_ACTIVE"
+  | "BLOCKED"
+  | "NO_TRADE"
   | "INVALIDATED";
 
 export type LiquidityLevelType =
@@ -311,9 +313,9 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   displacementFilterMode: "WARN_ONLY",
   marketContextMode: "RECORD_ONLY",
   manualConfirmationRequired: false,
-  maximumTradesPerSession: 1,
-  maximumActiveSetupsPerSymbol: 1,
-  maximumActivePositions: 0,
+  maximumTradesPerSession: 2,
+  maximumActiveSetupsPerSymbol: 2,
+  maximumActivePositions: 2,
   riskPerTradePercent: 0.25,
   maximumDailyLossPercent: 0.75,
   maximumWeeklyLossPercent: 2.0,
@@ -394,12 +396,13 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const newsOk = !config.enableNewsFilter || !String(context.newsStatus ?? "CLEAR").includes("BLOCKED");
   const tradeLimitOk = (context.tradesTakenThisSession ?? 0) < config.maximumTradesPerSession;
   const activeSetupOk = (context.activeSetupsForSymbol ?? 0) < config.maximumActiveSetupsPerSymbol;
-  const activePositionOk = (context.currentOpenPositions ?? 0) <= config.maximumActivePositions;
+  const activePositionOk = (context.currentOpenPositions ?? 0) < Math.max(1, config.maximumActivePositions);
   const dailyLossOk = (context.dailyLossPercent ?? 0) < config.maximumDailyLossPercent;
   const weeklyLossOk = (context.weeklyLossPercent ?? 0) < config.maximumWeeklyLossPercent;
   const consecutiveLossOk = (context.consecutiveLosses ?? 0) < config.maximumConsecutiveLosses;
   const manualConfirmationOk = !config.manualConfirmationRequired || context.manualConfirmationCompleted === true;
-  const riskLimitsOk = activeSetupOk && activePositionOk && dailyLossOk && weeklyLossOk && consecutiveLossOk;
+  const riskLimitsOk = dailyLossOk && weeklyLossOk && consecutiveLossOk;
+  const paperTrackingEligible = tradeLimitOk && activeSetupOk && activePositionOk && riskLimitsOk;
   flags.terminologyVersion = "ULTIMATE_LIQUIDITY_SWEEP_STRUCTURE_CONFIRMATION_V1";
   flags.atr14 = Number(atr.toFixed(5));
   flags.precisionCandlesAvailable = precisionCandles.length;
@@ -421,9 +424,9 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "STRUCTURE_ALIGNMENT_CONTEXT", "Internal/external structure alignment resolved", config.countertrendResolutionMode !== "BLOCK" || structureGraph.alignmentState !== "COUNTERTREND", config.countertrendResolutionMode === "BLOCK", "AUTOMATIC", structureGraph.alignmentState, config.countertrendResolutionMode, structureGraph.conflictReason);
   push(evaluations, "SESSION_CONTEXT_READY", "Session context engine ready", Boolean(sessionContext.current), false, "AUTOMATIC", sessionContext.current?.name ?? "UNKNOWN", "active or completed context", sessionContext.current ? `${sessionContext.current.name} session context is ${sessionContext.current.state}.` : "No current session context could be classified.");
   push(evaluations, "NY_SESSION_ACTIVE", "Strategy cycle active", strategyCycleActive, true, "AUTOMATIC", `${activeSessionName} ${timeOnly(current.timestampUtc)}`, `${config.newYorkStartTime}-${config.newYorkEndTime}`, strategyCycleActive ? `Module 2 is evaluating the active ${activeSessionName} cycle.` : "Module 2 strategy cycle is outside the configured runtime window.");
-  push(evaluations, "DAILY_TRADE_LIMIT", "Daily signal limit not reached", tradeLimitOk, true, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Session signal limit allows another actionable setup." : "The configured session signal limit has already been reached.");
-  push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No active setup conflict", activeSetupOk, true, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No active same-symbol setup conflict is present." : "Another active same-symbol setup already exists.");
-  push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "No active tracking conflict", activePositionOk, true, "AUTOMATIC", context.currentOpenPositions ?? 0, `<= ${config.maximumActivePositions}`, activePositionOk ? "No active paper-tracking position blocks a new Module 2 setup." : "An active paper-tracking position blocks a duplicate Module 2 entry.");
+  push(evaluations, "DAILY_TRADE_LIMIT", "Paper-trade session limit not reached", tradeLimitOk, false, "AUTOMATIC", context.tradesTakenThisSession ?? 0, `< ${config.maximumTradesPerSession}`, tradeLimitOk ? "Paper tracking can record another setup." : "The market signal remains visible, but another paper trade will not be opened in this session.");
+  push(evaluations, "ACTIVE_SETUP_CONFLICT_CLEAR", "No duplicate paper setup", activeSetupOk, false, "AUTOMATIC", context.activeSetupsForSymbol ?? 0, `< ${config.maximumActiveSetupsPerSymbol}`, activeSetupOk ? "No duplicate same-symbol paper setup is present." : "The market signal remains visible, but duplicate paper tracking is suppressed.");
+  push(evaluations, "NO_ACTIVE_TRADE_CONFLICT", "Paper-trade capacity available", activePositionOk, false, "AUTOMATIC", context.currentOpenPositions ?? 0, `< ${Math.max(1, config.maximumActivePositions)}`, activePositionOk ? "Paper-trade capacity is available for another distinct setup." : "The market signal remains visible while existing paper positions are managed.");
   push(evaluations, "RISK_LIMITS_CLEAR", "Daily, weekly, and consecutive-loss risk limits clear", riskLimitsOk, true, "AUTOMATIC", `D ${context.dailyLossPercent ?? 0}% / W ${context.weeklyLossPercent ?? 0}% / L ${context.consecutiveLosses ?? 0}`, `D < ${config.maximumDailyLossPercent}%, W < ${config.maximumWeeklyLossPercent}%, losses < ${config.maximumConsecutiveLosses}`, riskLimitsOk ? "Account/session risk limits allow a new BUY/SELL setup." : "Risk limits block a new BUY/SELL setup.");
   push(evaluations, "MANUAL_CONFIRMATION_COMPLETED", "Manual confirmation completed when required", manualConfirmationOk, config.manualConfirmationRequired, "AUTOMATIC", config.manualConfirmationRequired ? context.manualConfirmationCompleted === true : "AUTO_PAPER_MODE", config.manualConfirmationRequired ? "true" : "not required", manualConfirmationOk ? "Manual confirmation gate is satisfied for the configured mode." : "Manual confirmation is required before Module 2 can emit BUY_READY/SELL_READY.");
 
@@ -439,11 +442,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     }
     return blockedDecision("HARD_RULE_BLOCK", "Module 2 hard rules failed before liquidity evaluation.", evaluations, flags);
   }
-  if (!tradeLimitOk) {
-    return blockedDecision("TRADE_LIMIT_BLOCK", "Module 2 session trade limit has already been reached.", evaluations, flags);
-  }
-  if (!activeSetupOk || !activePositionOk || !riskLimitsOk) {
-    return blockedDecision("RISK_LIMIT_BLOCK", "Module 2 risk/conflict limits blocked the setup before liquidity evaluation.", evaluations, flags);
+  if (!riskLimitsOk) {
+    return blockedDecision("RISK_LIMIT_BLOCK", "Module 2 account loss limits blocked the setup before liquidity evaluation.", evaluations, flags);
   }
   if (!manualConfirmationOk) {
     return blockedDecision("MANUAL_CONFIRMATION_REQUIRED", "Manual confirmation is required before Module 2 can produce a live paper-entry signal.", evaluations, flags);
@@ -562,31 +562,50 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   }
   const confirmationCount = confirmations.filter((item) => item.passed).length;
   const confirmationScore = confirmations.reduce((sum, item) => sum + (item.passed ? item.points : 0), 0);
-  push(evaluations, "CONFIRMATION_COUNT", "Minimum confirmation rules matched", confirmationCount >= 3, true, "AUTOMATIC", confirmationCount, `>= 3 of ${confirmations.length}`, confirmationCount >= 3 ? "Minimum confirmation layer passed." : "Fewer than 3 confirmation rules matched.");
+  push(evaluations, "CONFIRMATION_COUNT", "Confirmation evidence count", confirmationCount >= 3, false, "AUTOMATIC", confirmationCount, `>= 3 of ${confirmations.length} for full-grade evidence`, confirmationCount >= 3 ? "Full-grade confirmation evidence passed." : "Fewer than 3 confirmation rules matched; this does not veto a selected independent variant whose own mandatory rules passed.");
 
-  const plan = buildLayeredTradePlan(setupCandles, levels, direction, sweep, zone, current, atr, config);
+  const plan = buildLayeredTradePlan(
+    levels,
+    direction,
+    sweep,
+    [zone, fvg, orderBlock].filter(Boolean) as TradePlanZone[],
+    current,
+    atr,
+    config
+  );
   const directionalConflictClear = resolveDirectionalConflict(direction, sequence, sweepAnalysis.candidates, config);
   push(evaluations, "DIRECTIONAL_CONFLICT_CLEAR", "Directional conflict resolution clear", directionalConflictClear.clear, true, "AUTOMATIC", directionalConflictClear.actual, "one confirmed direction per symbol", directionalConflictClear.reason);
   const atrVolatilityOk = current.close > 0 && atr / current.close >= 0.00015;
-  const rrOk = plan.rr >= 2 && plan.availableRewardRisk >= config.minimumRiskReward;
+  const rrOk = plan.geometryValid && plan.rr >= 2 && plan.availableRewardRisk >= config.minimumRiskReward;
   const spreadRatio = context.spread == null ? 0 : context.spread / Math.max(0.01, Math.abs(plan.entry - plan.stop));
   const spreadDistanceOk = context.spread == null || spreadRatio <= 0.1;
+  push(
+    evaluations,
+    "TRADE_GEOMETRY_VALID",
+    "Directional entry, stop, and target geometry",
+    plan.geometryValid,
+    true,
+    "AUTOMATIC",
+    `${direction} ${plan.stop.toFixed(2)} / ${plan.entry.toFixed(2)} / ${plan.target.toFixed(2)}`,
+    direction === "LONG" ? "stop < entry < target" : "target < entry < stop",
+    plan.geometryValid ? "Stop and target are correctly positioned around entry." : "The setup has moved beyond its invalidation extreme; its stop/entry/target geometry is no longer tradable."
+  );
   const quality = [
     { code: "QUALITY_ATR_VOLATILITY", name: "ATR volatility filter", passed: atrVolatilityOk, actual: `${((atr / current.close) * 100).toFixed(3)}%`, required: ">= 0.015%", explanation: atrVolatilityOk ? "ATR shows enough volatility for the setup." : "ATR volatility is too low." },
     { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadDistanceOk, blocking: true, actual: context.spread == null ? "unknown" : `${Math.round(spreadRatio * 100)}% of stop`, required: "<= 10% of stop distance", explanation: spreadDistanceOk ? "Spread is acceptable relative to the stop distance." : "Spread is too large relative to the stop distance." },
     { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, blocking: true, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
     { code: "QUALITY_RR", name: "Minimum RR and opposing liquidity", passed: rrOk, blocking: true, actual: `${plan.rr.toFixed(2)}R target / ${plan.availableRewardRisk.toFixed(2)}R available`, required: "2R target and >= 1.5R before opposing liquidity", explanation: rrOk ? "Fixed 2R target is valid and opposing liquidity leaves enough room." : "Nearest opposing liquidity does not leave enough reward distance." },
-    { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR`, explanation: plan.stopValid ? "Stop size is acceptable." : "Stop size is too large." },
+    { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR with valid directional geometry`, explanation: plan.stopValid ? "Stop size and direction are acceptable." : plan.geometryValid ? "Stop size is too large." : "Stop placement is on the wrong side of entry." },
     { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: bos ? currentIndex - bos.index : currentIndex - sweep.index, required: bos ? `<= ${config.maximumBarsAfterBosForEntry} candles after BOS` : `<= ${config.maximumBarsAfterSweep} candles after sweep`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
   ];
   for (const item of quality) {
     push(evaluations, item.code, item.name, item.passed, "blocking" in item ? Boolean(item.blocking) : false, "AUTOMATIC", item.actual, item.required, item.explanation);
   }
   const qualityCount = quality.filter((item) => item.passed).length;
-  push(evaluations, "QUALITY_FILTER_COUNT", "Minimum quality filters matched", qualityCount >= 3, true, "AUTOMATIC", qualityCount, ">= 3", qualityCount >= 3 ? "Minimum quality layer passed." : "Fewer than 3 quality filters passed.");
+  push(evaluations, "QUALITY_FILTER_COUNT", "Quality evidence count", qualityCount >= 3, false, "AUTOMATIC", qualityCount, ">= 3 for full-grade evidence", qualityCount >= 3 ? "Full-grade quality evidence passed." : "Fewer than 3 quality filters passed; hard spread, news, RR, stop, geometry, and selected-profile risk gates still apply independently.");
   push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
   push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
-  const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && emaModeOk && volumeModeOk && displacementModeOk && directionalConflictClear.clear;
+  const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && plan.geometryValid && emaModeOk && volumeModeOk && displacementModeOk && directionalConflictClear.clear;
   push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop <= ${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
@@ -621,6 +640,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     riskLimitsOk,
     manualConfirmationOk,
     directionalConflictClear: directionalConflictClear.clear,
+    geometryValid: plan.geometryValid,
     riskOk
   });
   const selectedVariant = selectModule2Variant(variants);
@@ -646,6 +666,15 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.bos = bos ? { ...bos, structureType } : null;
   flags.protectedPoint = bos?.protectedPoint ?? null;
   flags.entryZone = zone;
+  flags.tradePlan = {
+    source: plan.source,
+    entry: plan.entry,
+    stop: plan.stop,
+    target: plan.target,
+    riskReward: plan.rr,
+    availableRewardRisk: plan.availableRewardRisk
+  };
+  flags.tradePlanCandidates = plan.candidates;
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
   flags.module2Variant = selectedVariant;
@@ -654,6 +683,13 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.variantVersion = selectedVariant?.version ?? MODULE2_VARIANT_VERSION;
   flags.tradeGrade = gradeValue;
   flags.confidence = score;
+  flags.paperTrackingEligible = paperTrackingEligible;
+  flags.paperTrackingBlockers = [
+    !tradeLimitOk ? "DAILY_TRADE_LIMIT" : null,
+    !activeSetupOk ? "ACTIVE_SETUP_CONFLICT_CLEAR" : null,
+    !activePositionOk ? "NO_ACTIVE_TRADE_CONFLICT" : null,
+    !riskLimitsOk ? "RISK_LIMITS_CLEAR" : null
+  ].filter(Boolean);
   flags.profileEngine = {
     baseConditions: {
       sessionActive: strategyCycleActive,
@@ -671,9 +707,19 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk && scoreOk;
   flags.fullChecklistMatched = fullChecklistPassed;
   flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
-  flags.state = mandatoryEntryPassed ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
+  const setupReady = mandatoryEntryPassed && riskOk && scoreOk;
+  flags.state = setupReady ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
   flags.riskReward = plan.rr;
-  flags.stateMachine = appendStateTransition(flags.stateMachine, mandatoryEntryPassed ? "ENTRY_READY" : "RETEST_REACHED", current.timestampUtc, mandatoryEntryPassed ? "Risk and checklist gates produced setup-ready decision." : "Retest happened but entry gates are still waiting or blocked.");
+  flags.stateMachine = appendStateTransition(
+    flags.stateMachine,
+    setupReady ? "ENTRY_READY" : "ENTRY_CONFIRMATION",
+    current.timestampUtc,
+    setupReady
+      ? "Selected profile, risk engine, and confidence gate produced a setup-ready decision."
+      : mandatoryEntryPassed
+        ? "A strategy profile completed; downstream risk or confidence approval is still required."
+        : "Strategy evidence is still waiting for an approved profile."
+  );
 
   if (!mandatoryEntryPassed) {
     if (!selectedVariant && variants.some((item) => item.status === "WAIT")) {
@@ -741,12 +787,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
 function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
   const required = new Set([
     "DATA_HEALTHY",
-    "MARKET_CONTEXT_READY",
-    "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
-    "DAILY_TRADE_LIMIT",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -754,6 +795,7 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
     "DIRECTIONAL_CONFLICT_CLEAR",
+    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
@@ -766,12 +808,7 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
 function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | "requiredForEntry"> {
   const mandatory = new Set([
     "DATA_HEALTHY",
-    "MARKET_CONTEXT_READY",
-    "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
-    "DAILY_TRADE_LIMIT",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -779,16 +816,19 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
     "DIRECTIONAL_CONFLICT_CLEAR",
+    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
+  const paperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
+  if (paperTracking.has(ruleCode)) return { ruleLayer: "PAPER_TRACKING", requiredForEntry: false };
   if (["PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(ruleCode)) return { ruleLayer: "EVIDENCE", requiredForEntry: false };
-  if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
-  if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
+  if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
+  if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
   if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
@@ -1512,36 +1552,124 @@ function isZoneFresh(candles: Candle[], zone: NonNullable<ReturnType<typeof dete
   return direction === "LONG" ? !rows.some((candle) => candle.close < zone.low) : !rows.some((candle) => candle.close > zone.high);
 }
 
-function buildTradePlan(candles: Candle[], levels: LiquidityLevel[], direction: Direction, sweep: SweepCandidate, zone: { midpoint: number; low: number; high: number }, current: Candle, atr: number, config: LiquiditySweepConfig) {
-  const entry = current.close;
-  const stop = direction === "LONG" ? sweep.candle.low - atr * config.stopBufferATR : sweep.candle.high + atr * config.stopBufferATR;
-  const risk = Math.abs(entry - stop);
-  const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
-  const availableRewardRisk = opposingLiquidityRewardRisk(levels, direction, entry, risk);
-  const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
-  const stopDistanceAtr = atr > 0 ? risk / atr : 999;
-  return { entry, stop, target, rr, availableRewardRisk, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
-}
+type TradePlanZone = {
+  kind?: string;
+  low: number;
+  high: number;
+  midpoint: number;
+};
+
+type TradePlanCandidate = {
+  source: string;
+  entry: number;
+  stop: number;
+  target: number;
+  rr: number;
+  availableRewardRisk: number;
+  geometryValid: boolean;
+  stopValid: boolean;
+  stopDistanceAtr: number;
+  zoneTouched: boolean;
+  riskApproved: boolean;
+};
 
 function buildLayeredTradePlan(
-  candles: Candle[],
   levels: LiquidityLevel[],
   direction: Direction,
   sweep: SweepCandidate,
-  zone: { midpoint: number; low: number; high: number } | null,
+  zones: TradePlanZone[],
   current: Candle,
   atr: number,
   config: LiquiditySweepConfig
 ) {
-  if (zone) return buildTradePlan(candles, levels, direction, sweep, zone, current, atr, config);
   const entry = current.close;
-  const stop = direction === "LONG" ? sweep.candle.low - atr * config.stopBufferATR : sweep.candle.high + atr * config.stopBufferATR;
+  const buffer = atr * config.stopBufferATR;
+  const candidates: TradePlanCandidate[] = [];
+
+  for (const zone of zones) {
+    const zoneTouched = current.low <= zone.high && current.high >= zone.low;
+    if (!zoneTouched) continue;
+    const invalidation = direction === "LONG"
+      ? Math.min(zone.low, current.low) - buffer
+      : Math.max(zone.high, current.high) + buffer;
+    candidates.push(buildTradePlanCandidate(
+      `TOUCHED_${String(zone.kind ?? "STRUCTURE_ZONE")}`,
+      levels,
+      direction,
+      entry,
+      invalidation,
+      atr,
+      config,
+      true
+    ));
+  }
+
+  const sweepStop = direction === "LONG"
+    ? sweep.candle.low - buffer
+    : sweep.candle.high + buffer;
+  candidates.push(buildTradePlanCandidate(
+    "SWEEP_INVALIDATION",
+    levels,
+    direction,
+    entry,
+    sweepStop,
+    atr,
+    config,
+    true
+  ));
+
+  const ranked = candidates.sort((left, right) =>
+    Number(right.riskApproved) - Number(left.riskApproved)
+      || Number(right.geometryValid) - Number(left.geometryValid)
+      || Number(right.stopValid) - Number(left.stopValid)
+      || right.availableRewardRisk - left.availableRewardRisk
+      || left.stopDistanceAtr - right.stopDistanceAtr
+  );
+  const selected = ranked[0];
+  return { ...selected, candidates: ranked };
+}
+
+function buildTradePlanCandidate(
+  source: string,
+  levels: LiquidityLevel[],
+  direction: Direction,
+  entry: number,
+  stop: number,
+  atr: number,
+  config: LiquiditySweepConfig,
+  zoneTouched: boolean
+): TradePlanCandidate {
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const geometryValid = validTradeGeometry(direction, entry, stop, target);
   const availableRewardRisk = opposingLiquidityRewardRisk(levels, direction, entry, risk);
-  const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
+  const rr = geometryValid && risk > 0 ? Math.abs(target - entry) / risk : 0;
   const stopDistanceAtr = atr > 0 ? risk / atr : 999;
-  return { entry, stop, target, rr, availableRewardRisk, stopValid: stopDistanceAtr <= config.maximumStopATR, stopDistanceAtr };
+  const stopValid = geometryValid && stopDistanceAtr <= config.maximumStopATR;
+  const riskApproved = geometryValid
+    && stopValid
+    && rr >= 2
+    && availableRewardRisk >= config.minimumRiskReward;
+  return {
+    source,
+    entry,
+    stop,
+    target,
+    rr,
+    availableRewardRisk,
+    geometryValid,
+    stopValid,
+    stopDistanceAtr,
+    zoneTouched,
+    riskApproved
+  };
+}
+
+export function validTradeGeometry(direction: Direction, entry: number, stop: number, target: number) {
+  if (![entry, stop, target].every(Number.isFinite)) return false;
+  return direction === "LONG"
+    ? stop < entry && entry < target
+    : target < entry && entry < stop;
 }
 
 function opposingLiquidityRewardRisk(levels: LiquidityLevel[], direction: Direction, entry: number, risk: number) {
@@ -2263,6 +2391,7 @@ function module2VariantCandidates(input: {
   riskLimitsOk: boolean;
   manualConfirmationOk: boolean;
   directionalConflictClear: boolean;
+  geometryValid: boolean;
   riskOk: boolean;
 }): Module2Variant[] {
   const base = {
@@ -2270,48 +2399,31 @@ function module2VariantCandidates(input: {
     qualityOk: input.spreadOk && input.newsOk && input.rrOk && input.stopValid
   };
   const rows: Module2Variant[] = [
-    variant("A", "SWEEP_CLOSE_BACK_INSIDE", "A. Sweep + close-back inside", "ENTRY_GRADE", "PAPER_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("A", "SWEEP_CLOSE_BACK_INSIDE", "A. Sweep + close-back inside", "ENTRY_GRADE", "PAPER_APPROVED", true, 55, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED"], [
+      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
+      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)]
+    ], "Variant A passed: sweep and close-back-inside confirmed the strategy profile.", base, input.direction),
+    variant("B", "SWEEP_BOS", "B. Sweep + BOS", "ENTRY_GRADE", "PAPER_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant A passed: sweep and close-back-inside produced a risk-approved entry profile.", base, input.direction),
-    variant("B", "SWEEP_BOS", "B. Sweep + BOS", "ENTRY_GRADE", "PAPER_APPROVED", true, 68, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "CONTINUATION_BOS", "RISK_OK", "SIGNAL_SCORE"], [
-      ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
-      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant B passed: sweep and continuation BOS produced a risk-approved entry profile.", base, input.direction),
-    variant("C", "SWEEP_MSS", "C. Sweep + MSS", "ENTRY_GRADE", "PAPER_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "MSS_STRENGTH", "RISK_OK", "SIGNAL_SCORE"], [
+      ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)]
+    ], "Variant B passed: sweep and continuation BOS confirmed the strategy profile.", base, input.direction),
+    variant("C", "SWEEP_MSS", "C. Sweep + MSS", "ENTRY_GRADE", "PAPER_APPROVED", true, 75, ["LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "REVERSAL_MSS", "MSS_STRENGTH"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
-      ["MSS_STRENGTH", Boolean(input.bos?.breakDistanceAtr != null && input.bos.breakDistanceAtr >= DEFAULT_CONFIG.minimumBosCloseDistanceATR && input.bos.bodyRatio >= 0.5)],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant C passed: sweep and reversal MSS produced a risk-approved entry profile.", base, input.direction),
-    variant("D", "SWEEP_ENGULFING", "D. Sweep + engulfing", "ENTRY_GRADE", "PAPER_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING", "RISK_OK", "SIGNAL_SCORE"], [
+      ["MSS_STRENGTH", Boolean(input.bos?.breakDistanceAtr != null && input.bos.breakDistanceAtr >= DEFAULT_CONFIG.minimumBosCloseDistanceATR && input.bos.bodyRatio >= 0.5)]
+    ], "Variant C passed: sweep and reversal MSS confirmed the strategy profile.", base, input.direction),
+    variant("D", "SWEEP_ENGULFING", "D. Sweep + engulfing", "ENTRY_GRADE", "PAPER_APPROVED", true, 62, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_ENGULFING"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_ENGULFING", input.engulfingOk],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant D passed: sweep plus engulfing rejection produced a risk-approved entry profile.", base, input.direction),
-    variant("E", "SWEEP_BOS_RETEST", "E. Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
+      ["CONFIRM_ENGULFING", input.engulfingOk]
+    ], "Variant D passed: sweep plus engulfing rejection confirmed the strategy profile.", base, input.direction),
+    variant("E", "SWEEP_BOS_RETEST", "E. Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant E passed: sweep, BOS, and retest produced a risk-approved entry profile.", base, input.direction),
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Variant E passed: sweep, BOS, and retest confirmed the strategy profile.", base, input.direction),
     variant("F", "SWEEP_MSS_RETEST", "F. Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
-      "DATA_HEALTHY",
-      "NY_SESSION_ACTIVE",
-      "DAILY_TRADE_LIMIT",
-      "ACTIVE_SETUP_CONFLICT_CLEAR",
-      "NO_ACTIVE_TRADE_CONFLICT",
-      "RISK_LIMITS_CLEAR",
-      "MANUAL_CONFIRMATION_COMPLETED",
       "LIQUIDITY_LEVEL_IDENTIFIED",
       "LIQUIDITY_SWEEP_CONFIRMED",
       "SWEEP_REJECTION_CONFIRMED",
@@ -2321,17 +2433,8 @@ function module2VariantCandidates(input: {
       "ENTRY_ZONE_READY",
       "ENTRY_ZONE_RETRACE",
       "CONFIRM_ENTRY_CANDLE",
-      "DIRECTIONAL_CONFLICT_CLEAR",
-      "RISK_OK",
-      "SIGNAL_SCORE"
+      "DIRECTIONAL_CONFLICT_CLEAR"
     ], [
-      ["DATA_HEALTHY", input.dataHealthOk],
-      ["NY_SESSION_ACTIVE", input.sessionActive],
-      ["DAILY_TRADE_LIMIT", input.tradeLimitOk],
-      ["ACTIVE_SETUP_CONFLICT_CLEAR", input.activeSetupOk],
-      ["NO_ACTIVE_TRADE_CONFLICT", input.activePositionOk],
-      ["RISK_LIMITS_CLEAR", input.riskLimitsOk],
-      ["MANUAL_CONFIRMATION_COMPLETED", input.manualConfirmationOk],
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["SWEEP_REJECTION_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
@@ -2339,30 +2442,22 @@ function module2VariantCandidates(input: {
       ["ENTRY_ZONE_READY", Boolean(input.zone)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
-      ["DIRECTIONAL_CONFLICT_CLEAR", input.directionalConflictClear],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
+      ["DIRECTIONAL_CONFLICT_CLEAR", input.directionalConflictClear]
     ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
-    variant("G", "SWEEP_EMA_ALIGNMENT", "G. Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200", "RISK_OK", "SIGNAL_SCORE"], [
+    variant("G", "SWEEP_EMA_ALIGNMENT", "G. Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_EMA_200", input.ema200Ok],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant G passed: sweep and EMA alignment produced a risk-approved entry profile.", base, input.direction),
-    variant("H", "SWEEP_VOLUME_EXPANSION", "H. Sweep + volume expansion", "ENTRY_GRADE", "PAPER_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION", "RISK_OK", "SIGNAL_SCORE"], [
+      ["CONFIRM_EMA_200", input.ema200Ok]
+    ], "Variant G passed: sweep and EMA alignment confirmed the strategy profile.", base, input.direction),
+    variant("H", "SWEEP_VOLUME_EXPANSION", "H. Sweep + volume expansion", "ENTRY_GRADE", "PAPER_APPROVED", true, 60, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_VOLUME_EXPANSION"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
-      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant H passed: sweep and provider volume expansion produced a risk-approved entry profile.", base, input.direction),
-    variant("I", "SWEEP_MSS_DISPLACEMENT_RETEST", "I. Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "RISK_OK", "SIGNAL_SCORE"], [
+      ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
+    ], "Variant H passed: sweep and provider volume expansion confirmed the strategy profile.", base, input.direction),
+    variant("I", "SWEEP_MSS_DISPLACEMENT_RETEST", "I. Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace],
-      ["RISK_OK", input.riskOk],
-      ["SIGNAL_SCORE", input.scoreOk]
-    ], "Variant I passed: sweep, MSS, displacement, and retest produced the highest-confirmation entry profile.", base, input.direction),
+      ["ENTRY_ZONE_RETRACE", input.retrace]
+    ], "Variant I passed: sweep, MSS, displacement, and retest confirmed the highest-confirmation strategy profile.", base, input.direction),
     variant("J", "SWEEP_NO_CONFIRMATION", "J. Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["NO_STRUCTURE_CONFIRMATION", !input.displacement || !input.bos]
@@ -2495,15 +2590,22 @@ function waitDecision(scenario: string, reason: string, evaluations: RuleEvaluat
 
 function blockedDecision(scenario: string, reason: string, evaluations: RuleEvaluation[], flags: Record<string, unknown>, direction?: Direction | null, score = 0): LiquiditySweepDecision {
   const at = latestStateTransitionTime(flags) ?? new Date().toISOString();
-  const stateMachine = appendStateTransition(flags.stateMachine, "INVALIDATED", at, reason);
+  const status = scenario.includes("INVALID") ? "INVALIDATED" : scenario.includes("BLOCK") ? "BLOCKED" : "NO TRADE";
+  const state: LiquiditySweepState = status === "INVALIDATED" ? "INVALIDATED" : status === "BLOCKED" ? "BLOCKED" : "NO_TRADE";
+  const stateMachine = appendStateTransition(flags.stateMachine, state, at, reason);
   return {
     scenario,
     direction: direction ?? null,
-    status: scenario.includes("INVALID") ? "INVALIDATED" : scenario.includes("BLOCK") ? "BLOCKED" : "NO TRADE",
-    state: "INVALIDATED",
+    status,
+    state,
     finalReason: reason,
     evaluations,
-    scenarioFlags: { ...flags, state: "INVALIDATED", stateMachine, invalidationReason: reason },
+    scenarioFlags: {
+      ...flags,
+      state,
+      stateMachine,
+      ...(state === "INVALIDATED" ? { invalidationReason: reason } : { blockReason: reason })
+    },
     favorabilityScore: score,
     favorabilityGrade: grade(score),
     favorabilityReasons: [reason]

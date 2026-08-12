@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
-import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
+import { evaluateLiquiditySweepSetup, validTradeGeometry } from "../packages/liquidity-sweep-engine/src/index.js";
 import {
   FalseBreakoutEngine,
   HorizontalRangeDetector,
@@ -237,11 +237,45 @@ assert.ok(["LONG SETUP READY", "SHORT SETUP READY"].includes(module2.status), `M
 assert.equal(module2.scenarioFlags.mandatoryChecklistMatched, true, "Module 2 mandatory sequence must be complete");
 assert.equal(Boolean((module2.scenarioFlags.sweep as any)?.level), true, "Module 2 must retain swept liquidity evidence");
 assert.equal(Boolean((module2.scenarioFlags.module2Variant as any)?.paperEligible), true, "Module 2 must select one paper-approved variant");
+const module2Plan = module2.scenarioFlags.tradePlan as any;
+const module2PlanCandidates = module2.scenarioFlags.tradePlanCandidates as any[];
+assert.ok(module2Plan?.source, "Module 2 must expose the selected structural trade-plan source");
+assert.ok(Array.isArray(module2PlanCandidates) && module2PlanCandidates.length >= 1, "Module 2 must retain ranked trade-plan candidates for audit");
+assert.equal(module2PlanCandidates[0]?.source, module2Plan.source, "Module 2 must select the highest-ranked structural trade plan");
+assert.ok(module2PlanCandidates.some((candidate) => candidate.source === "SWEEP_INVALIDATION"), "Module 2 must retain conservative sweep invalidation as a fallback");
+assert.ok(module2PlanCandidates.filter((candidate) => candidate.riskApproved).every((candidate) => candidate.geometryValid && candidate.stopValid), "Every risk-approved Module 2 candidate must have valid geometry and stop size");
 assert.ok(
   new Date((module2.scenarioFlags.sweep as any).sweptAt).getTime() >= new Date((module2.scenarioFlags.sweep as any).level.confirmedAt).getTime(),
   "Module 2 must never use a sweep that occurred before its liquidity level was confirmed"
 );
 assertTradePlan(module2, module2.direction as "LONG" | "SHORT", "Module 2");
+assert.equal(validTradeGeometry("LONG", 100, 101, 102), false, "Module 2 must reject a LONG stop above entry");
+assert.equal(validTradeGeometry("SHORT", 100, 99, 98), false, "Module 2 must reject a SHORT stop below entry");
+assert.equal(validTradeGeometry("LONG", 100, 99, 102), true, "Module 2 must accept valid LONG geometry");
+assert.equal(validTradeGeometry("SHORT", 100, 101, 98), true, "Module 2 must accept valid SHORT geometry");
+const module2WithActivePaperTrade = evaluateLiquiditySweepSetup({
+  now: module2Candles.at(-1)!.timestampUtc,
+  symbol: "XAUUSD",
+  setupCandles: module2Candles,
+  biasCandles: Array.from({ length: 30 }, (_, index) => candle(at("2026-08-10T06:00:00Z", index, 15), 110 - index * 0.2, 110.3 - index * 0.2, 109.5 - index * 0.2, 109.7 - index * 0.2)),
+  spread: 0.01,
+  newsStatus: "CLEAR",
+  currentOpenPositions: 2,
+  configuration: {
+    minimumSweepDistanceATR: 0.05,
+    maximumSweepDistanceATR: 2,
+    minimumDisplacementRangeATR: 0.8,
+    minimumBodyPercentage: 0.55,
+    minimumBosCloseDistanceATR: 0,
+    minimumFvgSizeATR: 0.05,
+    minimumRiskReward: 0.01,
+    maximumStopATR: 10,
+    minimumSignalScore: 0,
+    requireHtfBias: false
+  }
+});
+assert.ok(["LONG SETUP READY", "SHORT SETUP READY"].includes(module2WithActivePaperTrade.status), "An active paper trade must not hide a distinct valid Module 2 BUY/SELL signal");
+assert.equal(module2WithActivePaperTrade.scenarioFlags.paperTrackingEligible, false, "An active paper trade must suppress only the duplicate paper-tracking row");
 const module2OutsideNy = evaluateLiquiditySweepSetup({
   now: "2026-08-10T13:25:00Z",
   symbol: "XAUUSD",

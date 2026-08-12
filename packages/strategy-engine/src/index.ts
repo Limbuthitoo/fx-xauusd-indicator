@@ -560,7 +560,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const ready = unmatchedChecklistRules.length === 0;
   const mandatoryReady = orbMandatoryEntryReady(evaluations, direction);
   const score = favorability(context, direction, evaluations);
-  const minimumScore = configuration.favorability?.minimumScoreForPaperTrade ?? 70;
+  const minimumScore = Math.max(80, configuration.favorability?.minimumScoreForPaperTrade ?? 80);
   const retestInfo = retestDetails(allCandles, openingRange, direction);
   const overextended = evaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
   const lowFavorability = ready && score.score < minimumScore;
@@ -581,7 +581,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const stopPrice = tradePlan.stop;
   const targetPrice = tradePlan.target;
   const autoReady = ready && selection.autoEligible && !lowFavorability;
-  const mandatoryOnlyReady = !autoReady && mandatoryReady;
+  const mandatoryOnlyReady = !autoReady && mandatoryReady && score.score >= minimumScore;
   const blockedStatus = lowFavorability ? "BLOCKED" : selection.status ?? "WAIT FOR RETEST";
 
   return {
@@ -600,6 +600,8 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
           ? `Mandatory ORB entry checklist passed. Small paper setup created while confirmation/quality checks continue. Full checklist waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ") || "higher-quality scenario and favorability alignment"}.`
           : lowFavorability
             ? `Breakout passed mandatory rules, but favorability ${score.score}/100 is below the ${minimumScore}/100 paper-trade threshold.`
+          : mandatoryReady && score.score < minimumScore
+            ? `Mandatory ORB structure passed, but favorability ${score.score}/100 is below the high-probability ${minimumScore}/100 BUY/SELL threshold. The setup remains prediction evidence only.`
           : unmatchedChecklistRules.length > 0
             ? `Breakout exists, but automatic entry is blocked until every checklist rule passes. Waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ")}.`
             : selection.finalReason ?? "Breakout exists, but one or more rules prevent automatic setup readiness.",

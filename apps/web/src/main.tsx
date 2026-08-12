@@ -23,7 +23,7 @@ const DEFAULT_PUSH_PREFERENCES = {
 };
 
 type ActiveSection = "command" | "live" | "predictions" | "signals" | "paper" | "health" | "orb" | "reports" | "learning" | "notifications" | "account" | "settings" | "data";
-type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
+type PlatformSection = "overview" | "subscribers" | "tickets" | "modules" | "validation" | "plans" | "app-updates" | "billing" | "automation" | "usage" | "system" | "settings";
 
 type PanelState = {
   clocks?: { utc: string; newYork: string; nepal: string };
@@ -86,6 +86,7 @@ type PanelState = {
   platformPushOverview?: any;
   platformTickets?: any[];
   platformAppReleases?: any[];
+  platformStrategyValidation?: any;
   tenantPushStatus?: any;
   tenantContext?: any;
 };
@@ -169,6 +170,7 @@ function App() {
         platformPushOverview: bundle?.platformPushOverview,
         platformTickets: bundle?.platformTickets ?? [],
         platformAppReleases: bundle?.platformAppReleases ?? [],
+        platformStrategyValidation: bundle?.platformStrategyValidation,
         platformRequestLoad: bundle?.requestLoad
       }));
       return;
@@ -1722,6 +1724,7 @@ function PlatformAdminApp({
           </PlatformNavGroup>
           <PlatformNavGroup label="Product">
             <PlatformNavButton icon={<Layers />} label="Strategy Modules" active={platformSection === "modules"} onClick={() => setPlatformSection("modules")} />
+            <PlatformNavButton icon={<Target />} label="Strategy Validation" active={platformSection === "validation"} onClick={() => setPlatformSection("validation")} />
             <PlatformNavButton icon={<KeyRound />} label="Plans & Access" active={platformSection === "plans"} onClick={() => setPlatformSection("plans")} />
             <PlatformNavButton icon={<Smartphone />} label="App Updates" active={platformSection === "app-updates"} onClick={() => setPlatformSection("app-updates")} />
             <PlatformNavButton icon={<Database />} label="Usage & Data" active={platformSection === "usage"} onClick={() => setPlatformSection("usage")} />
@@ -1786,6 +1789,7 @@ function PlatformAdminApp({
           ) : null}
           {platformSection === "tickets" ? <PlatformTicketsPanel tickets={state.platformTickets ?? []} onUpdate={updateSupportTicket} /> : null}
           {platformSection === "modules" ? <PlatformModulesPanel modules={modules} /> : null}
+          {platformSection === "validation" ? <PlatformStrategyValidationPanel validation={state.platformStrategyValidation} /> : null}
           {platformSection === "plans" ? <PlatformPlansPanel plans={plans} /> : null}
           {platformSection === "app-updates" ? <PlatformAppUpdatesPanel releases={state.platformAppReleases ?? []} onUpload={uploadMobileAppRelease} /> : null}
           {platformSection === "billing" ? <PlatformBillingPanel billing={platform.billing} onInvoiceStatus={updateManualInvoiceStatus} /> : null}
@@ -2134,6 +2138,105 @@ function PlatformModulesPanel({ modules }: { modules: any[] }) {
       </div>
     </section>
   );
+}
+
+function PlatformStrategyValidationPanel({ validation }: { validation: any }) {
+  const summary = validation?.summary ?? {};
+  const datasets = validation?.datasets ?? [];
+  const runs = validation?.runs ?? [];
+  const gates = validation?.gates ?? [];
+  const latestRun = runs[0] ?? null;
+  return (
+    <section className="platform-panel platform-wide validation-console">
+      <div className="panel-title-row">
+        <div>
+          <h2><Target size={18} />Historical Strategy Validation</h2>
+          <p className="reason">Untouched validation results control live profiles only after the minimum sample is mature. Training metrics never release or block a profile.</p>
+        </div>
+        <span className={`pill ${Number(summary.blockedProfiles ?? 0) > 0 ? "bad" : Number(summary.enforcedProfiles ?? 0) > 0 ? "good" : "warn"}`}>
+          {Number(summary.enforcedProfiles ?? 0) > 0 ? `${summary.enforcedProfiles} ENFORCED` : "EVIDENCE BUILDING"}
+        </span>
+      </div>
+      {validation?.available === false ? <p className="form-error">Validation data is unavailable. Apply migration 079 before using this page. {validation?.error}</p> : null}
+      <div className="usage-strip validation-summary">
+        <Metric label="Datasets" value={summary.datasets ?? 0} />
+        <Metric label="Completed runs" value={summary.completedRuns ?? 0} />
+        <Metric label="Eligible profiles" value={summary.eligibleProfiles ?? 0} />
+        <Metric label="Blocked profiles" value={summary.blockedProfiles ?? 0} />
+        <Metric label="Awaiting samples" value={summary.awaitingSamples ?? 0} />
+      </div>
+      <div className="validation-run-card">
+        <div>
+          <span>Latest chronological run</span>
+          <strong>{latestRun?.dataset_name ?? "No historical run yet"}</strong>
+          <em>{latestRun ? `${latestRun.train_start_date ?? "--"} to ${latestRun.train_end_date ?? "--"} training · ${latestRun.validation_start_date ?? "--"} to ${latestRun.validation_end_date ?? "--"} untouched validation` : "Import a licensed 5-minute XAUUSD dataset with the validation CLI."}</em>
+        </div>
+        <div>
+          <span>Signals</span>
+          <strong>{latestRun?.signal_count ?? 0}</strong>
+          <em>{latestRun?.completed_at ? `Completed ${formatNepalTime(latestRun.completed_at)}` : latestRun?.status ?? "NOT RUN"}</em>
+        </div>
+      </div>
+      <h3>Release Gates</h3>
+      <div className="table-wrap">
+        <table className="data-table validation-gate-table">
+          <thead><tr><th>Module / Profile</th><th>State</th><th>Samples</th><th>Win rate</th><th>PF</th><th>Expectancy</th><th>Total R</th><th>Max DD</th><th>Evidence</th></tr></thead>
+          <tbody>
+            {gates.map((gate: any) => (
+              <tr key={`${gate.module_code}-${gate.profile_code}`}>
+                <td><strong>{gate.module_name}</strong><br /><span>{gate.profile_code === "__ALL__" ? "Module aggregate" : gate.profile_code}</span></td>
+                <td><span className={`pill ${gate.enforced ? gate.status === "ELIGIBLE" ? "good" : "bad" : "warn"}`}>{gate.enforced ? gate.status : "NOT ENFORCED"}</span></td>
+                <td>{gate.resolved_count}</td>
+                <td>{formatValidationPercent(gate.win_rate)}</td>
+                <td>{formatValidationNumber(gate.profit_factor)}</td>
+                <td>{formatValidationR(gate.expectancy_r)}</td>
+                <td>{formatValidationR(gate.total_r)}</td>
+                <td>{formatValidationR(gate.max_drawdown_r)}</td>
+                <td>{validationGateReason(gate)}</td>
+              </tr>
+            ))}
+            {gates.length === 0 ? <tr><td colSpan={9}>No release gates exist yet. Run the historical validation CLI first.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      <h3>Research Datasets</h3>
+      <div className="platform-list">
+        {datasets.map((dataset: any) => (
+          <div className="platform-row" key={dataset.id}>
+            <div>
+              <strong>{dataset.name} · {dataset.symbol} · {dataset.timeframe_minutes}m</strong>
+              <span>{dataset.candle_count} candles across {dataset.session_count} NY session(s)</span>
+              <em>{dataset.source} · {formatNepalTime(dataset.start_at)} to {formatNepalTime(dataset.end_at)}</em>
+            </div>
+            <span className={`pill ${dataset.status === "READY" ? "good" : dataset.status === "FAILED" ? "bad" : "warn"}`}>{dataset.status}</span>
+          </div>
+        ))}
+        {datasets.length === 0 ? <p className="reason">No historical research dataset has been imported.</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function validationGateReason(gate: any) {
+  const reasons = Array.isArray(gate.reasons) ? gate.reasons : [];
+  if (!gate.enforced) return reasons[0] ?? "Minimum untouched validation sample has not been reached.";
+  if (gate.status === "ELIGIBLE") return "Mature validation passed; this exact live profile is permitted.";
+  return reasons[0] ?? "Mature validation failed; this exact live profile is blocked.";
+}
+
+function formatValidationPercent(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : "--";
+}
+
+function formatValidationNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2) : "--";
+}
+
+function formatValidationR(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(2)}R` : "--";
 }
 
 function PlatformPlansPanel({ plans }: { plans: any[] }) {
@@ -7451,17 +7554,21 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         description: "Only these safety and sweep gates are hard blockers before a selected Module 2 profile can produce predictions and BUY/SELL signals. Paper tracking is secondary.",
         codes: [
           "DATA_HEALTHY",
-          "DAILY_TRADE_LIMIT",
-          "ACTIVE_SETUP_CONFLICT_CLEAR",
-          "NO_ACTIVE_TRADE_CONFLICT",
+          "NY_SESSION_ACTIVE",
           "RISK_LIMITS_CLEAR",
           "MANUAL_CONFIRMATION_COMPLETED",
           "LIQUIDITY_LEVEL_IDENTIFIED",
           "LIQUIDITY_SWEEP_CONFIRMED",
           "SWEEP_REJECTION_CONFIRMED",
           "SWEEP_ACCEPTANCE_BLOCK",
+          "TRADE_GEOMETRY_VALID",
           "RISK_OK"
         ]
+      },
+      {
+        title: "Paper Tracking",
+        description: "These limits control simulated trade rows for win-rate measurement. They never hide a valid Prediction or BUY/SELL signal.",
+        codes: ["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]
       },
       {
         title: "Context Evidence",
@@ -7469,7 +7576,6 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         codes: [
           "MARKET_CONTEXT_READY",
           "MARKET_REGIME_CLASSIFIED",
-          "NY_SESSION_ACTIVE",
           "STRATEGY_CYCLE_ACTIVE"
         ]
       },
@@ -8508,6 +8614,7 @@ function platformSectionTitle(section: PlatformSection) {
     subscribers: "Subscriber Management",
     tickets: "Support Tickets",
     modules: "Strategy Modules",
+    validation: "Strategy Validation",
     plans: "Plans & Access",
     "app-updates": "Mobile App Updates",
     billing: "Manual Billing",
@@ -8525,6 +8632,7 @@ function platformSectionFromPath(pathname: string): PlatformSection {
     section === "subscribers" ||
     section === "tickets" ||
     section === "modules" ||
+    section === "validation" ||
     section === "plans" ||
     section === "app-updates" ||
     section === "billing" ||
@@ -8544,6 +8652,7 @@ function platformSectionSubtitle(section: PlatformSection) {
     subscribers: "Create users, assign plans, enable modules, and manage subscription status.",
     tickets: "Review tenant-created tickets, prioritize requests, and move them through resolution.",
     modules: "Control the strategy module catalog available to subscriber plans.",
+    validation: "Review chronological backtests, untouched validation evidence, and live profile release gates.",
     plans: "Review subscription plans, included modules, account limits, and automation access.",
     "app-updates": "Upload Android APK releases and manage the update feed used by the mobile app.",
     billing: "Track manual payment requests, invoices, revenue, and billing audit activity.",

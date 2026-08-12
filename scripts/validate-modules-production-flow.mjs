@@ -2,12 +2,13 @@ const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:7073";
 const tenantEmail = process.env.TENANT_EMAIL ?? process.env.SUBSCRIBER_EMAIL ?? "";
 const tenantPassword = process.env.TENANT_PASSWORD ?? process.env.SUBSCRIBER_PASSWORD ?? "";
 const tenantOtp = process.env.TENANT_OTP ?? process.env.SUBSCRIBER_OTP ?? "";
+const tenantToken = process.env.TENANT_TOKEN ?? "";
 const requestTimeoutMs = Number(process.env.MODULE_FLOW_VALIDATE_TIMEOUT_MS ?? 15000);
 
 const checks = [];
 
-if (!tenantEmail || !tenantPassword) {
-  console.error("TENANT_EMAIL and TENANT_PASSWORD are required for tenant proof validation.");
+if (!tenantToken && (!tenantEmail || !tenantPassword)) {
+  console.error("Set TENANT_TOKEN, or set TENANT_EMAIL and TENANT_PASSWORD, for tenant proof validation.");
   process.exit(1);
 }
 
@@ -16,14 +17,21 @@ await check("API health", async () => {
   return { ok: health?.status === "ok", detail: `API status ${health?.status ?? "UNKNOWN"}.`, evidence: health };
 });
 
-const login = await check("Tenant login", async () => {
-  const payload = await json("/api/auth/login", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: tenantEmail, password: tenantPassword, ...(tenantOtp ? { otp: tenantOtp } : {}) })
-  });
-  return { ok: Boolean(payload?.token), detail: payload?.user?.email ? `Logged in as ${payload.user.email}.` : "Tenant token received.", evidence: { user: payload?.user }, token: payload?.token };
-});
+const login = tenantToken
+  ? await check("Tenant token", async () => ({
+      ok: true,
+      detail: "Using the supplied tenant bearer token.",
+      evidence: { token: tenantToken },
+      token: tenantToken
+    }))
+  : await check("Tenant login", async () => {
+      const payload = await json("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: tenantEmail, password: tenantPassword, ...(tenantOtp ? { otp: tenantOtp } : {}) })
+      });
+      return { ok: Boolean(payload?.token), detail: payload?.user?.email ? `Logged in as ${payload.user.email}.` : "Tenant token received.", evidence: { user: payload?.user }, token: payload?.token };
+    });
 
 const headers = { authorization: `Bearer ${login.evidence?.token ?? login.token ?? ""}` };
 if (!headers.authorization.endsWith(" ")) {

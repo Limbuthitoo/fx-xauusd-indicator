@@ -11,9 +11,6 @@ MANDATORY_RULES = [
     "MARKET_CONTEXT_READY",
     "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
-    "DAILY_TRADE_LIMIT",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -21,6 +18,7 @@ MANDATORY_RULES = [
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
     "DIRECTIONAL_CONFLICT_CLEAR",
+    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED",
@@ -35,10 +33,11 @@ CORE_SETUP_RULES = [
 
 CORE_SAFETY_RULES = [
     "DATA_HEALTHY",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
+    "NY_SESSION_ACTIVE",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
+    "DIRECTIONAL_CONFLICT_CLEAR",
+    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
 ]
@@ -95,9 +94,14 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     mandatory = checklist["mandatoryPassed"]
     full = checklist["fullPassed"]
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
+    geometry_valid = valid_trade_geometry(direction, setup) if has_trade_plan else False
 
-    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan:
-        should_track = not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
+    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and has_trade_plan and not geometry_valid:
+        return payload("LIQUIDITY_SWEEP_TRADE_GEOMETRY_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 selected an entry plan whose stop or target is on the wrong side of entry.", False)
+
+    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan and geometry_valid:
+        paper_tracking_eligible = flags.get("paperTrackingEligible") is not False
+        should_track = paper_tracking_eligible and not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         setup_tier = "FULL" if full else "MANDATORY"
         selected_variant = selected_variant_name(flags)
         decision_type = "LIQUIDITY_SWEEP_FULL_SIGNAL_READY" if full else "LIQUIDITY_SWEEP_VARIANT_SIGNAL_READY"
@@ -180,18 +184,36 @@ def selected_variant_name(flags: dict[str, Any]) -> str:
 
 def selected_variant_data(flags: dict[str, Any]) -> dict[str, Any]:
     variant = flags.get("module2Variant") if isinstance(flags.get("module2Variant"), dict) else {}
+    trade_plan = flags.get("tradePlan") if isinstance(flags.get("tradePlan"), dict) else {}
     return {
         "variantCode": variant.get("code") or flags.get("variantCode"),
         "variantName": variant.get("name") or flags.get("variantName"),
         "variantProfile": variant.get("profileKey"),
         "variantStatus": variant.get("approvalStatus") or variant.get("status"),
         "variantPaperEligible": variant.get("paperEligible"),
+        "tradePlanSource": trade_plan.get("source"),
+        "availableRewardRisk": trade_plan.get("availableRewardRisk"),
     }
 
 
+def valid_trade_geometry(direction: str | None, setup: dict[str, Any]) -> bool:
+    entry = number(setup.get("entry_price"))
+    stop = number(setup.get("stop_price"))
+    target = number(setup.get("target_price"))
+    if entry is None or stop is None or target is None:
+        return False
+    if direction == "LONG":
+        return stop < entry < target
+    if direction == "SHORT":
+        return target < entry < stop
+    return False
+
+
 def rule_layer(rule_code: str) -> str:
-    if rule_code in MANDATORY_RULES:
+    if rule_code in SIGNAL_BLOCKING_RULES:
         return "MANDATORY"
+    if rule_code in MANDATORY_RULES:
+        return "EVIDENCE"
     if rule_code in CONFIRMATION_RULES:
         return "CONFIRMATION"
     if rule_code in QUALITY_RULES:

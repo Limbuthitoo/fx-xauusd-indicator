@@ -149,7 +149,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const client = redisClient();
     const cached = client ? await client.get(cacheKey).catch(() => null) : null;
     if (cached) return JSON.parse(cached);
-    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, requestLoad] = await Promise.all([
+    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad] = await Promise.all([
       injectJson(app, request, "GET", "/api/platform/overview", undefined),
       injectJson(app, request, "GET", "/api/platform/automation/status", undefined, []),
       injectJson(app, request, "GET", "/api/platform/usage/twelve-data", undefined),
@@ -161,12 +161,74 @@ export async function dashboardRoutes(app: FastifyInstance) {
       injectJson(app, request, "GET", "/api/platform/push/overview", undefined),
       injectJson(app, request, "GET", "/api/platform/support-tickets", undefined, []),
       injectJson(app, request, "GET", "/api/platform/mobile-app/releases", undefined, []),
+      platformValidationOverview(),
       platformRequestLoad()
     ]);
-    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, requestLoad, cachedAt: new Date().toISOString() };
+    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad, cachedAt: new Date().toISOString() };
     if (client) await client.set(cacheKey, JSON.stringify(payload), "EX", 5).catch(() => undefined);
     return payload;
   });
+}
+
+async function platformValidationOverview() {
+  try {
+    const [datasets, runs, gates] = await Promise.all([
+    query(
+      `SELECT id, name, symbol, source, timeframe_minutes, status, candle_count, session_count,
+              start_at, end_at, metadata, created_at, updated_at
+       FROM strategy_validation_datasets
+       ORDER BY updated_at DESC
+       LIMIT 20`
+    ),
+    query(
+      `SELECT r.id, r.dataset_id, d.name AS dataset_name, r.status, r.train_ratio,
+              r.train_start_date, r.train_end_date, r.validation_start_date, r.validation_end_date,
+              r.parameters, r.summary, r.started_at, r.completed_at,
+              count(s.id)::int AS signal_count
+       FROM strategy_validation_runs r
+       JOIN strategy_validation_datasets d ON d.id = r.dataset_id
+       LEFT JOIN strategy_validation_signals s ON s.run_id = r.id
+       GROUP BY r.id, d.name
+       ORDER BY r.started_at DESC
+       LIMIT 12`
+    ),
+    query(
+      `SELECT g.module_code, m.name AS module_name, g.profile_code, g.validation_run_id,
+              g.status, g.enforced, g.resolved_count, g.win_rate, g.profit_factor,
+              g.expectancy_r, g.total_r, g.max_drawdown_r, g.reasons, g.evaluated_at,
+              d.name AS dataset_name
+       FROM strategy_release_gates g
+       JOIN platform_strategy_modules m ON m.code = g.module_code
+       JOIN strategy_validation_runs r ON r.id = g.validation_run_id
+       JOIN strategy_validation_datasets d ON d.id = r.dataset_id
+       ORDER BY g.module_code, CASE WHEN g.profile_code = '__ALL__' THEN 0 ELSE 1 END, g.profile_code`
+    )
+  ]);
+    const rows = gates.rows as any[];
+    return {
+      available: true,
+      summary: {
+        datasets: datasets.rows.length,
+        completedRuns: (runs.rows as any[]).filter((row) => row.status === "COMPLETED").length,
+        enforcedProfiles: rows.filter((row) => row.enforced && row.profile_code !== "__ALL__").length,
+        eligibleProfiles: rows.filter((row) => row.enforced && row.status === "ELIGIBLE" && row.profile_code !== "__ALL__").length,
+        blockedProfiles: rows.filter((row) => row.enforced && row.status === "BLOCKED" && row.profile_code !== "__ALL__").length,
+        awaitingSamples: rows.filter((row) => !row.enforced && row.profile_code !== "__ALL__").length
+      },
+      datasets: datasets.rows,
+      runs: runs.rows,
+      gates: rows
+    };
+  } catch (error) {
+    return {
+      available: false,
+      error: error instanceof Error ? error.message : String(error),
+      summary: { datasets: 0, completedRuns: 0, enforcedProfiles: 0, eligibleProfiles: 0, blockedProfiles: 0, awaitingSamples: 0 },
+      datasets: [],
+      runs: [],
+      gates: []
+    };
+  }
 }
 
 async function commandSnapshots(app: FastifyInstance, request: FastifyRequest) {

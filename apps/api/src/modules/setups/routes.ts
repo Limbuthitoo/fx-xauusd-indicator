@@ -1764,10 +1764,11 @@ async function latestBrainPredictions(tenantId: string | null, setupIds: string[
 }
 
 function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
+  const flags = row.scenario_flags ?? {};
+  const releaseBlocked = flags.releaseGate?.enforced === true && flags.releaseGate?.blocked === true;
   const brainDirection = brain?.direction === "SHORT" ? "SHORT" : brain?.direction === "LONG" ? "LONG" : null;
   const direction = brainActionDirection(brain?.action) ?? brainDirection ?? (row.direction === "SHORT" ? "SHORT" : row.direction === "LONG" ? "LONG" : predictedDirection(row));
-  const action = brain?.action === "BUY" || brain?.action === "SELL" ? brain.action : direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "WAIT";
-  const flags = row.scenario_flags ?? {};
+  const action = releaseBlocked ? "WAIT" : brain?.action === "BUY" || brain?.action === "SELL" ? brain.action : direction === "SHORT" ? "SELL" : direction === "LONG" ? "BUY" : "WAIT";
   const entryZone = predictionEntryZone(row, flags);
   const entry = numericOrNull(brain?.entry ?? row.actual_entry ?? row.entry_price) ?? entryZone.midpoint;
   const stopLoss = numericOrNull(brain?.stop ?? row.actual_stop ?? row.stop_price) ?? predictedStop(row, flags, direction, entry);
@@ -1781,8 +1782,8 @@ function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
   const fullChecklistMatched = total > 0 && passed === total;
   const mandatoryMatched = Boolean(flags.mandatoryChecklistMatched ?? flags.matrix?.mandatoryChecklistMatched ?? false);
   const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
-  const probability = predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched, brain);
-  const status = predictionStatus(row, mandatoryMatched, fullChecklistMatched, brain);
+  const probability = releaseBlocked ? 0 : predictionProbability(row, evaluations, confidence, mandatoryMatched, fullChecklistMatched, brain);
+  const status = releaseBlocked ? "VALIDATION BLOCKED" : predictionStatus(row, mandatoryMatched, fullChecklistMatched, brain);
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const freshness = liveSetupFreshness(row.detected_at, row.current_price_at, currentPrice, entry, stopLoss, true);
   const rr = entry != null && stopLoss != null && target != null

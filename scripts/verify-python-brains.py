@@ -141,6 +141,29 @@ module2_flexible_variant = decide_module2(
     HEALTH,
 )
 
+module2_signal_without_paper_slot = decide_module2(
+    setup(
+        "high_probability_strategy_2",
+        "LONG",
+        module2_rules,
+        {
+            "mandatoryChecklistMatched": True,
+            "fullChecklistMatched": True,
+            "paperTrackingEligible": False,
+            "paperTrackingBlockers": ["NO_ACTIVE_TRADE_CONFLICT"],
+            "setupTier": "FULL",
+            "module2Variant": {
+                "code": "SWEEP_MSS_RETEST",
+                "name": "F. Sweep + MSS + Retest",
+                "paperEligible": True,
+                "approvalStatus": "PRODUCTION_APPROVED",
+            },
+        },
+    ),
+    None,
+    HEALTH,
+)
+
 module2_incomplete = decide_module2(
     setup("high_probability_strategy_2", "SHORT", MODULE2_MANDATORY[:-1], {"mandatoryChecklistMatched": True, "fullChecklistMatched": True}),
     None,
@@ -162,6 +185,7 @@ assert module1_horizontal["shouldEmitSignal"] and module1_horizontal["shouldTrac
 assert module1_horizontal["checklist"]["horizontalMandatoryPassed"]
 assert module2["shouldEmitSignal"] and module2["shouldTrackPaperTrade"] and module2["action"] == "SELL"
 assert module2_flexible_variant["shouldEmitSignal"] and module2_flexible_variant["shouldTrackPaperTrade"] and module2_flexible_variant["action"] == "BUY"
+assert module2_signal_without_paper_slot["shouldEmitSignal"] and not module2_signal_without_paper_slot["shouldTrackPaperTrade"]
 assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_VARIANT_SIGNAL_READY"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert not module1_incomplete["shouldEmitSignal"] and not module1_incomplete["shouldTrackPaperTrade"]
@@ -176,6 +200,7 @@ print(
             "module1Horizontal": module1_horizontal["decisionType"],
             "module2": module2["decisionType"],
             "module2FlexibleVariant": module2_flexible_variant["decisionType"],
+            "module2SignalWithoutPaperSlot": module2_signal_without_paper_slot["decisionType"],
             "mvpPriority": module2["mvpPriority"],
             "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], legacy_active["decisionType"]],
         },

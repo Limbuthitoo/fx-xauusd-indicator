@@ -3634,8 +3634,8 @@ function deterministicBrainFallback(brainDecision: any, setup: any, productionRe
     moduleCode: setup.module_code,
     action: setup.direction === "LONG" ? "BUY" : "SELL",
     shouldEmitSignal: true,
-    shouldTrackPaperTrade: true,
-    shouldOpenPaperTrade: true,
+    shouldTrackPaperTrade: setup.scenario_flags?.paperTrackingEligible !== false,
+    shouldOpenPaperTrade: setup.scenario_flags?.paperTrackingEligible !== false,
     mvpPriority: "SIGNAL_FIRST",
     entry: values[0],
     stop: values[1],
@@ -4006,6 +4006,27 @@ async function attemptProductionPaperTrade({
   };
   const effectiveRisk = risk ?? await calculateDecisionRisk(session, effectiveDecision, current);
   const productionReady = isProductionReadySetup(setup, effectiveDecision, effectiveRisk);
+  const releaseGate = await liveStrategyReleaseGate(moduleCode, setup);
+  if (releaseGate.blocked) {
+    await query(
+      `UPDATE setup_candidates
+       SET status = 'BLOCKED',
+           final_reason = $2,
+           scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('releaseGate', $3::jsonb)
+       WHERE id = $1`,
+      [setup.id, releaseGate.reason, JSON.stringify(releaseGate)]
+    );
+    await recordOperationalEvent({
+      severity: "WARN",
+      category: "WORKER",
+      eventType: "STRATEGY_PROFILE_RELEASE_BLOCKED",
+      source: "market-data-worker",
+      tenantId: session.tenant_id,
+      message: releaseGate.reason,
+      metadata: { moduleCode, setupId: setup.id, releaseGate }
+    });
+    return { skipped: true, reason: "STRATEGY_PROFILE_RELEASE_BLOCKED", releaseGate };
+  }
   const primaryBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode);
   const effectiveBrainDecision = deterministicBrainFallback(primaryBrainDecision, setup, productionReady);
   const brainApproved = brainApprovesSignal(effectiveBrainDecision, setup);
@@ -4029,6 +4050,24 @@ async function attemptProductionPaperTrade({
   const alert = entryAlertDetails(moduleCode, setup, null, Number(effectiveRisk?.rewardToRisk ?? 0));
   const entryGuard = paperEntryPriceGuard(setup, current);
   if (!entryGuard.ok) return { skipped: true, reason: "ENTRY_PRICE_TOO_FAR_FROM_LIVE_MARKET", guard: entryGuard };
+  const signalThesisKey = setupSignalThesisKey(moduleCode, session, setup);
+  const duplicateThesis = await query(
+    `SELECT id, created_at
+     FROM notifications
+     WHERE tenant_id = $1
+       AND data->>'signalThesisKey' = $2
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [session.tenant_id, signalThesisKey]
+  );
+  if (duplicateThesis.rows[0]) {
+    return {
+      skipped: true,
+      reason: "DUPLICATE_SIGNAL_THESIS",
+      signalThesisKey,
+      notificationId: duplicateThesis.rows[0].id
+    };
+  }
   await notifyTenantOnce(
     session.tenant_id,
     `${moduleCode}-setup-ready-${setup.id}`,
@@ -4036,13 +4075,111 @@ async function attemptProductionPaperTrade({
     `${alert.title} signal ready`,
     `${alert.body} | ${setup.final_reason ?? "Valid signal profile matched."}`,
     "HIGH",
-    alert.data,
+    { ...alert.data, signalThesisKey },
     "validEntries"
   );
-  const paperTrade = settings.paperTradingEnabled
+  const paperTrackingEligible = effectiveDecision.scenarioFlags?.paperTrackingEligible !== false;
+  const paperTrade = settings.paperTradingEnabled && paperTrackingEligible
     ? await createAutomaticPaperTrade(session, setup, effectiveRisk, current, moduleCode)
-    : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+    : settings.paperTradingEnabled
+      ? { skipped: true, reason: "PAPER_TRACKING_LIMIT", blockers: effectiveDecision.scenarioFlags?.paperTrackingBlockers ?? [] }
+      : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
   return paperTrade;
+}
+
+async function liveStrategyReleaseGate(moduleCode: string, setup: any) {
+  const profileCode = releaseGateProfileCode(moduleCode, setup);
+  if (!profileCode) return { blocked: false, enforced: false, profileCode: null, reason: "No release-gate profile applies." };
+  try {
+    const result = await query(
+      `SELECT status, enforced, resolved_count, win_rate, profit_factor, expectancy_r,
+              total_r, max_drawdown_r, reasons, evaluated_at, validation_run_id
+       FROM strategy_release_gates
+       WHERE module_code = $1 AND profile_code = $2
+       LIMIT 1`,
+      [moduleCode, profileCode]
+    );
+    const gate = result.rows[0] as any;
+    if (!gate || !gate.enforced) {
+      return {
+        blocked: false,
+        enforced: false,
+        profileCode,
+        status: gate?.status ?? "NOT_EVALUATED",
+        reason: gate
+          ? `${profileCode} has not reached the minimum untouched validation sample; live behavior is unchanged.`
+          : `${profileCode} has no historical release gate yet; live behavior is unchanged.`
+      };
+    }
+    const blocked = gate.status !== "ELIGIBLE";
+    return {
+      blocked,
+      enforced: true,
+      profileCode,
+      status: gate.status,
+      resolvedCount: Number(gate.resolved_count ?? 0),
+      winRate: Number(gate.win_rate ?? 0),
+      profitFactor: gate.profit_factor == null ? null : Number(gate.profit_factor),
+      expectancyR: Number(gate.expectancy_r ?? 0),
+      totalR: Number(gate.total_r ?? 0),
+      maxDrawdownR: Number(gate.max_drawdown_r ?? 0),
+      reasons: gate.reasons ?? [],
+      evaluatedAt: gate.evaluated_at,
+      validationRunId: gate.validation_run_id,
+      reason: blocked
+        ? `${moduleDisplayName(moduleCode)} profile ${profileCode} is blocked by its mature untouched validation result.`
+        : `${moduleDisplayName(moduleCode)} profile ${profileCode} is eligible under its mature untouched validation result.`
+    };
+  } catch (error) {
+    return {
+      blocked: false,
+      enforced: false,
+      profileCode,
+      status: "GATE_UNAVAILABLE",
+      reason: `Release-gate lookup failed open: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+function releaseGateProfileCode(moduleCode: string, setup: any) {
+  if (moduleCode === "orb_max_options") {
+    const scenario = String(setup?.scenario ?? "ORB_BREAKOUT").toUpperCase();
+    if (scenario.includes("HORIZONTAL")) return "HORIZONTAL_RANGE_BREAKOUT";
+    if (scenario.includes("OPENING_DRIVE")) return "OPENING_DRIVE";
+    if (scenario.includes("LIQUIDITY_SWEEP")) return "LIQUIDITY_SWEEP_REVERSAL";
+    if (scenario.includes("RETEST")) return "BREAKOUT_RETEST";
+    return "ORB_BREAKOUT";
+  }
+  if (moduleCode === "high_probability_strategy_2") {
+    return setup?.scenario_flags?.module2Variant?.code ?? setup?.scenario_flags?.variantCode ?? null;
+  }
+  return null;
+}
+
+function setupSignalThesisKey(moduleCode: string, session: any, setup: any) {
+  const direction = String(setup.direction ?? "NONE");
+  if (moduleCode === "orb_max_options") {
+    const scenario = String(setup.scenario ?? "ORB_BREAKOUT").toUpperCase();
+    const family = scenario.includes("HORIZONTAL")
+      ? "HORIZONTAL_RANGE_BREAKOUT"
+      : scenario.includes("OPENING_DRIVE")
+        ? "OPENING_DRIVE"
+        : scenario.includes("LIQUIDITY_SWEEP")
+          ? "LIQUIDITY_SWEEP_REVERSAL"
+          : scenario.includes("RETEST")
+            ? "BREAKOUT_RETEST"
+            : "ORB_BREAKOUT";
+    return [moduleCode, session.id, direction, family].join(":");
+  }
+  const sweep = setup.scenario_flags?.sweep ?? {};
+  return [
+    moduleCode,
+    session.id,
+    direction,
+    sweep.sweptAt ?? sweep.candle?.timestampUtc ?? setup.detected_at ?? setup.id,
+    sweep.level?.type ?? "UNKNOWN_LEVEL",
+    Number(sweep.level?.price ?? 0).toFixed(2)
+  ].join(":");
 }
 
 function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
@@ -4073,15 +4210,15 @@ function requiredEntryRules(moduleCode: string) {
   }
   return [
     "DATA_HEALTHY",
-    "DAILY_TRADE_LIMIT",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
+    "NY_SESSION_ACTIVE",
+    "DIRECTIONAL_CONFLICT_CLEAR",
+    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
     "VARIANT_SELECTED"
@@ -4094,8 +4231,10 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
   const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
   const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
+  const module2PaperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
-  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
+  if (ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
+  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: moduleCode === "high_probability_strategy_2" };
   if (moduleCode === "orb_max_options") {
     const mandatory = requiredEntryRules(moduleCode);
     const breakoutRule =
@@ -4116,8 +4255,9 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
     if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
   }
   if (module2Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
-  if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: ruleCode === "CONFIRMATION_COUNT" };
-  if (module2Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FILTER_COUNT"].includes(ruleCode) };
+  if (module2PaperTracking.has(ruleCode)) return { ruleLayer: "PAPER_TRACKING", requiredForEntry: false };
+  if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
+  if (module2Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
   if (ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
@@ -4141,7 +4281,9 @@ function withChecklistMetadata(moduleCode: string, decision: any) {
       mandatoryChecklistMatched: currentFlags.mandatoryChecklistMatched ?? mandatoryMatched,
       fullChecklistMatched,
       setupTier,
-      paperTradeEligible: ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status)) && mandatoryMatched,
+      paperTradeEligible: ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status))
+        && mandatoryMatched
+        && currentFlags.paperTrackingEligible !== false,
       checklistSummary: checklistSummary(moduleCode, evaluations)
     }
   };
@@ -4158,6 +4300,7 @@ function checklistSummary(moduleCode: string, evaluations: any[]) {
     mandatory: count("MANDATORY"),
     confirmations: count("CONFIRMATION"),
     quality: count("QUALITY"),
+    paperTracking: count("PAPER_TRACKING"),
     final: count("FINAL"),
     requiredEntryRules: requiredEntryRules(moduleCode),
     blockingFailures: normalized

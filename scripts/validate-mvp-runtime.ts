@@ -85,11 +85,61 @@ try {
     module2: replayModule2(date, candles, biasCandles, module2Config)
   }));
   const sessionsWithSignal = replay.filter((row) => row.module1.ready > 0 || row.module2.ready > 0).length;
+  const targetSignalsPerSession = Math.max(1, Number(process.env.MVP_TARGET_SIGNALS_PER_NY_SESSION ?? 2));
+  const sessionsMeetingCoverageTarget = replay.filter((row) => row.module1.ready + row.module2.ready >= targetSignalsPerSession).length;
+  const totalReplaySignals = replay.reduce((total, row) => total + row.module1.ready + row.module2.ready, 0);
+  const averageSignalsPerSession = replay.length > 0 ? totalReplaySignals / replay.length : 0;
+  const invalidGeometry = replay.flatMap((row) => [
+    ...row.module1.signals.map((signal: any) => ({ date: row.date, module: "Module 1", ...signal })),
+    ...row.module2.signals.map((signal: any) => ({ date: row.date, module: "Module 2", ...signal }))
+  ]).filter((signal: any) => !validTradeGeometry(signal.direction, signal.entry, signal.stop, signal.target));
+  const replaySignals = replay.flatMap((row) => [
+    ...row.module1.signals.map((signal: any) => ({ date: row.date, module: "Module 1", ...signal })),
+    ...row.module2.signals.map((signal: any) => ({ date: row.date, module: "Module 2", ...signal }))
+  ]);
+  const resolvedReplaySignals = replaySignals.filter((signal: any) => signal.outcome === "WIN" || signal.outcome === "LOSS");
+  const replayWins = resolvedReplaySignals.filter((signal: any) => signal.outcome === "WIN").length;
+  const replayLosses = resolvedReplaySignals.filter((signal: any) => signal.outcome === "LOSS").length;
+  const replayWinRate = resolvedReplaySignals.length > 0 ? replayWins / resolvedReplaySignals.length : 0;
+  const replayResultR = resolvedReplaySignals.reduce((total: number, signal: any) => total + Number(signal.resultR ?? 0), 0);
+  const minimumOutcomeSamples = Math.max(20, Number(process.env.MVP_MINIMUM_OUTCOME_SAMPLES ?? 60));
   checks.push({
     name: "Saved-candle NY opportunity replay",
     status: replay.length === 0 ? "FAIL" : sessionsWithSignal > 0 ? "PASS" : "WARN",
     detail: `${sessionsWithSignal}/${replay.length} saved NY session(s) contained at least one deterministic Module 1/2 setup. This is opportunity evidence, not a promised trade count.`,
     evidence: replay
+  });
+  checks.push({
+    name: "NY signal coverage target",
+    status: replay.length > 0 && sessionsMeetingCoverageTarget === replay.length ? "PASS" : "WARN",
+    detail: `${sessionsMeetingCoverageTarget}/${replay.length} saved NY session(s) produced at least ${targetSignalsPerSession} distinct quality setup(s); average ${averageSignalsPerSession.toFixed(2)} per session. This is a coverage target, never permission to fabricate a trade.`,
+    evidence: replay.map((row) => ({ date: row.date, module1: row.module1.ready, module2: row.module2.ready, total: row.module1.ready + row.module2.ready }))
+  });
+  checks.push({
+    name: "Replay trade geometry",
+    status: invalidGeometry.length === 0 ? "PASS" : "FAIL",
+    detail: invalidGeometry.length === 0 ? "Every replayed BUY/SELL setup has its stop and target on the correct side of entry." : `${invalidGeometry.length} replayed setup(s) have invalid directional trade geometry.`,
+    evidence: invalidGeometry
+  });
+  checks.push({
+    name: "Replay outcome quality",
+    status: resolvedReplaySignals.length < minimumOutcomeSamples
+      ? "WARN"
+      : replayResultR > 0 && replayWinRate >= 0.4
+        ? "PASS"
+        : "FAIL",
+    detail: resolvedReplaySignals.length < minimumOutcomeSamples
+      ? `${resolvedReplaySignals.length}/${minimumOutcomeSamples} resolved signals are available; ${replayWins} wins, ${replayLosses} losses, ${(replayWinRate * 100).toFixed(1)}% win rate, ${replayResultR.toFixed(2)}R. Collect more out-of-sample sessions before making a high-probability claim.`
+      : `${resolvedReplaySignals.length} resolved signals produced ${replayWins} wins, ${replayLosses} losses, ${(replayWinRate * 100).toFixed(1)}% win rate, and ${replayResultR.toFixed(2)}R.`,
+    evidence: replaySignals.map((signal: any) => ({
+      date: signal.date,
+      module: signal.module,
+      at: signal.at,
+      direction: signal.direction,
+      scenario: signal.scenario,
+      outcome: signal.outcome,
+      resultR: signal.resultR
+    }))
   });
 
   const latest = candles.at(-1)?.close ?? null;
@@ -115,6 +165,9 @@ try {
   const artifactWindowHours = Math.min(168, Math.max(1, Number(process.env.MVP_ARTIFACT_WINDOW_HOURS ?? 24)));
   const chain = await rows(
     `SELECT sc.module_code,
+            count(DISTINCT sc.id) FILTER (
+              WHERE sc.status IN ('LONG SETUP READY','SHORT SETUP READY','TRADE_PLANNED','PAPER_TRADE_OPENED')
+            )::int AS actionable_setups,
             count(DISTINCT sc.id) FILTER (WHERE sc.status IN ('LONG SETUP READY','SHORT SETUP READY'))::int AS ready_setups,
             count(DISTINCT tp.id)::int AS trade_plans,
             count(DISTINCT t.id)::int AS paper_trades,
@@ -132,17 +185,90 @@ try {
      ORDER BY sc.module_code`,
     [artifactWindowHours]
   );
-  const artifactGaps = chain.filter((row: any) => Number(row.ready_setups) > 0 && (Number(row.notifications) === 0 || Number(row.paper_trades) === 0));
-  const readyArtifactCount = chain.reduce((total: number, row: any) => total + Number(row.ready_setups ?? 0), 0);
+  const artifactGaps = chain.filter((row: any) => Number(row.actionable_setups) > 0 && (Number(row.notifications) === 0 || Number(row.paper_trades) === 0));
+  const actionableArtifactCount = chain.reduce((total: number, row: any) => total + Number(row.actionable_setups ?? 0), 0);
   checks.push({
     name: "Recent MVP artifact chain",
-    status: artifactGaps.length > 0 ? "FAIL" : readyArtifactCount > 0 ? "PASS" : "WARN",
+    status: artifactGaps.length > 0 ? "FAIL" : actionableArtifactCount > 0 ? "PASS" : "WARN",
     detail: artifactGaps.length > 0
       ? `${artifactGaps.length} module(s) produced ready setups without the required notification/paper-tracking artifacts.`
-      : readyArtifactCount > 0
+      : actionableArtifactCount > 0
         ? `Recent setup, notification, and paper-tracking artifacts are connected within the last ${artifactWindowHours} hours.`
         : `No production-ready setup was recorded in the last ${artifactWindowHours} hours; wait for a valid completed 5M setup before final artifact proof.`,
     evidence: chain
+  });
+
+  const validationTables = await rows(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_name IN (
+         'strategy_validation_datasets',
+         'strategy_validation_candles',
+         'strategy_validation_runs',
+         'strategy_validation_signals',
+         'strategy_validation_metrics',
+         'strategy_release_gates'
+       )`
+  );
+  checks.push({
+    name: "Historical validation schema",
+    status: validationTables.length === 6 ? "PASS" : "FAIL",
+    detail: `${validationTables.length}/6 isolated validation and release-gate tables are present.`,
+    evidence: validationTables
+  });
+
+  const releaseGates = validationTables.length === 6 ? await rows(
+    `SELECT module_code, profile_code, status, enforced, resolved_count, win_rate,
+            profit_factor, expectancy_r, max_drawdown_r, evaluated_at
+     FROM strategy_release_gates
+     ORDER BY module_code, profile_code`
+  ) : [];
+  const invalidEnforcedGates = releaseGates.filter((gate: any) =>
+    gate.enforced === true && (gate.status === "INSUFFICIENT_DATA" || Number(gate.resolved_count ?? 0) < 30)
+  );
+  checks.push({
+    name: "Mature release-gate enforcement",
+    status: invalidEnforcedGates.length === 0 ? "PASS" : "FAIL",
+    detail: invalidEnforcedGates.length === 0
+      ? `${releaseGates.filter((gate: any) => gate.enforced).length} mature profile gate(s) are enforced; small samples remain non-enforcing.`
+      : `${invalidEnforcedGates.length} release gate(s) are enforced without a mature validation sample.`,
+    evidence: invalidEnforcedGates.length > 0 ? invalidEnforcedGates : releaseGates
+  });
+
+  const blockedProfileLeaks = validationTables.length === 6 ? await rows(
+    `SELECT sc.id, sc.module_code, sc.scenario, sc.status, sc.detected_at,
+            g.profile_code, g.evaluated_at, tp.id AS trade_plan_id, t.id AS trade_id, n.id AS notification_id
+     FROM setup_candidates sc
+     JOIN strategy_release_gates g
+       ON g.module_code = sc.module_code
+      AND g.enforced = true
+      AND g.status = 'BLOCKED'
+      AND g.profile_code = CASE
+        WHEN sc.module_code = 'high_probability_strategy_2'
+          THEN COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode')
+        WHEN upper(sc.scenario) LIKE '%HORIZONTAL%' THEN 'HORIZONTAL_RANGE_BREAKOUT'
+        WHEN upper(sc.scenario) LIKE '%OPENING_DRIVE%' THEN 'OPENING_DRIVE'
+        WHEN upper(sc.scenario) LIKE '%LIQUIDITY_SWEEP%' THEN 'LIQUIDITY_SWEEP_REVERSAL'
+        WHEN upper(sc.scenario) LIKE '%RETEST%' THEN 'BREAKOUT_RETEST'
+        ELSE 'ORB_BREAKOUT'
+      END
+     LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+     LEFT JOIN trades t ON t.trade_plan_id = tp.id
+     LEFT JOIN notifications n ON n.tenant_id = sc.tenant_id
+       AND (n.data->>'setupId' = sc.id::text OR n.data->>'setupCandidateId' = sc.id::text)
+     WHERE sc.detected_at >= g.evaluated_at
+       AND (tp.id IS NOT NULL OR t.id IS NOT NULL OR n.id IS NOT NULL)
+     ORDER BY sc.detected_at DESC
+     LIMIT 50`
+  ) : [];
+  checks.push({
+    name: "Blocked profile artifact isolation",
+    status: blockedProfileLeaks.length === 0 ? "PASS" : "FAIL",
+    detail: blockedProfileLeaks.length === 0
+      ? "No enforced blocked profile produced a post-gate BUY/SELL notification or simulated trade artifact."
+      : `${blockedProfileLeaks.length} blocked profile setup(s) leaked into live MVP artifacts.`,
+    evidence: blockedProfileLeaks
   });
 
   const summary = {
@@ -159,11 +285,13 @@ try {
 function replayModule1(date: string, candles: Candle[], rawConfiguration: any) {
   const session = candles.filter((candle) => nyDate(candle.timestampUtc) === date && nyMinutes(candle.timestampUtc) >= 9 * 60 + 15 && nyMinutes(candle.timestampUtc) <= 16 * 60);
   const opening = session.filter((candle) => nyMinutes(candle.timestampUtc) >= 9 * 60 + 15 && nyMinutes(candle.timestampUtc) < 9 * 60 + 30).slice(0, 3);
-  if (opening.length < 3) return { ready: 0, status: "MISSING_OPENING_RANGE", candles: session.length };
+  if (opening.length < 3) return { ready: 0, status: "MISSING_OPENING_RANGE", candles: session.length, signals: [], bestObservation: null };
   const range = buildOpeningRange(opening, 0.01, 3);
   const configuration = module1Config(rawConfiguration);
   const previous: Candle[] = [];
   const ready: any[] = [];
+  const seenTheses = new Set<string>();
+  let bestObservation: any = null;
   for (const candle of session.filter((item) => nyMinutes(item.timestampUtc) >= 9 * 60 + 30)) {
     const decision = evaluateSetup({
       now: candle.timestampUtc,
@@ -188,18 +316,47 @@ function replayModule1(date: string, candles: Candle[], rawConfiguration: any) {
       riskStatus: "PERMITTED",
       configuration
     });
-    if (["LONG SETUP READY", "SHORT SETUP READY"].includes(decision.status)) {
+    if (!bestObservation || Number(decision.favorabilityScore ?? 0) > Number(bestObservation.score ?? 0)) {
+      bestObservation = {
+        at: candle.timestampUtc,
+        status: decision.status,
+        scenario: decision.scenario,
+        score: decision.favorabilityScore,
+        reason: decision.finalReason,
+        blockers: decision.evaluations.filter((evaluation) => evaluation.blocking && evaluation.status !== "PASS").map((evaluation) => evaluation.ruleCode)
+      };
+    }
+    const isReady = ["LONG SETUP READY", "SHORT SETUP READY"].includes(decision.status);
+    const thesisKey = [
+      decision.direction,
+      module1ScenarioFamily(decision.scenario),
+      range.high.toFixed(2),
+      range.low.toFixed(2)
+    ].join(":");
+    if (isReady && !seenTheses.has(thesisKey)) {
+      seenTheses.add(thesisKey);
       ready.push({ at: candle.timestampUtc, direction: decision.direction, scenario: decision.scenario, score: decision.favorabilityScore, entry: decision.entryPrice, stop: decision.stopPrice, target: decision.targetPrice });
-      break;
     }
     previous.push(candle);
   }
-  return { ready: ready.length, range: { high: range.high, low: range.low }, signals: ready };
+  const signals = scoreReplaySignals(ready, session);
+  return { ready: signals.length, range: { high: range.high, low: range.low }, signals, bestObservation };
+}
+
+function module1ScenarioFamily(scenario: string) {
+  const value = String(scenario ?? "").toUpperCase();
+  if (value.includes("HORIZONTAL")) return "HORIZONTAL_RANGE_BREAKOUT";
+  if (value.includes("OPENING_DRIVE")) return "OPENING_DRIVE";
+  if (value.includes("LIQUIDITY_SWEEP")) return "LIQUIDITY_SWEEP_REVERSAL";
+  if (value.includes("RETEST")) return "BREAKOUT_RETEST";
+  return "ORB_BREAKOUT";
 }
 
 function replayModule2(date: string, candles: Candle[], biasCandles: Candle[], rawConfiguration: any) {
   const candidates = candles.filter((candle) => nyDate(candle.timestampUtc) === date && nyMinutes(candle.timestampUtc) >= 9 * 60 + 30 && nyMinutes(candle.timestampUtc) <= 16 * 60);
   const ready: any[] = [];
+  const seenSignals = new Set<string>();
+  let bestObservation: any = null;
   for (const current of candidates) {
     const context = candles
       .filter((candle) => candle.timestampUtc <= current.timestampUtc && new Date(candle.timestampUtc).getTime() >= new Date(current.timestampUtc).getTime() - 72 * 60 * 60_000)
@@ -213,14 +370,59 @@ function replayModule2(date: string, candles: Candle[], biasCandles: Candle[], r
       spread: current.spread ?? null,
       newsStatus: "CLEAR",
       tradesTakenThisSession: ready.length,
-      configuration: { ...(rawConfiguration ?? {}), newYorkStartTime: "09:30", newYorkEndTime: "16:00", maximumTradesPerSession: 1 }
+      configuration: { ...(rawConfiguration ?? {}), newYorkStartTime: "09:30", newYorkEndTime: "16:00", maximumTradesPerSession: 4 }
     });
+    if (!bestObservation || Number(decision.favorabilityScore ?? 0) > Number(bestObservation.score ?? 0)) {
+      bestObservation = {
+        at: current.timestampUtc,
+        status: decision.status,
+        scenario: decision.scenario,
+        score: decision.favorabilityScore,
+        reason: decision.finalReason,
+        variant: (decision.scenarioFlags.module2Variant as any)?.code ?? null,
+        blockers: decision.evaluations.filter((evaluation) => evaluation.blocking && evaluation.status !== "PASS").map((evaluation) => evaluation.ruleCode)
+      };
+    }
     if (["LONG SETUP READY", "SHORT SETUP READY"].includes(decision.status)) {
-      ready.push({ at: current.timestampUtc, direction: decision.direction, scenario: decision.scenario, score: decision.favorabilityScore, entry: decision.entryPrice, stop: decision.stopPrice, target: decision.targetPrice, variant: (decision.scenarioFlags.module2Variant as any)?.code ?? null });
-      break;
+      const variant = (decision.scenarioFlags.module2Variant as any)?.code ?? null;
+      const sweep = decision.scenarioFlags.sweep as any;
+      const signalKey = [
+        decision.direction,
+        sweep?.sweptAt ?? sweep?.candle?.timestampUtc ?? "UNKNOWN_SWEEP",
+        sweep?.level?.type ?? "UNKNOWN_LEVEL",
+        Number(sweep?.level?.price ?? 0).toFixed(2)
+      ].join(":");
+      if (!seenSignals.has(signalKey)) {
+        seenSignals.add(signalKey);
+        ready.push({ at: current.timestampUtc, direction: decision.direction, scenario: decision.scenario, score: decision.favorabilityScore, entry: decision.entryPrice, stop: decision.stopPrice, target: decision.targetPrice, variant });
+      }
     }
   }
-  return { ready: ready.length, signals: ready };
+  const signals = scoreReplaySignals(ready, candidates);
+  return { ready: signals.length, signals, bestObservation };
+}
+
+function scoreReplaySignals(signals: any[], candles: Candle[]) {
+  return signals.map((signal) => {
+    const following = candles.filter((candle) => candle.timestampUtc > signal.at);
+    for (const candle of following) {
+      const stopHit = signal.direction === "LONG" ? candle.low <= signal.stop : candle.high >= signal.stop;
+      const targetHit = signal.direction === "LONG" ? candle.high >= signal.target : candle.low <= signal.target;
+      if (stopHit) return { ...signal, outcome: "LOSS", closedAt: candle.timestampUtc, resultR: -1 };
+      if (targetHit) return { ...signal, outcome: "WIN", closedAt: candle.timestampUtc, resultR: 2 };
+    }
+    return { ...signal, outcome: "OPEN", closedAt: null, resultR: null };
+  });
+}
+
+function validTradeGeometry(direction: unknown, entryValue: unknown, stopValue: unknown, targetValue: unknown) {
+  const entry = Number(entryValue);
+  const stop = Number(stopValue);
+  const target = Number(targetValue);
+  if (![entry, stop, target].every(Number.isFinite)) return false;
+  return direction === "LONG"
+    ? stop < entry && entry < target
+    : direction === "SHORT" && target < entry && entry < stop;
 }
 
 async function strategyConfiguration(moduleCode: string) {
@@ -251,9 +453,9 @@ function module1Config(raw: any): StrategyConfiguration {
     retest: { enabled: true, zonePercentOfRange: 0.1, maximumCandles: 6, confirmationRequired: false, ...(raw?.retest ?? {}) },
     rangeFilter: { mode: "OFF", minimumWidth: null, maximumWidth: null, ...(raw?.rangeFilter ?? {}) },
     newsFilter: { enabled: false, mode: "OFF", manualEvents: false, ...(raw?.newsFilter ?? {}) },
-    risk: { riskPerTradePercent: 0.25, maximumDailyLossPercent: 0.75, maximumWeeklyLossPercent: 2, maximumTradesPerSession: 1, maximumConsecutiveLosses: 3, mandatoryStopLoss: true, minimumRewardToRisk: 1.5, allowMartingale: false, allowAddingToLoss: false, ...(raw?.risk ?? {}) },
-    favorability: { minimumScoreForPaperTrade: 70, preferredSpreadPercentOfRange: 0.12, minimumAtrPercentOfRange: 0.1, ...(raw?.favorability ?? {}) },
-    paperTrading: { enabled: true, maximumTradesPerSession: 1, conservativeSameCandleExit: true, ...(raw?.paperTrading ?? {}) }
+    risk: { riskPerTradePercent: 0.25, maximumDailyLossPercent: 0.75, maximumWeeklyLossPercent: 2, maximumTradesPerSession: 2, maximumConsecutiveLosses: 3, mandatoryStopLoss: true, minimumRewardToRisk: 1.5, allowMartingale: false, allowAddingToLoss: false, ...(raw?.risk ?? {}) },
+    favorability: { minimumScoreForPaperTrade: 80, preferredSpreadPercentOfRange: 0.12, minimumAtrPercentOfRange: 0.1, ...(raw?.favorability ?? {}) },
+    paperTrading: { enabled: true, maximumTradesPerSession: 2, conservativeSameCandleExit: true, ...(raw?.paperTrading ?? {}) }
   };
 }
 

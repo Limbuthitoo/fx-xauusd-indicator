@@ -2390,6 +2390,53 @@ button:hover,
   padding-left: 12px;
 }
 
+.validation-console {
+  display: grid;
+  gap: 14px;
+}
+
+.validation-console h3 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.validation-summary {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.validation-run-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.25fr);
+  border: 1px solid #253027;
+  background: #0f1311;
+}
+
+.validation-run-card > div {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+}
+
+.validation-run-card > div + div {
+  border-left: 1px solid #253027;
+}
+
+.validation-run-card span,
+.validation-run-card em,
+.validation-gate-table td span {
+  color: #93a097;
+  font-size: 12px;
+}
+
+.validation-run-card strong {
+  color: #edf4ef;
+  font-size: 18px;
+}
+
+.validation-gate-table {
+  min-width: 1120px;
+}
+
 .paper-trading-workspace {
   display: grid;
   gap: 14px;
