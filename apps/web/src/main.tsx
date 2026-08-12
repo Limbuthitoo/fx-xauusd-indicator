@@ -3553,8 +3553,8 @@ function Module2CandidateMonitorPanel({ setup, trade }: { setup?: any; trade?: a
           <strong>{setup ? output : "WAIT"}</strong>
         </div>
         <div>
-          <span>Chance</span>
-          <strong>{Number.isFinite(probability) && probability > 0 ? `${Math.round(probability)}%` : "--"}</strong>
+          <span>Setup score</span>
+          <strong>{Number.isFinite(probability) && probability > 0 ? `${Math.round(probability)}/100` : "--"}</strong>
         </div>
       </div>
       <div className="module2-live-metrics">
@@ -3814,7 +3814,7 @@ function AllDayStrategyCenterPanel({
           <div className="strategy-center-module-body">
             <Metric label="Readiness" value={selectedRow.readiness} />
             <Metric label="Paper" value={selectedRow.tradeLabel} />
-            <Metric label="Chance" value={selectedSignal?.chance == null ? selectedRow.confidenceLabel : `${selectedSignal.chance}%`} />
+            <Metric label="Setup score" value={selectedSignal?.chance == null ? selectedRow.confidenceLabel : `${selectedSignal.chance}/100`} />
             <Metric label="Checklist" value={selectedSignal?.checklist ? `${selectedSignal.checklist.passed}/${selectedSignal.checklist.total}` : checklistCountLabel(selectedRow.setup)} />
           </div>
           <p className="reason">{selectedSignal?.reason ?? selectedRow.nextAction}</p>
@@ -3944,7 +3944,7 @@ function CrossModuleCommandCenter({
                 </div>
               </div>
               <div className="command-metrics">
-                <Metric label="Confidence" value={selectedRow.confidenceLabel} />
+                <Metric label="Evidence score" value={selectedRow.confidenceLabel} />
                 <Metric label="Samples" value={selectedRow.sampleSize} />
                 <Metric label="Rehearsal" value={selectedRow.rehearsalStatus} />
                 <Metric label="Audit" value={selectedRow.auditStatus} />
@@ -6419,7 +6419,7 @@ function NotificationDetails({ item }: { item: any }) {
             <Metric label="Variant" value={variantName ?? "--"} />
             <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
             <Metric label="Grade" value={grade ?? "--"} />
-            <Metric label="Confidence" value={confidence == null ? "--" : `${confidence}%`} />
+            <Metric label="Evidence score" value={confidence == null ? "--" : `${confidence}/100`} />
           </div>
           {data.finalReason || data.final_reason ? <p className="reason">{String(data.finalReason ?? data.final_reason)}</p> : null}
         </div>
@@ -7572,7 +7572,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Context Evidence",
-        description: "Context improves confidence and explanation. It should not block every valid selected profile by itself.",
+        description: "Context improves the evidence score and explanation. It should not block every valid selected profile by itself.",
         codes: [
           "MARKET_CONTEXT_READY",
           "MARKET_REGIME_CLASSIFIED",
@@ -7594,13 +7594,13 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         ]
       },
       {
-        title: "Confidence Evidence",
-        description: "These rows increase chance/grade. Missing optional evidence should explain caution, not block a selected signal-approved profile.",
+        title: "Scored Evidence",
+        description: "These rows increase the setup score and grade. Missing optional evidence should explain caution, not block a selected signal-approved profile.",
         codes: ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]
       },
       {
         title: "Risk & Quality Filters",
-        description: "Quality filters protect execution. Hard risk remains required; optional quality rows tune chance and learning.",
+        description: "Quality filters protect execution. Hard risk remains required; optional quality rows tune the setup score and learning evidence.",
         codes: ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]
       },
       {
@@ -7907,7 +7907,7 @@ function TradeSignalsWorkspace({
               <SignalPrice label={targetLabel(selected, 2, "TP3 · 150 pips")} value={formatPriceValue(selected.tp3)} tone="target" />
             </>
           )}
-          <SignalPrice label="Chance" value={chanceLabel(selected)} tone={chanceTone(selected)} />
+          <SignalPrice label="Setup score" value={chanceLabel(selected)} tone={chanceTone(selected)} />
         </div>
 
         <div className="signal-detail-grid">
@@ -7942,8 +7942,8 @@ function TradeSignalsWorkspace({
             <Metric label="Live status" value={signalFreshnessLabel(selected)} />
             <Metric label="Entry distance" value={signalEntryDistanceLabel(selected)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
-            <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
-            <Metric label="Chance" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
+            <Metric label="Evidence score" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}/100`} />
+            <Metric label="Setup score" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
             <Metric label="Mandatory" value={signalChecklistSummaryLabel(selected, "mandatory")} />
             <Metric label="Confirmations" value={signalChecklistSummaryLabel(selected, "confirmations")} />
             <Metric label="Quality" value={signalChecklistSummaryLabel(selected, "quality")} />
@@ -7974,7 +7974,7 @@ function TradeSignalsWorkspace({
         <Metric label="BUY" value={summary.buy ?? 0} />
         <Metric label="SELL" value={summary.sell ?? 0} />
         <Metric label="Active paper trades" value={summary.activePaperTrades ?? 0} />
-        <Metric label="Avg chance" value={(summary.averageChance ?? 0) > 0 ? `${summary.averageChance}%` : "--"} />
+        <Metric label="Avg setup score" value={(summary.averageChance ?? 0) > 0 ? `${summary.averageChance}/100` : "--"} />
       </div>
 
       <div className="paper-toolbar">
@@ -8054,7 +8054,7 @@ function TradeSignalsWorkspace({
               <span>Q {signalChecklistSummaryLabel(signal, "quality")}</span>
             </div>
             <div className="trade-signal-chance">
-              <span>Chance</span>
+              <span>Setup score</span>
               <strong className={chanceTone(signal)}>{chanceLabel(signal)}</strong>
               <em>{signal.chanceSource ?? "Module scoring"}</em>
             </div>
@@ -8197,7 +8197,7 @@ function PredictionsWorkspace({
           <SignalPrice label="Main TP" value={formatPriceValue(selected.target)} tone="target" />
           <SignalPrice label="TP1 50p" value={formatPriceValue(selected.tp1)} tone="target" />
           <SignalPrice label="TP2 100p" value={formatPriceValue(selected.tp2)} tone="target" />
-          <SignalPrice label="Probability" value={predictionProbabilityLabel(selected)} tone={predictionTone(selected)} />
+          <SignalPrice label="Setup score" value={predictionScoreLabel(selected)} tone={predictionTone(selected)} />
         </div>
 
         <div className="signal-detail-grid">
@@ -8228,7 +8228,7 @@ function PredictionsWorkspace({
             <Metric label="Direction" value={selected.direction ?? "--"} />
             <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
             <Metric label="Reward/risk" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
-            <Metric label="Confidence" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}%`} />
+            <Metric label="Evidence score" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}/100`} />
             <Metric label="Grade" value={selected.grade ?? "--"} />
             <Metric label="Variant" value={selected.variantName ?? selected.variantCode ?? "--"} />
             <Metric label="Variant status" value={formatScenario(selected.variantStatus ?? "--")} />
@@ -8263,7 +8263,7 @@ function PredictionsWorkspace({
       <div className="paper-trading-head">
         <div>
           <h2><Target size={20} />Predictions</h2>
-          <p>Only module predictions with 80%+ probability are shown here. These are predictions, not broker orders.</p>
+          <p>Only module predictions with a setup score of 80/100 or higher are shown here. The score measures rule evidence, not the probability of winning.</p>
         </div>
         <button onClick={onRefresh}><LineChart size={16} />Refresh</button>
       </div>
@@ -8273,7 +8273,7 @@ function PredictionsWorkspace({
         <Metric label="BUY bias" value={summary.buy ?? 0} />
         <Metric label="SELL bias" value={summary.sell ?? 0} />
         <Metric label="Entry-ready" value={summary.validEntries ?? 0} />
-        <Metric label="Avg probability" value={(summary.averageProbability ?? 0) > 0 ? `${summary.averageProbability}%` : "--"} />
+        <Metric label="Avg setup score" value={(summary.averageProbability ?? 0) > 0 ? `${summary.averageProbability}/100` : "--"} />
       </div>
 
       <div className="paper-toolbar">
@@ -8293,7 +8293,7 @@ function PredictionsWorkspace({
 
       <div className="trade-horizon-note">
         <strong>Prediction workflow</strong>
-        <span>Module 2 predicts from liquidity level {"->"} sweep close-back {"->"} displacement {"->"} BOS/CHoCH {"->"} FVG/OB entry zone {"->"} confirmation. Cards below the 80% floor stay hidden.</span>
+        <span>Module 2 predicts from liquidity level {"->"} sweep close-back {"->"} displacement {"->"} BOS/CHoCH {"->"} FVG/OB entry zone {"->"} confirmation. Cards below the 80/100 evidence floor stay hidden.</span>
       </div>
 
       <div className="trade-signal-grid prediction-grid">
@@ -8311,8 +8311,8 @@ function PredictionsWorkspace({
               <span className="signal-tier">{prediction.status}</span>
             </div>
             <div className="trade-signal-chance">
-              <span>Prediction probability</span>
-              <strong className={predictionTone(prediction)}>{predictionProbabilityLabel(prediction)}</strong>
+              <span>Setup score</span>
+              <strong className={predictionTone(prediction)}>{predictionScoreLabel(prediction)}</strong>
               <em>{prediction.setupTier} checklist · {prediction.checklist?.passed ?? 0}/{prediction.checklist?.total ?? 0}</em>
             </div>
             {prediction.variantName || prediction.variantCode ? (
@@ -8338,14 +8338,14 @@ function PredictionsWorkspace({
           </button>
         ))}
       </div>
-      {visible.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No 80%+ predictions yet</strong><span>Cards appear only when a module creates a high-probability BUY or SELL candidate from saved XAUUSD candles.</span></div> : null}
+      {visible.length === 0 ? <div className="signal-empty-state"><Target size={24} /><strong>No 80/100+ predictions yet</strong><span>Cards appear only when a recent module candidate reaches the evidence-score threshold. This score is not a guaranteed win probability.</span></div> : null}
     </section>
   );
 }
 
-function predictionProbabilityLabel(prediction: any) {
+function predictionScoreLabel(prediction: any) {
   const probability = Number(prediction?.probability);
-  return Number.isFinite(probability) ? `${Math.round(probability)}%` : "--";
+  return Number.isFinite(probability) ? `${Math.round(probability)}/100` : "--";
 }
 
 function predictionTone(prediction: any) {
@@ -8369,7 +8369,7 @@ function targetLabel(signal: any, index: number, fallback: string) {
 
 function chanceLabel(signal: any) {
   const chance = Number(signal?.chance);
-  return Number.isFinite(chance) ? `${Math.round(chance)}%` : "--";
+  return Number.isFinite(chance) ? `${Math.round(chance)}/100` : "--";
 }
 
 function chanceTone(signal: any) {

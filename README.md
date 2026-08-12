@@ -6,7 +6,7 @@ This system is for indicator, alert, journal, and paper-trading workflows. It do
 
 ## Current Status
 
-Local production-readiness is mostly complete.
+The software stack is production-oriented, but strategy quality remains in paper-validation status until enough out-of-sample signals are resolved.
 
 Ready locally:
 
@@ -21,12 +21,7 @@ Ready locally:
 - Nginx, Cloudflare, Docker, backup, and deployment runbooks
 - Auth hardening with HttpOnly web cookie, strong password validation, 2FA foundation, session revocation, and security audit trail
 
-Blocked before deployment:
-
-- Real `TWELVE_DATA_API_KEY`
-- Firebase service credentials
-- Real `EXPO_PUBLIC_EAS_PROJECT_ID`
-- VPS IP/login and Cloudflare DNS setup
+Before serving subscribers, production secrets, Cloudflare/Nginx, backups, Firebase, and the Twelve Data guardrail must all pass the deployment checks. Signal frequency and setup scores are not proof of profitability.
 
 ## Strategy Modules
 
@@ -49,7 +44,7 @@ Independent module for New York liquidity sweep plus displacement and BOS/CHoCH.
 - Mandatory hard rules
 - Confirmation scoring
 - Quality filters
-- Trade grade/confidence
+- Trade grade and deterministic evidence score
 - FVG/order-block/sweep/BOS visual evidence
 - Paper trade, journal, learning, replay, and backtest tooling
 
@@ -85,7 +80,7 @@ Mobile push preferences include:
 ```text
 Cloudflare
   -> Nginx
-    -> Web dashboard, Vite preview/static service
+    -> Web dashboard, static Nginx service
     -> Fastify API
       -> PostgreSQL
       -> Redis
@@ -114,6 +109,8 @@ Important rule: Twelve Data is the shared market-data source only. Trade entries
 - Nginx
 - Cloudflare
 - Firebase Cloud Messaging with Expo fallback
+
+Predictions and BUY/SELL cards are the primary product output. Paper trades mirror eligible signals for audit, win-rate, R, journal, and learning measurements. A setup score such as `80/100` measures rule evidence; it is not an estimated 80% probability of winning.
 
 ## Local Development
 
@@ -339,16 +336,19 @@ docker compose --env-file .env.production -f docker-compose.yml -f docker-compos
 docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod build
 ```
 
-Run migrations:
+Run migrations. On an existing deployment that predates the checksum ledger, baseline only the migrations already deployed, then apply the new migrations:
 
 ```bash
+DATABASE_MIGRATION_BASELINE=079_historical_strategy_validation.sql \
 docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod-tools run --rm migrate
 ```
+
+Use `DATABASE_MIGRATION_BASELINE` only for the first ledger-enabled migration run on an established database. New databases and later deployments must omit it. A checksum mismatch is a deployment failure; create a new migration instead of editing applied SQL history.
 
 Start the production services:
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d postgres redis api worker web
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d postgres redis quant api worker web ops-monitor backup
 ```
 
 Check containers:
@@ -389,7 +389,7 @@ Manual checks:
 - `/api/health` returns `ok`
 - `/api/live/ws` websocket works through Nginx
 - Twelve Data guardrail shows healthy usage
-- Module 1, 2, and 3 assigned screens load
+- Module 1 and Module 2 assigned screens load
 - Valid entry alert includes entry, SL, TP, direction, module, and scenario
 - Mobile test push sends successfully
 
@@ -459,6 +459,7 @@ docker compose --env-file .env.production.example -f docker-compose.yml -f docke
 - Browser auth uses HttpOnly session cookie.
 - Mobile token storage uses Expo SecureStore.
 - Sessions are stored and revoked through PostgreSQL.
+- TOTP secrets are encrypted at rest with authenticated encryption derived from the production session secret; legacy secrets are upgraded after successful MFA login.
 - Platform security audit shows login, logout, failed login, 2FA, reset, and session events.
 - Nginx includes Cloudflare real-IP support, rate limits, HSTS, and CSP headers.
 - Production must use HTTPS behind Cloudflare/Nginx.
@@ -480,7 +481,11 @@ The expected full weekday baseline is about 288 shared 5-minute requests plus, w
 
 The shared source interval is always 5 minutes. Module 1 builds each 15-minute session opening range from the first three completed 5-minute candles. Module 2 executes on completed 5-minute candles and derives completed 15-minute context from the same stored source, so it does not consume separate Twelve Data calls. Live strategy entries remain disabled on Saturday and Sunday.
 
-Module 2 follows `liquidity level -> NY sweep and close-back -> displacement -> candle-close BOS/CHoCH -> fresh FVG/order block -> retrace -> confirmation`. Mandatory-only setups remain small paper observations; no real broker orders are supported.
+Module 2 evaluates independent liquidity-sweep confirmation profiles. Valid profiles can emit Predictions and BUY/SELL cards; eligible fresh signals can then be mirrored into paper tracking. No real broker orders are supported.
+
+## Validation Boundary
+
+Automated proofs verify that a valid Module 1 or Module 2 setup can flow through Python approval, Predictions, BUY/SELL, notification, paper tracking, journal, and reporting without stale-price or duplicate artifacts. They do not prove that one or two quality setups will occur every New York session. That claim requires a sufficiently large, out-of-sample paper dataset with positive expectancy, acceptable drawdown, and stable results by module/profile.
 
 ## Disclaimer
 

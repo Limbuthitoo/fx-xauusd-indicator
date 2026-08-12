@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHmac, createHash } from "node:crypto";
+import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual, createHmac, createHash, createCipheriv, createDecipheriv } from "node:crypto";
 import { promisify } from "node:util";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "../../infrastructure/config.js";
@@ -90,7 +90,9 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(403).send({ message: "Subscriber account is paused or removed." });
     }
     if (admin.mfa_enabled === true) {
-      const mfaValid = verifyTotp(String(admin.mfa_secret_encrypted ?? ""), otp);
+      const storedMfaSecret = String(admin.mfa_secret_encrypted ?? "");
+      const decryptedMfaSecret = decryptMfaSecret(storedMfaSecret);
+      const mfaValid = verifyTotp(decryptedMfaSecret, otp);
       if (!mfaValid) {
         await registerFailedLogin(request, email);
         await recordSecurityEvent({
@@ -101,6 +103,9 @@ export async function authRoutes(app: FastifyInstance) {
           metadata: { tenantId: admin.tenant_id ?? null, platformSuperAdmin: admin.platform_super_admin === true }
         });
         return reply.code(401).send({ message: "Two-factor code required.", mfaRequired: true });
+      }
+      if (decryptedMfaSecret && !storedMfaSecret.startsWith("enc:v1:")) {
+        await query("UPDATE admin_users SET mfa_secret_encrypted = $2, updated_at = now() WHERE id = $1", [admin.id, encryptMfaSecret(decryptedMfaSecret)]);
       }
     }
 
@@ -144,6 +149,7 @@ export async function authRoutes(app: FastifyInstance) {
     const fresh = await currentSecurityState(session.sub);
     const refreshed = {
       ...session,
+      sid: randomUUID(),
       passwordChangeRequired: fresh.passwordChangeRequired,
       mfaEnabled: fresh.mfaEnabled,
       mfaEnrollmentRequired: session.platformSuperAdmin && !fresh.mfaEnabled && !fresh.passwordChangeRequired,
@@ -151,6 +157,7 @@ export async function authRoutes(app: FastifyInstance) {
     };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
+    await revokeRotatedSession(session.sid, refreshed.sid);
     await recordSecurityEvent({
       adminUserId: session.sub,
       eventType: "AUTH_SESSION_REFRESH",
@@ -238,10 +245,11 @@ export async function authRoutes(app: FastifyInstance) {
        WHERE id = $1`,
       [session.sub, passwordHash]
     );
-    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND sid <> $2 AND revoked_at IS NULL", [session.sub, session.sid ?? ""]);
+    await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE admin_user_id = $1 AND id <> $2 AND revoked_at IS NULL", [session.sub, session.sid ?? "00000000-0000-0000-0000-000000000000"]);
     const fresh = await currentSecurityState(session.sub);
     const refreshed: AdminSession = {
       ...session,
+      sid: randomUUID(),
       passwordChangeRequired: false,
       mfaEnabled: fresh.mfaEnabled,
       mfaEnrollmentRequired: session.platformSuperAdmin && !fresh.mfaEnabled,
@@ -249,6 +257,7 @@ export async function authRoutes(app: FastifyInstance) {
     };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
+    await revokeRotatedSession(session.sid, refreshed.sid);
     setAuthCookie(reply, token, refreshed.exp);
     await writeAudit(session.sub, "AUTH_PASSWORD_CHANGED", "admin_user", session.sub, null, { email: session.email, passwordChangeRequired: false });
     await recordSecurityEvent({
@@ -264,7 +273,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/mfa/setup", async (request) => {
     const session = requireAdmin(request);
     const secret = randomBase32Secret();
-    await query("UPDATE admin_users SET mfa_secret_encrypted = $2, updated_at = now() WHERE id = $1", [session.sub, secret]);
+    await query("UPDATE admin_users SET mfa_secret_encrypted = $2, updated_at = now() WHERE id = $1", [session.sub, encryptMfaSecret(secret)]);
     await recordSecurityEvent({
       adminUserId: session.sub,
       eventType: "AUTH_MFA_SETUP_STARTED",
@@ -284,7 +293,7 @@ export async function authRoutes(app: FastifyInstance) {
     const session = requireAdmin(request);
     const body = request.body as { otp?: string };
     const { rows } = await query("SELECT mfa_secret_encrypted FROM admin_users WHERE id = $1", [session.sub]);
-    const secret = String(rows[0]?.mfa_secret_encrypted ?? "");
+    const secret = decryptMfaSecret(String(rows[0]?.mfa_secret_encrypted ?? ""));
     if (!verifyTotp(secret, String(body.otp ?? "").replace(/\s/g, ""))) {
       return reply.code(400).send({ message: "Invalid two-factor code." });
     }
@@ -296,9 +305,11 @@ export async function authRoutes(app: FastifyInstance) {
       request,
       metadata: { platformSuperAdmin: session.platformSuperAdmin, tenantId: session.tenantId }
     });
-    const refreshed: AdminSession = { ...session, mfaEnabled: true, mfaEnrollmentRequired: false, exp: Date.now() + TOKEN_TTL_MS };
+    const refreshed: AdminSession = { ...session, sid: randomUUID(), mfaEnabled: true, mfaEnrollmentRequired: false, exp: Date.now() + TOKEN_TTL_MS };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
+    await revokeRotatedSession(session.sid, refreshed.sid);
+    setAuthCookie(reply, token, refreshed.exp);
     return { status: "enabled", token, user: refreshed };
   });
 
@@ -306,7 +317,7 @@ export async function authRoutes(app: FastifyInstance) {
     const session = requireAdmin(request);
     const body = request.body as { otp?: string };
     const { rows } = await query("SELECT mfa_secret_encrypted FROM admin_users WHERE id = $1", [session.sub]);
-    const secret = String(rows[0]?.mfa_secret_encrypted ?? "");
+    const secret = decryptMfaSecret(String(rows[0]?.mfa_secret_encrypted ?? ""));
     if (!verifyTotp(secret, String(body.otp ?? "").replace(/\s/g, ""))) {
       return reply.code(400).send({ message: "Invalid two-factor code." });
     }
@@ -320,12 +331,15 @@ export async function authRoutes(app: FastifyInstance) {
     });
     const refreshed: AdminSession = {
       ...session,
+      sid: randomUUID(),
       mfaEnabled: false,
       mfaEnrollmentRequired: session.platformSuperAdmin === true && session.passwordChangeRequired !== true,
       exp: Date.now() + TOKEN_TTL_MS
     };
     const token = signSession(refreshed);
     await persistAdminSession(refreshed, token, request);
+    await revokeRotatedSession(session.sid, refreshed.sid);
+    setAuthCookie(reply, token, refreshed.exp);
     return { status: "disabled", token, user: refreshed };
   });
 
@@ -611,9 +625,12 @@ export async function enforceSessionRevocation(request: FastifyRequest, reply: F
      WHERE token_hash = $1
      LIMIT 1`,
     [tokenDigest]
-  ).catch(() => ({ rows: [] as any[] }));
+  );
   const session = rows[0];
-  if (!session) return;
+  if (!session) {
+    revokeToken(token);
+    return reply.code(401).send({ message: "Session is not recognized." });
+  }
   if (session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
     revokeToken(token);
     return reply.code(401).send({ message: "Session has expired or been revoked." });
@@ -712,6 +729,32 @@ function verifyAdminSession(request: FastifyRequest): AdminSession | null {
   }
 }
 
+function encryptMfaSecret(secret: string) {
+  if (!secret) return "";
+  const key = createHash("sha256").update(TOKEN_SECRET).digest();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
+  return `enc:v1:${iv.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+function decryptMfaSecret(stored: string) {
+  if (!stored.startsWith("enc:v1:")) return stored;
+  const [, , ivValue, tagValue, encryptedValue] = stored.split(":");
+  if (!ivValue || !tagValue || !encryptedValue) return "";
+  try {
+    const key = createHash("sha256").update(TOKEN_SECRET).digest();
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivValue, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedValue, "base64url")),
+      decipher.final()
+    ]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
 function tokenFromRequest(request: FastifyRequest) {
   const header = request.headers.authorization;
   if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length);
@@ -795,7 +838,12 @@ async function persistAdminSession(session: AdminSession, token: string, request
       String(request.headers["user-agent"] ?? ""),
       session.exp
     ]
-  ).catch(() => undefined);
+  );
+}
+
+async function revokeRotatedSession(previousSessionId: string | undefined, nextSessionId: string | undefined) {
+  if (!previousSessionId || previousSessionId === nextSessionId) return;
+  await query("UPDATE admin_sessions SET revoked_at = now(), last_seen_at = now() WHERE id = $1 AND revoked_at IS NULL", [previousSessionId]);
 }
 
 function touchAdminSession(session: AdminSession, token: string) {

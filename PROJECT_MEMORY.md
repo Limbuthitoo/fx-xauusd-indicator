@@ -1,10 +1,10 @@
 # XAUUSD Signal Project Memory
 
-Last updated: 2026-08-05
+Last updated: 2026-08-12
 
 ## Product Goal
 
-XAUUSD Signal is a production-ready trading indicator and signal system for user accounts. It uses one shared XAUUSD market feed from Twelve Data, stores candles in PostgreSQL, evaluates assigned strategy modules, generates predictions and BUY/SELL setup cards, sends web/mobile notifications, opens paper-trade tracking rows for win-rate measurement, and keeps journal/report/learning records.
+XAUUSD Signal is a production-oriented trading indicator and signal system for user accounts. It uses one shared XAUUSD market feed from Twelve Data, stores candles in PostgreSQL, evaluates assigned strategy modules, generates predictions and BUY/SELL setup cards, sends web/mobile notifications, opens paper-trade tracking rows for win-rate measurement, and keeps journal/report/learning records. The software is suitable for controlled paper validation; strategy quality is not production-proven until out-of-sample release gates pass.
 
 The system does not execute broker orders. All broker/MT5 behavior has been removed or deprecated. Users execute manually if they choose; the platform only gives signals and paper-trade tracking.
 
@@ -37,7 +37,7 @@ Production services:
 - `redis`: cache and guardrail dependency.
 - `api`: backend HTTP/WebSocket API.
 - `worker`: dedicated market-data and strategy worker.
-- `web`: Vite preview server behind Nginx.
+- `web`: compiled React SPA served by a dedicated Nginx container behind the VPS Nginx/Cloudflare edge.
 - `quant`: Python brain service.
 - `ops-monitor`: health monitor.
 - `backup`: scheduled PostgreSQL backup container.
@@ -276,7 +276,7 @@ Rules:
 - Predictions come from module-owned setup candidates and checklist evaluations stored in PostgreSQL.
 - Predictions do not call Twelve Data.
 - Module 2 prediction flow is: liquidity level -> sweep close-back -> displacement -> BOS/CHoCH -> FVG/order-block entry zone -> confirmation.
-- Prediction cards show BUY/SELL bias, predicted entry zone, SL, TP, probability, evidence, missing blockers, invalidation, and next action.
+- Prediction cards show BUY/SELL bias, predicted entry zone, SL, TP, setup score, evidence, missing blockers, invalidation, and next action.
 - Predictions are early candidate entries. BUY/SELL cards require the module rules to pass and current price to remain near the planned entry. Paper trades are secondary tracking rows for win-rate, journal, report, and learning calculations.
 
 ## BUY & SELL Page
@@ -297,7 +297,7 @@ Rules:
   - Show one strongest full-checklist trade only.
   - Use one TP from the module's main target.
   - Show module and chance score clearly.
-- `Chance` is a module confidence/checklist score, not a guaranteed win rate.
+- `Setup score` is a deterministic module evidence/checklist score out of 100, not a measured win probability or guaranteed win rate.
 
 ## Paper Trading
 
@@ -432,6 +432,8 @@ docker compose --env-file .env.production -f docker-compose.yml -f docker-compos
 ```
 
 ## Production Deployment
+
+Migration execution uses the checksum-backed `schema_migrations` ledger. For the first ledger-enabled deployment to an established database only, run the migrate container with `DATABASE_MIGRATION_BASELINE=079_historical_strategy_validation.sql`; later migrations must omit the baseline. Applied migration files must never be edited because checksum drift fails deployment.
 
 Standard VPS update:
 
@@ -593,6 +595,8 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Paper entry trust guard: automatic paper trades must not execute at a stale planned entry when the latest 5M candle has moved too far away. If live close is beyond the entry-distance guard, skip/mark the setup missed instead of opening a fake paper position. Paper ledger rows should expose historical price context when entry is far from current market.
 - Module 2 trade geometry is a hard safety invariant, not a confidence score. A LONG requires `stop < entry < target`; a SHORT requires `target < entry < stop`. If price has crossed beyond the selected sweep invalidation extreme, the risk engine must block the setup even when a variant, score, and nominal absolute RR otherwise pass.
 - MVP predeployment validation command is `npm run validate:mvp-predeploy -- .env.production`. It verifies TypeScript strategies, both Python brains, API/web types and production builds, active tenant risk profiles, saved 5M/15M candles, NY saved-candle opportunity replay, directional trade geometry, stale-price guards, and recent setup/notification/paper artifact linkage.
+- Setup scores shown in Predictions and BUY/SELL are deterministic evidence/checklist scores out of 100, not calibrated probabilities of winning. Observed win rate and expectancy come only from resolved paper/backtest outcomes.
+- Authentication sessions fail closed against PostgreSQL, rotate session identifiers during refresh/password/MFA changes, use HttpOnly cookies on web, and encrypt TOTP secrets at rest. Legacy plaintext TOTP secrets are re-encrypted after the next successful MFA login.
 - Authenticated proof validation accepts either `TENANT_EMAIL` + `TENANT_PASSWORD` (+ optional `TENANT_OTP`) or an existing `TENANT_TOKEN`. It must be run separately with `npm run validate:modules-flow` to prove Predictions, BUY & SELL, notification details, paper tracking, journal evidence, and Module 2 A-J proof surfaces without exposing proof rows to normal tenant views.
 
 ## Operating Principles

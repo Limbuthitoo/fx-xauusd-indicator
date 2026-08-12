@@ -115,6 +115,11 @@ export async function sendTenantPush(input: PushInput) {
     return preferences[preferenceKey] !== false;
   });
   const skippedByPreference = rows.length - eligibleRows.length;
+  const hasValidToken = rows.some((row: any) => {
+    const token = String(row.expo_push_token ?? "");
+    return /^ExponentPushToken\[.+\]$|^ExpoPushToken\[.+\]$/.test(token)
+      || (typeof row.fcm_token === "string" && row.fcm_token.length > 20);
+  });
   const firebaseRows = firebaseEnabled()
     ? eligibleRows.filter((row: any) => row.fcm_token && ["auto", "firebase"].includes(config.pushProvider))
     : [];
@@ -131,7 +136,8 @@ export async function sendTenantPush(input: PushInput) {
     data: input.data ?? {}
   }));
   if (firebaseRows.length === 0 && messages.length === 0) {
-    await logSkippedPushes(rows, input.tenantId, eventKey, eventType, preferenceKey ?? null, input.force ? "NO_VALID_TOKEN" : "PREFERENCE_DISABLED");
+    const skipStatus = hasValidToken && !input.force ? "PREFERENCE_DISABLED" : "NO_VALID_TOKEN";
+    await logSkippedPushes(rows, input.tenantId, eventKey, eventType, preferenceKey ?? null, skipStatus);
     return { sent: 0, skipped: true, preferenceKey, skippedByPreference };
   }
   const firebaseResult = firebaseRows.length > 0

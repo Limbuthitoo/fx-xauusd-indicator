@@ -179,6 +179,31 @@ legacy_active = decide_module1(
     {"id": "legacy-trade", "outcome": "ACTIVE", "direction": "LONG"},
     HEALTH,
 )
+module1_new_signal_during_active_trade = decide_module1(
+    setup("orb_max_options", "SHORT", [*module1_rules[:-1], "CLOSE_BELOW_ORB_LOW"], {"mandatoryChecklistMatched": True, "setupTier": "FULL"}),
+    {"id": "older-module1-trade", "outcome": "ACTIVE", "direction": "LONG"},
+    HEALTH,
+)
+module2_new_signal_during_active_trade = decide_module2(
+    setup(
+        "high_probability_strategy_2",
+        "SHORT",
+        module2_rules,
+        {
+            "mandatoryChecklistMatched": True,
+            "fullChecklistMatched": True,
+            "setupTier": "FULL",
+            "module2Variant": {
+                "code": "SWEEP_MSS_RETEST",
+                "name": "F. Sweep + MSS + Retest",
+                "paperEligible": True,
+                "approvalStatus": "PRODUCTION_APPROVED",
+            },
+        },
+    ),
+    {"id": "older-module2-trade", "outcome": "ACTIVE", "direction": "LONG"},
+    HEALTH,
+)
 
 assert module1["shouldEmitSignal"] and module1["shouldTrackPaperTrade"] and module1["action"] == "BUY"
 assert module1_horizontal["shouldEmitSignal"] and module1_horizontal["shouldTrackPaperTrade"] and module1_horizontal["action"] == "SELL"
@@ -190,7 +215,9 @@ assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_VARIANT_SIGN
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert not module1_incomplete["shouldEmitSignal"] and not module1_incomplete["shouldTrackPaperTrade"]
 assert not module2_incomplete["shouldEmitSignal"] and not module2_incomplete["shouldTrackPaperTrade"]
-assert legacy_active["decisionType"] == "ACTIVE_TRADE_CHECKLIST_MISMATCH"
+assert legacy_active["decisionType"] == "ACTIVE_TRADE_NEW_SETUP_WAIT"
+assert module1_new_signal_during_active_trade["shouldEmitSignal"] and module1_new_signal_during_active_trade["action"] == "SELL"
+assert module2_new_signal_during_active_trade["shouldEmitSignal"] and module2_new_signal_during_active_trade["action"] == "SELL"
 
 print(
     json.dumps(
@@ -201,6 +228,7 @@ print(
             "module2": module2["decisionType"],
             "module2FlexibleVariant": module2_flexible_variant["decisionType"],
             "module2SignalWithoutPaperSlot": module2_signal_without_paper_slot["decisionType"],
+            "signalsDuringPaperTracking": [module1_new_signal_during_active_trade["decisionType"], module2_new_signal_during_active_trade["decisionType"]],
             "mvpPriority": module2["mvpPriority"],
             "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], legacy_active["decisionType"]],
         },

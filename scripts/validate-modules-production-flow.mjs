@@ -21,7 +21,7 @@ const login = tenantToken
   ? await check("Tenant token", async () => ({
       ok: true,
       detail: "Using the supplied tenant bearer token.",
-      evidence: { token: tenantToken },
+      evidence: { auth: "SUPPLIED_BEARER_TOKEN" },
       token: tenantToken
     }))
   : await check("Tenant login", async () => {
@@ -33,7 +33,7 @@ const login = tenantToken
       return { ok: Boolean(payload?.token), detail: payload?.user?.email ? `Logged in as ${payload.user.email}.` : "Tenant token received.", evidence: { user: payload?.user }, token: payload?.token };
     });
 
-const headers = { authorization: `Bearer ${login.evidence?.token ?? login.token ?? ""}` };
+const headers = { authorization: `Bearer ${login.token ?? ""}` };
 if (!headers.authorization.endsWith(" ")) {
   const module1 = await check("Module 1 proof chain", async () => {
     const proof = await json("/api/module1/production-proof/run", { method: "POST", headers });
@@ -149,7 +149,7 @@ async function checkModuleSurface(label, moduleCode, setupId) {
     return {
       ok: Boolean(match?.entry && match?.stopLoss && (match?.takeProfit || match?.target) && brainApproved),
       detail: match
-        ? `${label} proof prediction visible with ${match.probability ?? "--"}% probability and signal-first Python brain approval ${brainApproved ? "present" : "missing"}.`
+        ? `${label} proof prediction visible with setup score ${match.probability ?? "--"}/100 and signal-first Python brain approval ${brainApproved ? "present" : "missing"}.`
         : `${label} proof prediction missing.`,
       evidence: match ? pickTradeFields(match) : payload?.summary
     };

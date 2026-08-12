@@ -539,6 +539,11 @@ export async function marketDataRoutes(app: FastifyInstance) {
       error.statusCode = 403;
       throw error;
     }
+    if (!config.embeddedMarketDataWorker) {
+      const error = new Error("The Twelve Data schedule is owned by the dedicated market-data worker. Use automation controls instead of starting an API-process poller.") as Error & { statusCode?: number };
+      error.statusCode = 409;
+      throw error;
+    }
     const settings = await refreshRuntimeSettings();
     const body = request.body as { symbol?: string; providerSymbol?: string; timeframeMinutes?: number; interval?: string; pollSeconds?: number; count?: number };
     return startTwelveDataLive({
@@ -559,27 +564,47 @@ export async function marketDataRoutes(app: FastifyInstance) {
       error.statusCode = 403;
       throw error;
     }
+    if (!config.embeddedMarketDataWorker) {
+      const error = new Error("The Twelve Data schedule is owned by the dedicated market-data worker. Pause tenant automation instead of stopping an API-process poller.") as Error & { statusCode?: number };
+      error.statusCode = 409;
+      throw error;
+    }
     return stopTwelveDataLive({ notify: true });
   });
 
   app.get("/api/market-data/twelve-data/live/status", async () => {
     const settings = await refreshRuntimeSettings();
-    const postgresCount = await query(
-      "SELECT count(*)::int AS count FROM candles WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'",
-      [twelveDataState.symbol, twelveDataState.timeframeMinutes]
-    ).catch(() => ({ rows: [{ count: 0 }] }));
+    const [postgresCount, distributed] = await Promise.all([
+      query(
+        "SELECT count(*)::int AS count, max(timestamp_utc) AS latest_candle_at FROM candles WHERE symbol = $1 AND timeframe_minutes = $2 AND source LIKE 'TWELVE_DATA%'",
+        [twelveDataState.symbol, twelveDataState.timeframeMinutes]
+      ).catch(() => ({ rows: [{ count: 0, latest_candle_at: null }] })),
+      distributedMarketDataStatus()
+    ]);
     const memoryCandles = getCachedCandles(twelveDataState.symbol, twelveDataState.timeframeMinutes).length;
+    const workerManaged = !config.embeddedMarketDataWorker;
+    const processRunning = twelveDataState.running;
     return {
       ...twelveDataState,
+      running: workerManaged ? distributed.monitoring : processRunning,
+      processRunning,
+      workerManaged,
+      worker: distributed.worker,
       configured: Boolean(config.twelveDataApiKey),
       startupBackfillCount: settings.feed.startupBackfillCount,
       livePollCount: settings.feed.livePollCount,
       catchupSeconds: config.twelveDataCatchupSeconds,
-      schedulerMode: twelveDataState.running ? "SHARED_5M_LIVE" : autoRunState.phase === "CATCH_UP" ? "SHARED_5M_CATCH_UP" : "PAUSED",
+      schedulerMode: workerManaged ? distributed.schedulerMode : processRunning ? "SHARED_5M_LIVE" : autoRunState.phase === "CATCH_UP" ? "SHARED_5M_CATCH_UP" : "PAUSED",
+      schedulerReason: distributed.reason,
+      lastSyncAt: twelveDataState.lastSyncAt ?? distributed.lastSyncAt,
+      lastImported: processRunning ? twelveDataState.lastImported : distributed.lastImported,
+      lastRequestedCount: processRunning ? twelveDataState.lastRequestedCount : distributed.lastRequestedCount,
+      cycles: processRunning ? twelveDataState.cycles : distributed.cyclesToday,
       persistRawCandles: settings.feed.rawCandleStorage,
       liveCacheDays: settings.feed.cacheDays,
       memoryCandles,
       postgresCandles: Number(postgresCount.rows[0]?.count ?? 0),
+      latestPersistedCandleAt: postgresCount.rows[0]?.latest_candle_at ?? null,
       cachedCandles: memoryCandles + Number(postgresCount.rows[0]?.count ?? 0)
     };
   });
@@ -3629,6 +3654,7 @@ function deterministicBrainFallback(brainDecision: any, setup: any, productionRe
   if (brainDecision?.status !== "FAILED" || !productionReady || !setup?.direction) return brainDecision;
   const values = [setup.entry_price, setup.stop_price, setup.target_price].map(Number);
   if (!values.every(Number.isFinite)) return brainDecision;
+  if (!validDirectionalTradeGeometry(String(setup.direction ?? ""), values[0], values[1], values[2])) return brainDecision;
   return {
     status: "DETERMINISTIC_FALLBACK",
     moduleCode: setup.module_code,
@@ -3923,6 +3949,11 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (setup.scenario === "QA_TEST_SIGNAL") return false;
   if (setup.scenario_flags?.replay === true) return false;
   if (risk?.status !== "PERMITTED") return false;
+  const direction = String(decision?.direction ?? setup.direction ?? "");
+  const entry = Number(decision?.entryPrice ?? setup.entry_price);
+  const stop = Number(decision?.stopPrice ?? setup.stop_price);
+  const target = Number(decision?.targetPrice ?? setup.target_price);
+  if (!validDirectionalTradeGeometry(direction, entry, stop, target)) return false;
   if (setup.module_code === "high_probability_strategy_2") {
     const flags = setup.scenario_flags ?? decision?.scenarioFlags ?? {};
     return Boolean(flags.mandatoryChecklistMatched && flags.module2Variant?.paperEligible !== false);
@@ -4061,23 +4092,27 @@ async function attemptProductionPaperTrade({
     [session.tenant_id, signalThesisKey]
   );
   if (duplicateThesis.rows[0]) {
-    return {
-      skipped: true,
-      reason: "DUPLICATE_SIGNAL_THESIS",
-      signalThesisKey,
-      notificationId: duplicateThesis.rows[0].id
-    };
+    await recordOperationalEvent({
+      severity: "INFO",
+      category: "WORKER",
+      eventType: "SIGNAL_ARTIFACT_RESUME",
+      source: "market-data-worker",
+      tenantId: session.tenant_id,
+      message: "The BUY/SELL notification already exists; resuming secondary paper-tracking artifacts idempotently.",
+      metadata: { moduleCode, setupId: setup.id, signalThesisKey, notificationId: duplicateThesis.rows[0].id }
+    });
+  } else {
+    await notifyTenantOnce(
+      session.tenant_id,
+      `${moduleCode}-setup-ready-${setup.id}`,
+      moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
+      `${alert.title} signal ready`,
+      `${alert.body} | ${setup.final_reason ?? "Valid signal profile matched."}`,
+      "HIGH",
+      { ...alert.data, signalThesisKey },
+      "validEntries"
+    );
   }
-  await notifyTenantOnce(
-    session.tenant_id,
-    `${moduleCode}-setup-ready-${setup.id}`,
-    moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
-    `${alert.title} signal ready`,
-    `${alert.body} | ${setup.final_reason ?? "Valid signal profile matched."}`,
-    "HIGH",
-    { ...alert.data, signalThesisKey },
-    "validEntries"
-  );
   const paperTrackingEligible = effectiveDecision.scenarioFlags?.paperTrackingEligible !== false;
   const paperTrade = settings.paperTradingEnabled && paperTrackingEligible
     ? await createAutomaticPaperTrade(session, setup, effectiveRisk, current, moduleCode)
@@ -4524,6 +4559,12 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
       commission, spread, slippage, opened_at, outcome
     ) VALUES ($1,$2,$3,$4,$5,0,$6,0,$7,'ACTIVE')
+    ON CONFLICT (trade_plan_id) DO UPDATE SET
+      actual_entry = EXCLUDED.actual_entry,
+      actual_stop = EXCLUDED.actual_stop,
+      actual_target = EXCLUDED.actual_target,
+      actual_lot = EXCLUDED.actual_lot,
+      spread = EXCLUDED.spread
     RETURNING *`,
     [
       plan.id,
@@ -4538,7 +4579,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
   const trade = tradeResult.rows[0] as any;
   const position = await createModule2PositionFromPaperTrade(session, setup, plan, trade, plannedRiskAmount);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1", [setup.id]);
-  await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_ENTRY',$2)", [
+  await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_ENTRY',$2) ON CONFLICT (trade_id, event_type) WHERE event_type = 'PAPER_ENTRY' DO NOTHING", [
     trade.id,
     {
       mode: "PAPER",
@@ -4554,7 +4595,8 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     `INSERT INTO journal_entries (
       tenant_id, setup_candidate_id, trade_id, session_id, decision, emotion_before,
       rule_violations, lesson, process_grade, outcome
-    ) VALUES ($5,$1,$2,$3,'PAPER_TRADE_OPENED','AUTO','NONE',$4,'A','PAPER_ACTIVE')`,
+    ) VALUES ($5,$1,$2,$3,'PAPER_TRADE_OPENED','AUTO','NONE',$4,'A','PAPER_ACTIVE')
+    ON CONFLICT (setup_candidate_id) WHERE decision = 'PAPER_TRADE_OPENED' DO NOTHING`,
     [setup.id, trade.id, session.id, `Automatic paper ${setup.direction} opened from ${setup.scenario}. ${setup.final_reason ?? ""}`.trim(), session.tenant_id]
   );
   const alert = entryAlertDetails(moduleCode, setup, trade, rewardToRisk);
@@ -6247,8 +6289,52 @@ async function notifyTenantOnce(
     [eventKey, eventType, title, body, tenantId, priority, JSON.stringify(notificationData)]
   );
   if (inserted.rows[0]) {
-    await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...notificationData, notificationId: inserted.rows[0].id } });
+    const push = await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...notificationData, notificationId: inserted.rows[0].id } });
+    return { notificationId: inserted.rows[0].id, inserted: true, push };
   }
+  const existing = await query(
+    `SELECT id
+     FROM notifications
+     WHERE tenant_id IS NOT DISTINCT FROM $1 AND event_key = $2
+     LIMIT 1`,
+    [tenantId, eventKey]
+  );
+  const notificationId = existing.rows[0]?.id ?? null;
+  if (!tenantId || !notificationId) return { skipped: true, reason: "NOTIFICATION_ALREADY_EXISTS" };
+  const delivery = await query(
+    `SELECT status, created_at
+     FROM mobile_push_delivery_logs
+     WHERE tenant_id = $1 AND event_key = $2
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [tenantId, eventKey]
+  );
+  const latestDelivery = delivery.rows[0] as any;
+  if (["SENT", "FIREBASE_SENT", "PREFERENCE_DISABLED"].includes(String(latestDelivery?.status ?? ""))) {
+    return { notificationId, skipped: true, reason: "PUSH_ALREADY_RESOLVED" };
+  }
+  if (latestDelivery?.created_at && Date.now() - new Date(latestDelivery.created_at).getTime() < 2 * 60_000) {
+    return { notificationId, skipped: true, reason: "PUSH_RETRY_BACKOFF" };
+  }
+  const activeDevices = await query(
+    `SELECT count(*)::int AS count
+     FROM mobile_push_tokens
+     WHERE tenant_id = $1 AND enabled = true
+       AND (fcm_token IS NOT NULL OR expo_push_token ~ '^(ExponentPushToken|ExpoPushToken)\\[')`,
+    [tenantId]
+  );
+  if (Number(activeDevices.rows[0]?.count ?? 0) === 0) {
+    return { notificationId, skipped: true, reason: "NO_ACTIVE_PUSH_DEVICE" };
+  }
+  const push = await sendTenantPush({ tenantId, title, body, eventKey, eventType, preferenceKey, data: { ...notificationData, notificationId } });
+  return { notificationId, inserted: false, retried: true, push };
+}
+
+function validDirectionalTradeGeometry(direction: string, entry: number, stop: number, target: number) {
+  if (![entry, stop, target].every(Number.isFinite)) return false;
+  if (direction === "LONG") return stop < entry && entry < target;
+  if (direction === "SHORT") return target < entry && entry < stop;
+  return false;
 }
 
 function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToRisk: number) {
@@ -6774,6 +6860,66 @@ async function marketDataWorkerHeartbeat() {
     if ((error as { code?: string }).code !== "42P01") throw error;
     return { rows: [] };
   }
+}
+
+async function distributedMarketDataStatus() {
+  const [heartbeatResult, automationResult, usageResult] = await Promise.all([
+    marketDataWorkerHeartbeat(),
+    query(
+      `SELECT
+         count(*) FILTER (WHERE enabled = true AND phase = 'MONITORING')::int AS monitoring,
+         count(*) FILTER (WHERE enabled = true AND phase = 'CATCH_UP')::int AS catch_up,
+         count(*) FILTER (WHERE enabled = true)::int AS enabled,
+         max(updated_at) AS latest_state_at,
+         (array_agg(latest_reason ORDER BY updated_at DESC) FILTER (WHERE latest_reason IS NOT NULL))[1] AS latest_reason
+       FROM tenant_automation_states`
+    ).catch(() => ({ rows: [{ monitoring: 0, catch_up: 0, enabled: 0, latest_state_at: null, latest_reason: null }] })),
+    query(
+      `SELECT
+         max(created_at) AS last_sync_at,
+         COALESCE((array_agg(imported_count ORDER BY created_at DESC))[1], 0)::int AS last_imported,
+         COALESCE((array_agg(requested_count ORDER BY created_at DESC))[1], 0)::int AS last_requested_count,
+         count(*) FILTER (WHERE created_at >= date_trunc('day', now()))::int AS cycles_today,
+         (array_agg(trigger_source ORDER BY created_at DESC))[1] AS last_trigger_source
+       FROM api_usage_events
+       WHERE provider = 'TWELVE_DATA'`
+    ).catch(() => ({ rows: [{ last_sync_at: null, last_imported: 0, last_requested_count: 0, cycles_today: 0, last_trigger_source: null }] }))
+  ]);
+  const heartbeat = heartbeatResult.rows[0] as any;
+  const automation = automationResult.rows[0] as any;
+  const usage = usageResult.rows[0] as any;
+  const heartbeatAt = heartbeat?.heartbeat_at ? new Date(heartbeat.heartbeat_at).getTime() : null;
+  const heartbeatAgeSeconds = heartbeatAt == null ? null : Math.max(0, Math.round((Date.now() - heartbeatAt) / 1000));
+  const heartbeatStaleAfterSeconds = Math.max(config.autoRunSupervisorSeconds * 3, 90);
+  const workerHealthy = heartbeat?.status === "RUNNING" && heartbeatAgeSeconds != null && heartbeatAgeSeconds <= heartbeatStaleAfterSeconds;
+  const monitoring = workerHealthy && Number(automation?.monitoring ?? 0) > 0;
+  const scheduledCatchup = workerHealthy && !monitoring && Number(automation?.enabled ?? 0) > 0;
+  return {
+    monitoring,
+    schedulerMode: monitoring ? "SHARED_5M_LIVE" : scheduledCatchup ? "SHARED_5M_CATCH_UP" : "PAUSED",
+    reason: !workerHealthy
+      ? "The dedicated market-data worker heartbeat is missing or stale."
+      : monitoring
+        ? `${Number(automation.monitoring)} module automation state(s) are inside the New York monitoring window.`
+        : scheduledCatchup
+          ? "The dedicated worker is healthy and the shared off-session catch-up schedule is active."
+          : automation?.latest_reason ?? "No enabled strategy automation is scheduled.",
+    lastSyncAt: usage?.last_sync_at ?? null,
+    lastImported: Number(usage?.last_imported ?? 0),
+    lastRequestedCount: Number(usage?.last_requested_count ?? 0),
+    cyclesToday: Number(usage?.cycles_today ?? 0),
+    worker: {
+      status: heartbeat?.status ?? "UNKNOWN",
+      healthy: workerHealthy,
+      startedAt: heartbeat?.started_at ?? null,
+      heartbeatAt: heartbeat?.heartbeat_at ?? null,
+      heartbeatAgeSeconds,
+      heartbeatStaleAfterSeconds,
+      pid: heartbeat?.pid ?? null,
+      lastError: heartbeat?.last_error ?? null,
+      metadata: heartbeat?.metadata ?? null
+    }
+  };
 }
 
 async function defaultTenantId() {

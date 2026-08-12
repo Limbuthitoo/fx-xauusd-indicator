@@ -15,6 +15,7 @@ import { coreEngineRoutes } from "./modules/core-engines/routes.js";
 import { dashboardRoutes } from "./modules/dashboard/routes.js";
 import { importRoutes } from "./modules/imports/routes.js";
 import { journalRoutes } from "./modules/journal/routes.js";
+import { startLiveEventBridge, stopLiveEventBridge } from "./modules/live-stream/hub.js";
 import { liveStreamRoutes } from "./modules/live-stream/routes.js";
 import { marketDataRoutes } from "./modules/market-data/routes.js";
 import { mobileRoutes } from "./modules/mobile/routes.js";
@@ -26,7 +27,7 @@ import { setupRoutes } from "./modules/setups/routes.js";
 import { strategyRoutes } from "./modules/strategies/routes.js";
 import { tradeRoutes } from "./modules/trades/routes.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, trustProxy: 1 });
 const startedAtIso = new Date().toISOString();
 
 app.addHook("onRequest", async (request) => {
@@ -72,6 +73,8 @@ await app.register(cors, {
   }
 });
 await app.register(websocket);
+await startLiveEventBridge();
+app.addHook("onClose", async () => stopLiveEventBridge());
 await app.register(multipart, {
   limits: {
     files: 1,

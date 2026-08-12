@@ -1094,7 +1094,7 @@ export async function setupRoutes(app: FastifyInstance) {
     let brain: unknown = null;
     let brainError: string | null = null;
     try {
-      brain = await runMainBrainPython(auth.tenantId, "orb_max_options", { proofMode: true });
+      brain = await runMainBrainPython(auth.tenantId, "orb_max_options", { proofMode: true, setupId: setup.id });
     } catch (error) {
       brainError = error instanceof Error ? error.message : String(error);
     }
@@ -1216,7 +1216,7 @@ export async function setupRoutes(app: FastifyInstance) {
     let brain: unknown = null;
     let brainError: string | null = null;
     try {
-      brain = await runMainBrainPython(auth.tenantId, "high_probability_strategy_2", { proofMode: true });
+      brain = await runMainBrainPython(auth.tenantId, "high_probability_strategy_2", { proofMode: true, setupId: proof.setup?.id });
     } catch (error) {
       brainError = error instanceof Error ? error.message : String(error);
     }
@@ -1278,7 +1278,9 @@ export async function setupRoutes(app: FastifyInstance) {
           entryDetails: expectedPaper ? hasEntryDetails : true,
           paperTrade: expectedPaper ? Boolean(proof.trade?.id) : !proof.trade?.id,
           journal: expectedPaper ? Boolean(proof.journal?.id) : true,
-          notificationPayload: Boolean(proof.notification?.data?.entry || proof.notification?.data?.stopLoss || proof.notification?.data?.takeProfit),
+          notificationPayload: expectedPaper
+            ? Boolean(proof.notification?.data?.entry || proof.notification?.data?.stopLoss || proof.notification?.data?.takeProfit)
+            : !Boolean(proof.notification?.data?.entry || proof.notification?.data?.stopLoss || proof.notification?.data?.takeProfit),
           noConfirmationBlocked: replayCase === "SWEEP_NO_CONFIRMATION" ? !proof.trade?.id && variant.paperEligible === false : true,
           evaluationsPresent: evaluations.length > 0
         }
@@ -1566,6 +1568,7 @@ function signalSetupView(row: any, evaluations: any[]) {
   const variantRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "variant");
   const confirmationRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "confirmation");
   const qualityRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "quality");
+  const paperTrackingRules = evaluations.filter((evaluation) => module2SignalLayer(row.module_code, evaluation.rule_code ?? evaluation.ruleCode) === "paperTracking");
   const missingRules = evaluations
     .filter((evaluation) => evaluation.status !== "PASS" && isSignalHardBlocker(row.module_code, evaluation))
     .slice(0, 6)
@@ -1593,8 +1596,8 @@ function signalSetupView(row: any, evaluations: any[]) {
     grade: row.favorability_grade ?? flags.tradeGrade ?? null,
     confidence,
     chance,
-    chanceLabel: `${chance}%`,
-    chanceSource: confidence == null ? "Checklist completion" : "Module confidence score",
+    chanceLabel: `${chance}/100`,
+    chanceSource: confidence == null ? "Checklist evidence score" : "Module setup score",
     variantCode: variant?.code ?? flags.variantCode ?? null,
     variantName: variant?.name ?? null,
     variantVersion: variant?.version ?? flags.variantVersion ?? null,
@@ -1603,6 +1606,7 @@ function signalSetupView(row: any, evaluations: any[]) {
       variant: signalRuleSummary(variantRules),
       confirmations: signalRuleSummary(confirmationRules),
       quality: signalRuleSummary(qualityRules),
+      paperTracking: signalRuleSummary(paperTrackingRules),
       missingRules
     },
     fullChecklistValid,
@@ -1632,7 +1636,7 @@ function signalSetupView(row: any, evaluations: any[]) {
       targetPrice: roundSignalPrice(paperTarget),
       eligible: profileApproved,
       reason: profileApproved
-        ? `${row.module_name} has a profile-approved ${direction === "LONG" ? "BUY" : "SELL"} setup with ${chance}% chance score.`
+        ? `${row.module_name} has a profile-approved ${direction === "LONG" ? "BUY" : "SELL"} setup with an evidence score of ${chance}/100.`
         : "Long setup waits until one valid module profile is approved."
     },
     pipSize: XAUUSD_PIP_SIZE,
@@ -1667,14 +1671,16 @@ function signalSetupView(row: any, evaluations: any[]) {
 
 function isSignalHardBlocker(moduleCode: string, evaluation: any) {
   const code = String(evaluation.rule_code ?? evaluation.ruleCode ?? "");
+  if (moduleCode === "high_probability_strategy_2" && [
+    "DAILY_TRADE_LIMIT",
+    "ACTIVE_SETUP_CONFLICT_CLEAR",
+    "NO_ACTIVE_TRADE_CONFLICT"
+  ].includes(code)) return false;
   const required = evaluation.required_for_entry ?? evaluation.requiredForEntry;
   if (required === true) return true;
   if (moduleCode === "high_probability_strategy_2") {
     return [
       "DATA_HEALTHY",
-      "DAILY_TRADE_LIMIT",
-      "ACTIVE_SETUP_CONFLICT_CLEAR",
-      "NO_ACTIVE_TRADE_CONFLICT",
       "RISK_LIMITS_CLEAR",
       "MANUAL_CONFIRMATION_COMPLETED",
       "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -1713,6 +1719,7 @@ function signalRuleSummary(rows: any[]) {
 function module2SignalLayer(moduleCode: string, ruleCode?: string) {
   const code = String(ruleCode ?? "");
   if (moduleCode !== "high_probability_strategy_2") return "other";
+  if (["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"].includes(code)) return "paperTracking";
   if (code === "CONFIRM_ENTRY_CANDLE") return "variant";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
@@ -1730,9 +1737,6 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
     "MARKET_REGIME_CLASSIFIED",
     "NY_SESSION_ACTIVE",
     "STRATEGY_CYCLE_ACTIVE",
-    "DAILY_TRADE_LIMIT",
-    "ACTIVE_SETUP_CONFLICT_CLEAR",
-    "NO_ACTIVE_TRADE_CONFLICT",
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -2084,6 +2088,8 @@ function isUpcomingPrediction(prediction: any) {
   const entry = numericOrNull(prediction.entry ?? prediction.entryRange?.midpoint);
   if (currentPrice == null || entry == null) return false;
   const stopLoss = numericOrNull(prediction.stopLoss);
+  const target = numericOrNull(prediction.target ?? prediction.takeProfit);
+  if (!validSignalGeometry(prediction.direction, entry, stopLoss, target)) return false;
   const riskDistance = stopLoss == null ? 0 : Math.abs(entry - stopLoss);
   const maxDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance * 1.5);
   return Math.abs(currentPrice - entry) <= maxDistance;
@@ -2100,9 +2106,18 @@ function isLiveSignal(signal: any) {
   const entry = numericOrNull(signal.entry ?? signal.entryRange?.midpoint);
   if (currentPrice == null || entry == null) return false;
   const stopLoss = numericOrNull(signal.stopLoss);
+  const target = numericOrNull(signal.paperTarget ?? signal.takeProfit ?? signal.tp3);
+  if (!validSignalGeometry(signal.direction, entry, stopLoss, target)) return false;
   const riskDistance = stopLoss == null ? 0 : Math.abs(entry - stopLoss);
   const maxDistance = Math.max(MAX_LIVE_PREDICTION_ENTRY_DISTANCE, riskDistance);
   return Math.abs(currentPrice - entry) <= maxDistance;
+}
+
+function validSignalGeometry(direction: unknown, entry: number | null, stop: number | null, target: number | null) {
+  if (entry == null || stop == null || target == null) return false;
+  if (direction === "LONG") return stop < entry && entry < target;
+  if (direction === "SHORT") return target < entry && entry < stop;
+  return false;
 }
 
 function liveSetupFreshness(

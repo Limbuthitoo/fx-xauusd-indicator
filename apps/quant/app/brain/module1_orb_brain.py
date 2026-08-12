@@ -10,12 +10,9 @@ MODULE_NAME = "Module 1 ORB"
 def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_health: dict[str, Any]) -> dict[str, Any]:
     evaluations = setup.get("evaluations", []) if setup else []
     checklist = checklist_summary(evaluations)
-    if trade and trade.get("outcome") == "ACTIVE":
-        setup_status = str(setup.get("status") or "") if setup else ""
-        if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 1 has an active legacy paper-tracking row whose originating setup is not a valid opened ORB checklist. Do not use it as learning evidence.", False)
-        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 signal is active. Paper tracking is monitoring TP/SL for win-rate measurement.", False)
     if not setup:
+        if trade and trade.get("outcome") == "ACTIVE":
+            return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), None, trade, checklist, candle_health, "INFO", "Module 1 paper tracking is monitoring TP/SL while the signal engine waits for a new setup.", False)
         return payload("WAITING_FOR_ORB_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 1 is waiting for a completed session ORB or horizontal-range signal candle.", False)
 
     direction = setup.get("direction")
@@ -31,6 +28,11 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
         profile = "Horizontal Range" if is_horizontal_setup(setup) else "ORB"
         reason = f"Module 1 {tier} {profile} setup passed. {action} plan is ready with entry, SL, and TP."
         return payload("ORB_SIGNAL_READY" if should_track else "ORB_SIGNAL_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_track else "INFO", reason, should_track)
+
+    if trade and trade.get("outcome") == "ACTIVE":
+        if setup.get("trade_id") and status == "PAPER_TRADE_OPENED" and mandatory:
+            return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 1 paper tracking is monitoring TP/SL while the signal engine continues evaluating completed candles.", False)
+        return payload("ACTIVE_TRADE_NEW_SETUP_WAIT", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", setup.get("final_reason") or "An older paper trade remains active, but the newest Module 1 setup is not signal-ready.", False)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
         return payload("ORB_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 1 setup is marked ready but ORB mandatory checklist is not fully passed.", False)

@@ -125,7 +125,7 @@ For a physical phone, the API URL cannot be `localhost` unless the API is runnin
 ## Screens
 
 - Home: session posture, quick actions, assigned-module watch, and latest alert shortcut.
-- BUY & SELL: Short/Long setup tabs, actionable module setup cards, detail screen with entry range, SL, TP, RR, chance, paper status, and grouped checklist evidence.
+- BUY & SELL: Short/Long setup tabs, actionable module setup cards, detail screen with entry range, SL, TP, RR, setup score, paper status, and grouped checklist evidence.
 - Live Chart: selected-module XAUUSD chart using backend cache and websocket updates, with compact Module 1 ORB and Module 2 Ultimate Sweep overlay legends.
 - Paper Trading: journal/performance view for automatic paper trades.
 - More: alerts/history, push settings, security, assigned modules, support, app updates, websocket status, and app details.

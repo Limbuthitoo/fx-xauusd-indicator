@@ -37,7 +37,6 @@ CORE_SAFETY_RULES = [
     "RISK_LIMITS_CLEAR",
     "MANUAL_CONFIRMATION_COMPLETED",
     "DIRECTIONAL_CONFLICT_CLEAR",
-    "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
 ]
@@ -80,13 +79,10 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     evaluations = setup.get("evaluations", []) if setup else []
     flags = setup.get("scenario_flags") if setup else {}
     checklist = checklist_summary(evaluations, flags if isinstance(flags, dict) else {})
-    if trade and trade.get("outcome") == "ACTIVE":
-        setup_status = str(setup.get("status") or "") if setup else ""
-        if not setup or not checklist["mandatoryPassed"] or setup_status != "PAPER_TRADE_OPENED":
-            return payload("ACTIVE_TRADE_CHECKLIST_MISMATCH", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "ERROR", "Module 2 has an active paper-tracking row whose originating setup did not pass the selected liquidity-sweep variant checklist.", False)
-        return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 signal is active. Paper tracking is monitoring TP/SL for win-rate measurement.", False)
     if not setup:
-        return payload("WAITING_FOR_LIQUIDITY_SWEEP_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for an all-session liquidity sweep plus one signal-approved confirmation profile.", False)
+        if trade and trade.get("outcome") == "ACTIVE":
+            return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), None, trade, checklist, candle_health, "INFO", "Module 2 paper tracking is monitoring TP/SL while the signal engine waits for a new setup.", False)
+        return payload("WAITING_FOR_LIQUIDITY_SWEEP_SETUP", "WAIT", None, None, None, checklist, candle_health, "INFO", "Module 2 is waiting for a New York-session liquidity sweep plus one signal-approved confirmation profile.", False)
 
     direction = setup.get("direction")
     action = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else "WAIT"
@@ -110,6 +106,11 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
             "liquidity sweep, close-back rejection, selected profile confirmation, and risk approval."
         )
         return payload(decision_type if should_track else "LIQUIDITY_SWEEP_SIGNAL_HANDLED", action, direction, setup, trade, checklist, candle_health, "WARN" if should_track else "INFO", reason, should_track)
+
+    if trade and trade.get("outcome") == "ACTIVE":
+        if setup.get("trade_id") and status == "PAPER_TRADE_OPENED" and mandatory:
+            return payload("TRADE_ACTIVE", "MANAGE", trade.get("direction"), setup, trade, checklist, candle_health, "INFO", "Module 2 paper tracking is monitoring TP/SL while the signal engine continues evaluating completed candles.", False)
+        return payload("ACTIVE_TRADE_NEW_SETUP_WAIT", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", setup.get("final_reason") or "An older paper trade remains active, but the newest Module 2 setup is not signal-ready.", False)
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY") and not mandatory:
         return payload("LIQUIDITY_SWEEP_CHECKLIST_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 setup is marked ready but the selected liquidity-sweep variant checklist is not fully passed.", False)

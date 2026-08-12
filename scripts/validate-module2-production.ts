@@ -410,14 +410,14 @@ async function validateSetupChain(tenantId: string | null) {
     params
   )).rows;
 
-  const highProbabilityRows = rows.filter((row) => Number(row.favorability_score ?? 0) >= MIN_PROBABILITY);
+  const highScoreRows = rows.filter((row) => Number(row.favorability_score ?? 0) >= MIN_PROBABILITY);
   checks.push({
     name: "80%+ Module 2 predictions",
-    status: highProbabilityRows.length > 0 ? "PASS" : "WARN",
-    detail: highProbabilityRows.length > 0
-      ? `${highProbabilityRows.length} high-probability setup candidate(s) found.`
+    status: highScoreRows.length > 0 ? "PASS" : "WARN",
+    detail: highScoreRows.length > 0
+      ? `${highScoreRows.length} setup candidate(s) reached the ${MIN_PROBABILITY}/100 evidence threshold.`
       : "No 80%+ Module 2 candidate exists yet. That is acceptable if no valid setup occurred.",
-    evidence: highProbabilityRows.slice(0, 5).map(setupEvidence)
+    evidence: highScoreRows.slice(0, 5).map(setupEvidence)
   });
 
   const entryReady = rows.filter((row) => isEntryReady(row));

@@ -66,14 +66,19 @@ docker compose --env-file .env.production -f docker-compose.yml -f docker-compos
 
 ## Migrate
 
+For the first checksum-ledger deployment to an established database that already has migrations through `079`:
+
 ```bash
+DATABASE_MIGRATION_BASELINE=079_historical_strategy_validation.sql \
 docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod-tools run --rm migrate
 ```
+
+For new databases and every later deployment, omit `DATABASE_MIGRATION_BASELINE`. Never edit an applied migration; the checksum ledger will reject it.
 
 ## Start
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d postgres redis api worker web
+docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml --profile prod up -d postgres redis quant api worker web ops-monitor backup
 ```
 
 ## PM2 Alternative
@@ -140,7 +145,7 @@ Expose only:
 - `80/tcp` HTTP
 - `443/tcp` HTTPS
 
-Docker binds PostgreSQL, Redis, API, web preview, and quant ports to `127.0.0.1` by default. Keep the firewall closed for those ports unless you explicitly need temporary debugging.
+Docker binds PostgreSQL, Redis, API, web, and quant ports to `127.0.0.1` by default. Keep the firewall closed for those ports unless you explicitly need temporary debugging.
 
 After Cloudflare is verified, you can restrict `80/tcp` and `443/tcp` at the VPS firewall to Cloudflare IP ranges only. Keep SSH protected separately with key login and fail2ban or your VPS provider firewall.
 

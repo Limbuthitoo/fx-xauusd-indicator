@@ -1482,7 +1482,7 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
           </>
         )}
         <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
-        <Metric label="Chance" value={chanceLabel(setup)} />
+        <Metric label="Setup Score" value={setupScoreLabel(setup)} />
       </View>
       <Text style={styles.noticeTime}>Tap for checklist evidence and trade plan.</Text>
     </View>
@@ -1536,7 +1536,7 @@ function BuySellSetupDetail({
             </>
           )}
           <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
-          <Metric label="Chance" value={chanceLabel(setup)} />
+          <Metric label="Setup Score" value={setupScoreLabel(setup)} />
           <Metric label="Grade" value={formatDetailValue(setup.trade_grade ?? setup.favorability_grade)} />
           <Metric label="Paper" value={trade.outcome ?? "READY"} />
         </View>
@@ -1818,7 +1818,7 @@ function TradeSetupNotification({ detail, module }: { detail: NotificationDetail
           <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
           <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
           <Metric label="RR" value={formatDetailValue(detail.rewardToRisk)} />
-          <Metric label="Chance" value={detail.confidence == null ? chanceLabel(module?.currentSetup ?? {}) : `${detail.confidence}%`} />
+          <Metric label="Setup Score" value={detail.confidence == null ? setupScoreLabel(module?.currentSetup ?? {}) : `${detail.confidence}/100`} />
           <Metric label="Grade" value={formatDetailValue(detail.grade)} />
           <Metric label="Setup Tier" value={formatDetailValue(detail.setupTier)} />
           <Metric label="Variant" value={formatDetailValue(detail.variantName ?? detail.variantCode)} />
@@ -2867,10 +2867,10 @@ function entryRangeLabel(setup: any, fallbackEntry: unknown) {
   return formatPrice(fallbackEntry);
 }
 
-function chanceLabel(setup: any) {
+function setupScoreLabel(setup: any) {
   const numeric = setupProbability(setup);
   if (!Number.isFinite(numeric)) return "--";
-  return `${numeric.toFixed(0)}%`;
+  return `${numeric.toFixed(0)}/100`;
 }
 
 function setupProbability(setup: any) {

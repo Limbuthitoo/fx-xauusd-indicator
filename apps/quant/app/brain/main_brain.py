@@ -26,12 +26,12 @@ MODULE_BRAINS = {
 }
 
 
-def run_main_brain(database_url: str, tenant_id: str, module_code: str | None = None, persist: bool = True, proof_mode: bool = False) -> dict[str, Any]:
+def run_main_brain(database_url: str, tenant_id: str, module_code: str | None = None, persist: bool = True, proof_mode: bool = False, setup_id: str | None = None) -> dict[str, Any]:
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             modules = [module_code] if module_code else enabled_modules(cur, tenant_id)
             candles = candle_health(cur)
-            decisions = [decide_module(cur, tenant_id, code, candles, proof_mode=proof_mode) for code in modules]
+            decisions = [decide_module(cur, tenant_id, code, candles, proof_mode=proof_mode, setup_id=setup_id) for code in modules]
             summary = {
                 "modules": len(decisions),
                 "buySignals": sum(1 for item in decisions if item["action"] == "BUY"),
@@ -99,9 +99,9 @@ def candle_health(cur) -> dict[str, Any]:
     }
 
 
-def decide_module(cur, tenant_id: str, module_code: str, candles: dict[str, Any], proof_mode: bool = False) -> dict[str, Any]:
-    setup = latest_setup(cur, tenant_id, module_code, proof_mode=proof_mode)
-    trade = latest_trade(cur, tenant_id, module_code, proof_mode=proof_mode)
+def decide_module(cur, tenant_id: str, module_code: str, candles: dict[str, Any], proof_mode: bool = False, setup_id: str | None = None) -> dict[str, Any]:
+    setup = latest_setup(cur, tenant_id, module_code, proof_mode=proof_mode, setup_id=setup_id)
+    trade = latest_trade(cur, tenant_id, module_code, proof_mode=proof_mode, setup_id=setup_id)
     brain = MODULE_BRAINS.get(module_code)
     if brain:
         return brain(setup, trade, candles)
@@ -131,7 +131,7 @@ def decide_module(cur, tenant_id: str, module_code: str, candles: dict[str, Any]
     }
 
 
-def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False) -> dict[str, Any] | None:
+def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False, setup_id: str | None = None) -> dict[str, Any] | None:
     replay_filter = "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'" if proof_mode else "AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'"
     freshness_filter = "" if proof_mode else """
           AND (
@@ -141,10 +141,16 @@ def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False
               FROM candles c
               WHERE c.symbol = sc.symbol
                 AND c.timeframe_minutes = 5
-                AND c.source LIKE 'TWELVE_DATA%%'
+                AND c.source LIKE %s
             )
           )
     """
+    setup_filter = "AND sc.id = %s" if setup_id else ""
+    query_params: tuple[Any, ...] = (tenant_id, module_code)
+    if setup_id:
+        query_params += (setup_id,)
+    if not proof_mode:
+        query_params += ("TWELVE_DATA%",)
     cur.execute(
         f"""
         SELECT
@@ -171,19 +177,21 @@ def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False
           AND sc.module_code = %s
           AND sc.scenario <> 'QA_TEST_SIGNAL'
           {replay_filter}
+          {setup_filter}
           {freshness_filter}
         GROUP BY sc.id, t.id
-        ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, sc.detected_at DESC
+        ORDER BY sc.detected_at DESC
         LIMIT 1
         """,
-        (tenant_id, module_code),
+        query_params,
     )
     row = cur.fetchone()
     return normalize(row) if row else None
 
 
-def latest_trade(cur, tenant_id: str, module_code: str, proof_mode: bool = False) -> dict[str, Any] | None:
+def latest_trade(cur, tenant_id: str, module_code: str, proof_mode: bool = False, setup_id: str | None = None) -> dict[str, Any] | None:
     replay_filter = "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'" if proof_mode else "AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'"
+    setup_filter = "AND sc.id = %s" if setup_id else ""
     cur.execute(
         f"""
         SELECT
@@ -204,10 +212,11 @@ def latest_trade(cur, tenant_id: str, module_code: str, proof_mode: bool = False
           AND sc.module_code = %s
           AND sc.scenario <> 'QA_TEST_SIGNAL'
           {replay_filter}
+          {setup_filter}
         ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, t.closed_at) DESC
         LIMIT 1
         """,
-        (tenant_id, module_code),
+        (tenant_id, module_code, setup_id) if setup_id else (tenant_id, module_code),
     )
     row = cur.fetchone()
     return normalize(row) if row else None
@@ -272,8 +281,9 @@ def main() -> None:
     parser.add_argument("--module-code", default=None)
     parser.add_argument("--no-persist", action="store_true")
     parser.add_argument("--proof-mode", action="store_true")
+    parser.add_argument("--setup-id", default=None)
     args = parser.parse_args()
-    print(json.dumps(run_main_brain(args.database_url, args.tenant_id, args.module_code, persist=not args.no_persist, proof_mode=args.proof_mode), default=str))
+    print(json.dumps(run_main_brain(args.database_url, args.tenant_id, args.module_code, persist=not args.no_persist, proof_mode=args.proof_mode, setup_id=args.setup_id), default=str))
 
 
 if __name__ == "__main__":

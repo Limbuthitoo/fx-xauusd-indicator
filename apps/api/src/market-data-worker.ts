@@ -1,8 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { config } from "./infrastructure/config.js";
 import { startWorkerHeartbeat, writeWorkerHeartbeat } from "./infrastructure/workers/heartbeat.js";
 import { startMarketDataWorker } from "./modules/market-data/routes.js";
 
 const startedAt = new Date().toISOString();
+
+verifyPythonBrainRuntime();
 
 startMarketDataWorker();
 const heartbeatTimer = startWorkerHeartbeat({
@@ -53,3 +56,14 @@ async function shutdown(signal: string) {
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+function verifyPythonBrainRuntime() {
+  const pythonBin = process.env.PYTHON_BIN || "python3";
+  try {
+    execFileSync(pythonBin, ["-c", "import psycopg"], { stdio: "ignore", timeout: 10_000 });
+  } catch (error) {
+    throw new Error(
+      `Python brain runtime is unavailable (${pythonBin} cannot import psycopg): ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}

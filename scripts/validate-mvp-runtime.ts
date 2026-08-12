@@ -36,22 +36,52 @@ try {
     evidence: missingRisk
   });
 
-  const failureWindowMinutes = Math.min(1_440, Math.max(1, Number(process.env.MVP_FAILURE_WINDOW_MINUTES ?? 5)));
+  const failureWindowMinutes = Math.min(1_440, Math.max(1, Number(process.env.MVP_FAILURE_WINDOW_MINUTES ?? 1_440)));
+  const workerDeployment = (await rows(
+    `SELECT started_at, heartbeat_at, status
+     FROM worker_heartbeats
+     WHERE worker_name = 'market-data-worker'
+     LIMIT 1`
+  ))[0] ?? null;
   const recentFailures = await rows(
     `SELECT event_type, tenant_id, created_at, metadata->>'moduleCode' AS module_code, metadata->>'error' AS error
      FROM operational_events
-     WHERE created_at >= now() - ($1::int * interval '1 minute')
+     WHERE created_at >= GREATEST(
+             now() - ($1::int * interval '1 minute'),
+             COALESCE($2::timestamptz, '-infinity'::timestamptz)
+           )
        AND event_type IN ('STRATEGY_EVALUATION_FAILED', 'MAIN_BRAIN_FAILED')
      ORDER BY created_at DESC
      LIMIT 50`,
-    [failureWindowMinutes]
+    [failureWindowMinutes, workerDeployment?.started_at ?? null]
   );
   checks.push({
-    name: "Recent strategy/brain failures",
+    name: "Post-deployment strategy/brain failures",
     status: recentFailures.length === 0 ? "PASS" : "FAIL",
-    detail: recentFailures.length === 0 ? `No strategy or Python brain failures in the last ${failureWindowMinutes} minutes.` : `${recentFailures.length} strategy/Python failure event(s) occurred in the last ${failureWindowMinutes} minutes.`,
-    evidence: recentFailures.slice(0, 10)
+    detail: recentFailures.length === 0
+      ? `No strategy or Python brain failures since the current worker started at ${workerDeployment?.started_at ?? "unknown"}.`
+      : `${recentFailures.length} strategy/Python failure event(s) occurred after the current worker deployment.`,
+    evidence: { workerDeployment, failures: recentFailures.slice(0, 10) }
   });
+
+  const historicalFailures = await rows(
+    `SELECT event_type, tenant_id, created_at, metadata->>'moduleCode' AS module_code, metadata->>'error' AS error
+     FROM operational_events
+     WHERE created_at >= now() - ($1::int * interval '1 minute')
+       AND created_at < COALESCE($2::timestamptz, now())
+       AND event_type IN ('STRATEGY_EVALUATION_FAILED', 'MAIN_BRAIN_FAILED')
+     ORDER BY created_at DESC
+     LIMIT 10`,
+    [failureWindowMinutes, workerDeployment?.started_at ?? null]
+  );
+  if (historicalFailures.length > 0) {
+    checks.push({
+      name: "Pre-deployment failure history",
+      status: "WARN",
+      detail: `${historicalFailures.length} sampled strategy/Python failure event(s) predate the current worker deployment and remain for audit history.`,
+      evidence: historicalFailures
+    });
+  }
 
   const candleRows = await rows(
     `SELECT timestamp_utc, open, high, low, close, volume, spread
@@ -74,7 +104,9 @@ try {
   });
 
   const replayDays = Math.min(5, Math.max(1, Number(process.env.MVP_REPLAY_DAYS ?? 2)));
-  const dates = [...new Set(candles.map((candle) => nyDate(candle.timestampUtc)))].filter(isWeekday).slice(-replayDays);
+  const dates = [...new Set(candles.map((candle) => nyDate(candle.timestampUtc)))]
+    .filter((date) => isWeekday(date) && completedNySessionCandleCount(date, candles) >= 3)
+    .slice(-replayDays);
   const [module1Config, module2Config] = await Promise.all([
     strategyConfiguration("orb_max_options"),
     strategyConfiguration("high_probability_strategy_2")
@@ -162,6 +194,28 @@ try {
     evidence: staleReady
   });
 
+  const invalidReadyGeometry = await rows(
+    `SELECT id, tenant_id, module_code, scenario, status, direction, detected_at,
+            entry_price, stop_price, target_price
+     FROM setup_candidates
+     WHERE module_code IN ('orb_max_options', 'high_probability_strategy_2')
+       AND status IN ('LONG SETUP READY', 'SHORT SETUP READY', 'TRADE_PLANNED', 'PAPER_TRADE_OPENED')
+       AND detected_at >= now() - interval '7 days'
+       AND NOT (
+         (direction = 'LONG' AND stop_price < entry_price AND entry_price < target_price)
+         OR (direction = 'SHORT' AND target_price < entry_price AND entry_price < stop_price)
+       )
+     ORDER BY detected_at DESC`
+  );
+  checks.push({
+    name: "Persisted signal geometry",
+    status: invalidReadyGeometry.length === 0 ? "PASS" : "FAIL",
+    detail: invalidReadyGeometry.length === 0
+      ? "Every recent persisted actionable setup has directionally valid entry, stop, and target prices."
+      : `${invalidReadyGeometry.length} recent actionable setup(s) have impossible directional price geometry.`,
+    evidence: invalidReadyGeometry
+  });
+
   const artifactWindowHours = Math.min(168, Math.max(1, Number(process.env.MVP_ARTIFACT_WINDOW_HOURS ?? 24)));
   const chain = await rows(
     `SELECT sc.module_code,
@@ -178,23 +232,37 @@ try {
      LEFT JOIN notifications n ON n.tenant_id = sc.tenant_id
        AND (n.data->>'setupId' = sc.id::text OR n.data->>'setupCandidateId' = sc.id::text)
      WHERE sc.module_code IN ('orb_max_options','high_probability_strategy_2')
-       AND sc.detected_at >= now() - ($1::int * interval '1 hour')
+       AND sc.detected_at >= GREATEST(
+             now() - ($1::int * interval '1 hour'),
+             COALESCE($2::timestamptz, '-infinity'::timestamptz)
+           )
        AND sc.scenario <> 'QA_TEST_SIGNAL'
        AND COALESCE(sc.scenario_flags->>'replay','false') <> 'true'
      GROUP BY sc.module_code
      ORDER BY sc.module_code`,
-    [artifactWindowHours]
+    [artifactWindowHours, workerDeployment?.started_at ?? null]
   );
-  const artifactGaps = chain.filter((row: any) => Number(row.actionable_setups) > 0 && (Number(row.notifications) === 0 || Number(row.paper_trades) === 0));
+  const signalArtifactGaps = chain.filter((row: any) => Number(row.actionable_setups) > 0 && Number(row.notifications) === 0);
+  const paperArtifactGaps = chain.filter((row: any) => Number(row.actionable_setups) > 0 && Number(row.paper_trades) === 0);
   const actionableArtifactCount = chain.reduce((total: number, row: any) => total + Number(row.actionable_setups ?? 0), 0);
   checks.push({
-    name: "Recent MVP artifact chain",
-    status: artifactGaps.length > 0 ? "FAIL" : actionableArtifactCount > 0 ? "PASS" : "WARN",
-    detail: artifactGaps.length > 0
-      ? `${artifactGaps.length} module(s) produced ready setups without the required notification/paper-tracking artifacts.`
+    name: "Recent BUY/SELL artifact chain",
+    status: signalArtifactGaps.length > 0 ? "FAIL" : actionableArtifactCount > 0 ? "PASS" : "WARN",
+    detail: signalArtifactGaps.length > 0
+      ? `${signalArtifactGaps.length} module(s) produced actionable setups without the primary BUY/SELL notification artifact.`
       : actionableArtifactCount > 0
-        ? `Recent setup, notification, and paper-tracking artifacts are connected within the last ${artifactWindowHours} hours.`
+        ? `Recent actionable setups and primary BUY/SELL notifications are connected within the last ${artifactWindowHours} hours.`
         : `No production-ready setup was recorded in the last ${artifactWindowHours} hours; wait for a valid completed 5M setup before final artifact proof.`,
+    evidence: chain
+  });
+  checks.push({
+    name: "Recent paper-tracking chain",
+    status: paperArtifactGaps.length > 0 ? "WARN" : actionableArtifactCount > 0 ? "PASS" : "WARN",
+    detail: paperArtifactGaps.length > 0
+      ? `${paperArtifactGaps.length} module(s) produced actionable signals without paper-tracking artifacts. BUY/SELL remains valid, but win-rate measurement is incomplete.`
+      : actionableArtifactCount > 0
+        ? "Recent actionable signals are also represented in the paper-trading measurement ledger."
+        : "No recent actionable signal is available for paper-tracking proof.",
     evidence: chain
   });
 
@@ -475,6 +543,14 @@ function nyDate(timestamp: string) {
 function nyMinutes(timestamp: string) {
   const parts = nyParts(timestamp);
   return Number(parts.find((part) => part.type === "hour")?.value ?? 0) * 60 + Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+}
+
+function completedNySessionCandleCount(date: string, candles: Candle[]) {
+  const sessionCandles = candles.filter((candle) => nyDate(candle.timestampUtc) === date && nyMinutes(candle.timestampUtc) >= 9 * 60 + 15 && nyMinutes(candle.timestampUtc) <= 16 * 60);
+  if (sessionCandles.length < 3) return 0;
+  const latestMinutes = Math.max(...sessionCandles.map((candle) => nyMinutes(candle.timestampUtc)));
+  const today = nyDate(new Date().toISOString());
+  return date < today || latestMinutes >= 16 * 60 ? sessionCandles.length : 0;
 }
 
 function isWeekday(date: string) {

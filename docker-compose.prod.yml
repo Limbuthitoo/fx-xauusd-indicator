@@ -93,6 +93,11 @@ services:
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
       MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/venv/bin/python3 -c 'import psycopg' && node -e \"const pg=require('pg'); const c=new pg.Client({connectionString:process.env.DATABASE_URL}); c.connect().then(()=>c.query(\\\"SELECT heartbeat_at FROM worker_heartbeats WHERE worker_name='market-data-worker' AND heartbeat_at > now() - interval '2 minutes' LIMIT 1\\\")).then(r=>{c.end();process.exit(r.rowCount?0:1)}).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 8s
+      retries: 5
 
   quant:
     profiles: ["prod"]
@@ -161,7 +166,6 @@ services:
   web:
     profiles: ["prod"]
     restart: unless-stopped
-    command: ["npm", "run", "preview"]
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -185,6 +189,7 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgres://orb_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/orb_guide
       REDIS_URL: redis://redis:6379
+      DATABASE_MIGRATION_BASELINE: ${DATABASE_MIGRATION_BASELINE:-}
     depends_on:
       postgres:
         condition: service_healthy
