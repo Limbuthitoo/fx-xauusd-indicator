@@ -125,6 +125,10 @@ type NotificationDetail = {
   entry?: string | number | null;
   stopLoss?: string | number | null;
   takeProfit?: string | number | null;
+  targets?: any[];
+  targetNumber?: string | number | null;
+  targetPrice?: string | number | null;
+  riskMultiple?: string | number | null;
   rewardToRisk?: string | number | null;
   grade?: string | number | null;
   confidence?: string | number | null;
@@ -196,6 +200,13 @@ type JournalTrade = {
   favorability_grade?: string | null;
   final_reason?: string | null;
   scenario_flags?: any;
+  targets?: Array<{
+    targetNumber: number;
+    price: string | number;
+    riskMultiple: string | number;
+    status: "PENDING" | "HIT" | "CANCELLED";
+    hitAt?: string | null;
+  }>;
 };
 
 type MoreView = "menu" | "profile" | "security" | "push-settings" | "modules" | "chart-preferences" | "session-settings" | "notification-history" | "support" | "app-updates" | "about";
@@ -254,8 +265,6 @@ type LiveEvent =
 
 type MobileTab = "home" | "buySell" | "chart" | "paper" | "more";
 
-const XAUUSD_PIP_SIZE = 0.01;
-const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
 
 const mobileTabs: Array<{ key: MobileTab; label: string }> = [
   { key: "home", label: "Home" },
@@ -1455,8 +1464,8 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
   const action = tradeAction(direction, signal.label);
   const entry = trade.actual_entry ?? setup.entry_price;
   const stopLoss = trade.actual_stop ?? setup.stop_price;
-  const targetLadder = dayTradingTargets(entry, direction);
   const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit;
+  const targetLadder = dayTradingTargets(entry, stopLoss, mainTarget, direction, trade.targets);
   return (
     <View style={[styles.tradeSetupCard, action === "SELL" && styles.tradeSetupCardSell]}>
       <View style={styles.tradeSetupTop}>
@@ -1476,9 +1485,9 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
           <Metric label="Main TP" value={formatPrice(mainTarget ?? targetLadder.tp2)} />
         ) : (
           <>
-            <Metric label="TP1 50p" value={formatPrice(targetLadder.tp1)} />
-            <Metric label="TP2 100p" value={formatPrice(targetLadder.tp2)} />
-            <Metric label="TP3 150p" value={formatPrice(targetLadder.tp3)} />
+            <Metric label={`TP1 1R${targetLadder.statuses[0] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp1)} />
+            <Metric label={`TP2 1.5R${targetLadder.statuses[1] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp2)} />
+            <Metric label={`TP3 ${targetLadder.finalRLabel}${targetLadder.statuses[2] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp3)} />
           </>
         )}
         <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
@@ -1507,8 +1516,8 @@ function BuySellSetupDetail({
   const action = tradeAction(direction, signal.label);
   const entry = trade.actual_entry ?? setup.entry_price;
   const stopLoss = trade.actual_stop ?? setup.stop_price;
-  const targetLadder = dayTradingTargets(entry, direction);
-  const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit ?? targetLadder.tp2;
+  const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit;
+  const targetLadder = dayTradingTargets(entry, stopLoss, mainTarget, direction, trade.targets);
   const groupedRules = groupedChecklist(setup.evaluations ?? [], module.code);
   return (
     <>
@@ -1530,9 +1539,9 @@ function BuySellSetupDetail({
             <Metric label="Main TP" value={formatPrice(mainTarget)} />
           ) : (
             <>
-              <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
-              <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
-              <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+              <Metric label={`TP1 1R${targetLadder.statuses[0] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp1)} />
+              <Metric label={`TP2 1.5R${targetLadder.statuses[1] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp2)} />
+              <Metric label={`TP3 ${targetLadder.finalRLabel}${targetLadder.statuses[2] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp3)} />
             </>
           )}
           <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
@@ -1684,6 +1693,17 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
         <Metric label="Result" value={formatR(trade.result_r)} />
         <Metric label="RR" value={formatDetailValue(trade.reward_to_risk)} />
       </View>
+      {Array.isArray(trade.targets) && trade.targets.length > 0 ? (
+        <View style={styles.mobileTargetProgress}>
+          {trade.targets.map((target) => (
+            <View key={target.targetNumber} style={[styles.mobileTargetStep, target.status === "HIT" && styles.mobileTargetStepHit]}>
+              <Text style={styles.noticeTime}>TP{target.targetNumber} · {target.riskMultiple}R</Text>
+              <Text style={styles.ruleTitle}>{formatPrice(target.price)}</Text>
+              <Text style={styles.noticeTime}>{target.status}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
       <View style={styles.journalEvidenceLine}>
         <Text style={styles.noticeTime}>{formatTime(trade.opened_at ?? trade.detected_at ?? "")}</Text>
         <Text style={styles.noticeTime}>{module.shortName} · {variant ? `${variant} · ` : ""}Grade {trade.favorability_grade ?? "--"} · Score {trade.favorability_score ?? "--"}</Text>
@@ -1800,7 +1820,7 @@ function NotificationTemplate({
 
 function TradeSetupNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
   const action = tradeAction(detail.direction, detail.action ?? undefined);
-  const targetLadder = dayTradingTargets(detail.entry, detail.direction ?? detail.action);
+  const targetLadder = dayTradingTargets(detail.entry, detail.stopLoss, detail.takeProfit, detail.direction ?? detail.action);
   return (
     <>
       <View style={[styles.moreDiagnosticsCard, action === "SELL" ? styles.notificationTradeSell : styles.notificationTradeBuy]}>
@@ -1814,9 +1834,9 @@ function TradeSetupNotification({ detail, module }: { detail: NotificationDetail
           <Metric label="Entry Range" value={entryRangeLabel(module?.currentSetup ?? {}, detail.entry)} />
           <Metric label="Entry" value={formatDetailValue(detail.entry)} />
           <Metric label="Stop Loss" value={formatDetailValue(detail.stopLoss)} />
-          <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
-          <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
-          <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+          <Metric label="TP1 1R" value={formatPrice(targetLadder.tp1)} />
+          <Metric label="TP2 1.5R" value={formatPrice(targetLadder.tp2)} />
+          <Metric label={`TP3 ${targetLadder.finalRLabel}`} value={formatPrice(targetLadder.tp3)} />
           <Metric label="RR" value={formatDetailValue(detail.rewardToRisk)} />
           <Metric label="Setup Score" value={detail.confidence == null ? setupScoreLabel(module?.currentSetup ?? {}) : `${detail.confidence}/100`} />
           <Metric label="Grade" value={formatDetailValue(detail.grade)} />
@@ -1851,6 +1871,29 @@ function PaperTradeNotification({ detail, module }: { detail: NotificationDetail
         <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
         <Metric label="Status" value={formatDetailValue(detail.status ?? trade.outcome)} />
       </View>
+      {detail.targetNumber != null ? (
+        <View style={styles.mobileTargetProgress}>
+          <View style={[styles.mobileTargetStep, styles.mobileTargetStepHit]}>
+            <Text style={styles.noticeTime}>TP{detail.targetNumber} reached</Text>
+            <Text style={styles.ruleTitle}>{formatPrice(detail.targetPrice)}</Text>
+            <Text style={styles.noticeTime}>{formatDetailValue(detail.riskMultiple)}R</Text>
+          </View>
+        </View>
+      ) : null}
+      {Array.isArray(detail.targets) && detail.targets.length > 0 ? (
+        <View style={styles.mobileTargetProgress}>
+          {detail.targets.map((target: any) => (
+            <View key={target.targetNumber ?? target.target_number} style={[
+              styles.mobileTargetStep,
+              String(target.status).toUpperCase() === "HIT" && styles.mobileTargetStepHit
+            ]}>
+              <Text style={styles.noticeTime}>TP{target.targetNumber ?? target.target_number} · {target.riskMultiple ?? target.risk_multiple}R</Text>
+              <Text style={styles.ruleTitle}>{formatPrice(target.price)}</Text>
+              <Text style={styles.noticeTime}>{target.status ?? "PENDING"}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
       <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction("TRADE_LIFECYCLE", detail)}</Text>
     </View>
   );
@@ -2554,7 +2597,8 @@ function ModuleDetail({
   const topRecommendation = recommendations[0];
   const entry = trade.actual_entry ?? setup.entry_price;
   const stopLoss = trade.actual_stop ?? setup.stop_price;
-  const targetLadder = dayTradingTargets(entry, trade.direction ?? setup.direction);
+  const mainTarget = trade.actual_target ?? setup.target_price ?? setup.take_profit;
+  const targetLadder = dayTradingTargets(entry, stopLoss, mainTarget, trade.direction ?? setup.direction, trade.targets);
   const groupedRules = groupedChecklist(evaluations, module.code);
   return (
     <View style={styles.card}>
@@ -2573,9 +2617,9 @@ function ModuleDetail({
         <Metric label="Direction" value={trade.direction ?? setup.direction ?? "--"} />
         <Metric label="Entry" value={formatPrice(entry)} />
         <Metric label="Stop Loss" value={formatPrice(stopLoss)} />
-        <Metric label="TP1 50 pips" value={formatPrice(targetLadder.tp1)} />
-        <Metric label="TP2 100 pips" value={formatPrice(targetLadder.tp2)} />
-        <Metric label="TP3 150 pips" value={formatPrice(targetLadder.tp3)} />
+        <Metric label="TP1 1R" value={formatPrice(targetLadder.tp1)} />
+        <Metric label="TP2 1.5R" value={formatPrice(targetLadder.tp2)} />
+        <Metric label={`TP3 ${targetLadder.finalRLabel}`} value={formatPrice(targetLadder.tp3)} />
         <Metric label="Trade Horizon" value="Intraday max 12h" />
         <Metric label="Score" value={setup.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
         <Metric label="Trade" value={trade.outcome ?? "NONE"} />
@@ -2926,6 +2970,10 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     entry: payload.entry ?? payload.entryPrice ?? payload.entry_price ?? null,
     stopLoss: payload.stopLoss ?? payload.stop_loss ?? payload.sl ?? null,
     takeProfit: payload.takeProfit ?? payload.take_profit ?? payload.tp ?? null,
+    targets: Array.isArray(payload.targets) ? payload.targets : [],
+    targetNumber: payload.targetNumber ?? payload.target_number ?? null,
+    targetPrice: payload.targetPrice ?? payload.target_price ?? null,
+    riskMultiple: payload.riskMultiple ?? payload.risk_multiple ?? null,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? null,
     grade: payload.grade ?? null,
     confidence: payload.confidence ?? null,
@@ -2961,13 +3009,34 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
   };
 }
 
-function dayTradingTargets(entryValue: unknown, directionValue: unknown) {
+function dayTradingTargets(entryValue: unknown, stopValue: unknown, targetValue: unknown, directionValue: unknown, persistedTargets?: any[]) {
   const entry = Number(entryValue);
-  if (!Number.isFinite(entry)) return { tp1: null, tp2: null, tp3: null };
+  const stop = Number(stopValue);
+  const suppliedTarget = Number(targetValue);
   const direction = String(directionValue ?? "").toUpperCase();
+  if (!Number.isFinite(entry) || !Number.isFinite(stop) || !["LONG", "SHORT", "BUY", "SELL"].includes(direction)) {
+    return { tp1: null, tp2: null, tp3: null, finalRLabel: "strategy", statuses: [] as string[] };
+  }
+  const riskDistance = Math.abs(entry - stop);
+  if (riskDistance <= 0) return { tp1: null, tp2: null, tp3: null, finalRLabel: "strategy", statuses: [] as string[] };
   const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
-  const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => Number((entry + multiplier * pips * XAUUSD_PIP_SIZE).toFixed(2)));
-  return { tp1, tp2, tp3 };
+  const targetIsDirectional = Number.isFinite(suppliedTarget) && (suppliedTarget - entry) * multiplier > 0;
+  const finalTarget = targetIsDirectional ? suppliedTarget : entry + multiplier * riskDistance * 2;
+  const finalR = Math.abs(finalTarget - entry) / riskDistance;
+  const generated = [Math.min(1, finalR), Math.min(1.5, finalR), finalR]
+    .map((riskMultiple) => Number((entry + multiplier * riskDistance * riskMultiple).toFixed(2)));
+  const persisted = Array.isArray(persistedTargets) ? [...persistedTargets].sort((a, b) => Number(a.targetNumber) - Number(b.targetNumber)) : [];
+  const [tp1, tp2, tp3] = generated.map((price, index) => {
+    const persistedPrice = Number(persisted[index]?.price);
+    return Number.isFinite(persistedPrice) ? persistedPrice : price;
+  });
+  return {
+    tp1,
+    tp2,
+    tp3,
+    finalRLabel: `${Number(finalR.toFixed(2))}R`,
+    statuses: persisted.map((target) => String(target.status ?? "PENDING").toUpperCase())
+  };
 }
 
 function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): NotificationDetail {
@@ -2992,6 +3061,10 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     entry: payload.entry ?? payload.entryPrice ?? payload.entry_price ?? extractBodyField(body, "entry") ?? trade.actual_entry ?? trade.entry_price ?? null,
     stopLoss: payload.stopLoss ?? payload.stop_loss ?? payload.sl ?? extractBodyField(body, "sl") ?? extractBodyField(body, "stop") ?? trade.actual_stop ?? trade.stop_price ?? null,
     takeProfit: payload.takeProfit ?? payload.take_profit ?? payload.tp ?? extractBodyField(body, "tp") ?? extractBodyField(body, "target") ?? trade.actual_target ?? trade.target_price ?? null,
+    targets: Array.isArray(payload.targets) ? payload.targets : [],
+    targetNumber: payload.targetNumber ?? payload.target_number ?? null,
+    targetPrice: payload.targetPrice ?? payload.target_price ?? null,
+    riskMultiple: payload.riskMultiple ?? payload.risk_multiple ?? null,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
     grade: payload.grade ?? extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
     confidence: payload.confidence ?? extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,
@@ -3114,9 +3187,10 @@ function notificationCategory(detail: NotificationDetail) {
   const explicit = stringOrNull(detail.category)?.toUpperCase();
   if (explicit) return explicit;
   const haystack = `${detail.eventType ?? ""} ${detail.title} ${detail.body}`.toUpperCase();
+  if (/TP[12]_HIT/.test(haystack)) return "TRADE_LIFECYCLE";
   if (hasTradeDetails(detail) || /ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
-  if (/TP_HIT|SL_HIT|TARGET|STOP LOSS|STOPPED|CLOSEOUT|CLOSED|WIN|LOSS/.test(haystack)) return "TRADE_CLOSEOUT";
-  if (/TP_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/TP[123]?_HIT|SL_HIT|TARGET|STOP LOSS|STOPPED|CLOSEOUT|CLOSED|WIN|LOSS/.test(haystack)) return "TRADE_CLOSEOUT";
+  if (/TP[123]?_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
   if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
   if (/SESSION|WINDOW|PRESSESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
   if (/FEED|TWELVE|CANDLE|CACHE|MARKET_DATA/.test(haystack)) return "FEED";
@@ -3692,6 +3766,9 @@ const styles = StyleSheet.create({
   journalValue: { color: "#2fe6a8", fontWeight: "900", fontSize: 18 },
   journalLabel: { color: "#89938d", fontSize: 11, fontWeight: "800", marginTop: 3 },
   journalTradeCard: { borderTopWidth: 1, borderTopColor: "#252c28", paddingTop: 14, marginTop: 14 },
+  mobileTargetProgress: { flexDirection: "row", gap: 8, marginTop: 10 },
+  mobileTargetStep: { flex: 1, minWidth: 0, borderWidth: 1, borderColor: "#303a35", borderRadius: 6, padding: 9, gap: 3 },
+  mobileTargetStepHit: { borderColor: "#20c997", backgroundColor: "#10281f" },
   journalTradeTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   journalEvidenceLine: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10 },
   moreProfileCard: {

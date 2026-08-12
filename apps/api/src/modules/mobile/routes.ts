@@ -6,9 +6,6 @@ import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 
-const XAUUSD_PIP_SIZE = 0.01;
-const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
-
 export async function mobileRoutes(app: FastifyInstance) {
   app.get("/api/mobile/app-update", async (request) => {
     const search = request.query as { platform?: string; currentVersion?: string; currentCode?: string };
@@ -100,10 +97,22 @@ export async function mobileRoutes(app: FastifyInstance) {
         [session.tenantId, moduleCode]
       ),
       query(
-        `SELECT t.*, sc.direction, sc.scenario
+        `SELECT t.*, sc.direction, sc.scenario, target_progress.targets
          FROM trades t
          JOIN trade_plans tp ON tp.id = t.trade_plan_id
          JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+         LEFT JOIN LATERAL (
+           SELECT jsonb_agg(jsonb_build_object(
+             'targetNumber', ptt.target_number,
+             'price', ptt.price,
+             'riskMultiple', ptt.risk_multiple,
+             'status', ptt.status,
+             'hitAt', ptt.hit_at,
+             'hitPrice', ptt.hit_price
+           ) ORDER BY ptt.target_number) AS targets
+           FROM paper_trade_targets ptt
+           WHERE ptt.trade_id = t.id
+         ) target_progress ON true
          WHERE sc.tenant_id = $1 AND sc.module_code = $2
          ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, t.closed_at) DESC
         LIMIT 1`,
@@ -202,10 +211,22 @@ export async function mobileRoutes(app: FastifyInstance) {
           [session.tenantId, module.code]
         ),
         query(
-          `SELECT t.*, sc.direction, sc.scenario, sc.module_code
+          `SELECT t.*, sc.direction, sc.scenario, sc.module_code, target_progress.targets
            FROM trades t
            JOIN trade_plans tp ON tp.id = t.trade_plan_id
            JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+           LEFT JOIN LATERAL (
+             SELECT jsonb_agg(jsonb_build_object(
+               'targetNumber', ptt.target_number,
+               'price', ptt.price,
+               'riskMultiple', ptt.risk_multiple,
+               'status', ptt.status,
+               'hitAt', ptt.hit_at,
+               'hitPrice', ptt.hit_price
+             ) ORDER BY ptt.target_number) AS targets
+             FROM paper_trade_targets ptt
+             WHERE ptt.trade_id = t.id
+           ) target_progress ON true
            WHERE sc.tenant_id = $1 AND sc.module_code = $2
            ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, t.closed_at) DESC
            LIMIT 1`,
@@ -499,14 +520,22 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
   }
   const entry = Number(trade?.actual_entry ?? setup?.entry_price);
   const stop = Number(trade?.actual_stop ?? setup?.stop_price);
+  const targetValue = trade?.actual_target ?? setup?.target_price ?? setup?.take_profit;
+  const target = targetValue == null ? Number.NaN : Number(targetValue);
   const direction = String(trade?.direction ?? setup?.direction ?? "").toUpperCase();
-  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
   if (Number.isFinite(entry)) levels.push({ label: "Entry", price: entry, tone: "entry" });
   if (Number.isFinite(stop)) levels.push({ label: "SL", price: stop, tone: "bad" });
-  if (Number.isFinite(entry)) {
-    DAY_TRADING_TARGET_PIPS.forEach((pips, index) => {
-      levels.push({ label: `TP${index + 1} ${pips}p`, price: Number((entry + multiplier * pips * XAUUSD_PIP_SIZE).toFixed(2)), tone: "good" });
-    });
+  const persistedTargets = Array.isArray(trade?.targets) ? trade.targets : [];
+  const targets = persistedTargets.length > 0
+    ? persistedTargets.map((item: any) => ({
+        riskMultiple: Number(item.riskMultiple),
+        price: Number(item.price),
+        status: String(item.status ?? "PENDING")
+      }))
+    : mobileRiskTargets(entry, stop, target, direction);
+  for (const [index, targetLevel] of targets.entries()) {
+    const progress = targetLevel.status === "HIT" ? " HIT" : targetLevel.status === "CANCELLED" ? " CLOSED" : "";
+    levels.push({ label: `TP${index + 1} ${targetLevel.riskMultiple}R${progress}`, price: targetLevel.price, tone: "good" });
   }
   const flags = setup?.scenario_flags ?? {};
   if (moduleCode === "high_probability_strategy_2") {
@@ -527,6 +556,20 @@ function mobileChartLevels(moduleCode: string, setup?: any, trade?: any, opening
     levels.push({ label: `${zoneName} High`, price: Number(zone.high), tone: "neutral" });
   }
   return dedupeMobileLevels(levels.filter((level) => Number.isFinite(level.price)));
+}
+
+function mobileRiskTargets(entry: number, stop: number, target: number, direction: string) {
+  if (!Number.isFinite(entry) || !Number.isFinite(stop) || !["LONG", "SHORT", "BUY", "SELL"].includes(direction)) return [];
+  const riskDistance = Math.abs(entry - stop);
+  if (riskDistance <= 0) return [];
+  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
+  const targetIsDirectional = Number.isFinite(target) && (target - entry) * multiplier > 0;
+  const finalTarget = targetIsDirectional ? target : entry + multiplier * riskDistance * 2;
+  const finalR = Math.abs(finalTarget - entry) / riskDistance;
+  return [Math.min(1, finalR), Math.min(1.5, finalR), finalR].map((riskMultiple) => ({
+    riskMultiple: Number(riskMultiple.toFixed(2)),
+    price: Number((entry + multiplier * riskDistance * riskMultiple).toFixed(2))
+  }));
 }
 
 function mobileOrbShortLabel(preset?: string | null) {

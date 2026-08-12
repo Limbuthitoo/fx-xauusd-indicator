@@ -26,6 +26,8 @@ import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
+import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeTargets } from "../trades/paper-targets.js";
+import { buildPaperTargetPlan } from "../trades/paper-target-plan.js";
 
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
@@ -4560,11 +4562,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
       commission, spread, slippage, opened_at, outcome
     ) VALUES ($1,$2,$3,$4,$5,0,$6,0,$7,'ACTIVE')
     ON CONFLICT (trade_plan_id) DO UPDATE SET
-      actual_entry = EXCLUDED.actual_entry,
-      actual_stop = EXCLUDED.actual_stop,
-      actual_target = EXCLUDED.actual_target,
-      actual_lot = EXCLUDED.actual_lot,
-      spread = EXCLUDED.spread
+      trade_plan_id = EXCLUDED.trade_plan_id
     RETURNING *`,
     [
       plan.id,
@@ -4577,6 +4575,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     ]
   );
   const trade = tradeResult.rows[0] as any;
+  const targets = await ensurePaperTradeTargets(trade.id);
   const position = await createModule2PositionFromPaperTrade(session, setup, plan, trade, plannedRiskAmount);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1", [setup.id]);
   await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_ENTRY',$2) ON CONFLICT (trade_id, event_type) WHERE event_type = 'PAPER_ENTRY' DO NOTHING", [
@@ -4588,6 +4587,7 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
       scenario: setup.scenario,
       direction: setup.direction,
       rewardToRisk,
+      targets,
       finalReason: setup.final_reason
     }
   ]);
@@ -4714,10 +4714,65 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
   );
   const closed = [];
   for (const trade of openTrades.rows as any[]) {
-    const exit = resolvePaperExit(trade, latest);
+    const targetProgress = await evaluatePaperTargetMilestones(trade, latestRow);
+    for (const target of targetProgress.newlyHit) {
+      if (target.target_number < 3) {
+        await query(
+          `INSERT INTO journal_entries (
+            tenant_id, setup_candidate_id, trade_id, session_id, decision, emotion_after,
+            rule_violations, lesson, process_grade, outcome
+          ) VALUES ($1,$2,$3,$4,$5,'AUTO','NONE',$6,'A','PAPER_ACTIVE')`,
+          [
+            trade.tenant_id,
+            trade.setup_candidate_id,
+            trade.id,
+            trade.session_id,
+            `PAPER_TP${target.target_number}_HIT`,
+            `TP${target.target_number} reached at ${target.price}. The paper position remains open for the approved strategy target.`
+          ]
+        );
+      }
+      const targetPayload = paperTargetPayload(targetProgress.targets);
+      await notifyTenantOnce(
+        trade.tenant_id,
+        `paper-tp${target.target_number}-${trade.id}`,
+        `PAPER_TP${target.target_number}_HIT`,
+        `Paper trade TP${target.target_number} reached`,
+        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD reached TP${target.target_number} at ${target.price} (${target.risk_multiple}R). ${target.target_number === 3 ? "The final strategy target is complete." : "TP3 remains the closing target."}`,
+        target.target_number === 3 ? "HIGH" : "NORMAL",
+        {
+          moduleCode: trade.module_code,
+          tradeId: trade.id,
+          setupId: trade.setup_candidate_id,
+          symbol: trade.symbol,
+          direction: trade.direction,
+          action: trade.direction === "SHORT" ? "SELL" : "BUY",
+          entry: trade.actual_entry,
+          stopLoss: trade.actual_stop,
+          takeProfit: trade.actual_target,
+          targetNumber: target.target_number,
+          targetPrice: target.price,
+          riskMultiple: target.risk_multiple,
+          targets: targetPayload
+        },
+        "takeProfitStopLoss"
+      );
+      broadcastLiveEvent({
+        type: "paper.target.hit",
+        tenantId: trade.tenant_id,
+        moduleCode: trade.module_code,
+        symbol: trade.symbol,
+        payload: { tradeId: trade.id, target: targetPayload.find((item) => item.targetNumber === target.target_number), targets: targetPayload }
+      });
+    }
+    const exit = targetProgress.stopHit
+      ? { reason: "STOP", price: Number(trade.actual_stop), ambiguous: targetProgress.ambiguous }
+      : targetProgress.finalTargetHit
+        ? { reason: "TARGET", price: Number(trade.actual_target), ambiguous: false }
+        : null;
     if (!exit) continue;
     const entry = Number(trade.actual_entry);
-    const stop = Number(trade.actual_stop);
+    const stop = Number(trade.structural_stop ?? trade.actual_stop);
     const stopDistance = Math.abs(entry - stop);
     const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
     const resultR = stopDistance > 0 ? ((exit.price - entry) * directionMultiplier) / stopDistance : 0;
@@ -4732,6 +4787,8 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
        RETURNING *`,
       [trade.id, exit.price, resultR, outcome, latest.timestampUtc]
     );
+    await cancelPendingPaperTargets(trade.id, exit.reason);
+    const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
     await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, latest.timestampUtc);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
     await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_EXIT',$2)", [
@@ -4757,7 +4814,24 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
       `paper-exit-${trade.id}`,
       "PAPER_TRADE_CLOSED",
       `Paper trade closed: ${outcome}`,
-      `${exit.reason} at ${exit.price}. Result ${resultR.toFixed(2)}R.`
+      `${exit.reason} at ${exit.price}. Result ${resultR.toFixed(2)}R.`,
+      "HIGH",
+      {
+        moduleCode: trade.module_code,
+        tradeId: trade.id,
+        setupId: trade.setup_candidate_id,
+        symbol: trade.symbol,
+        direction: trade.direction,
+        action: trade.direction === "SHORT" ? "SELL" : "BUY",
+        entry: trade.actual_entry,
+        stopLoss: trade.actual_stop,
+        takeProfit: trade.actual_target,
+        exitPrice: exit.price,
+        resultR,
+        closeReason: exit.reason,
+        targets: closedTargets
+      },
+      "takeProfitStopLoss"
     );
     closed.push(updated.rows[0]);
   }
@@ -6340,9 +6414,16 @@ function validDirectionalTradeGeometry(direction: string, entry: number, stop: n
 function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToRisk: number) {
   const direction = setup.direction === "SHORT" ? "SHORT" : "LONG";
   const action = direction === "LONG" ? "BUY" : "SELL";
-  const entry = formatPrice(trade?.actual_entry ?? setup.entry_price);
-  const stopLoss = formatPrice(trade?.actual_stop ?? setup.stop_price);
-  const takeProfit = formatPrice(trade?.actual_target ?? setup.target_price);
+  const entryValue = Number(trade?.actual_entry ?? setup.entry_price);
+  const stopValue = Number(trade?.actual_stop ?? setup.stop_price);
+  const targetValue = Number(trade?.actual_target ?? setup.target_price);
+  const targets = buildPaperTargetPlan(entryValue, stopValue, targetValue, direction).map((target) => ({
+    ...target,
+    status: "PENDING"
+  }));
+  const entry = formatPrice(entryValue);
+  const stopLoss = formatPrice(stopValue);
+  const takeProfit = formatPrice(targetValue);
   const moduleName = moduleDisplayName(moduleCode);
   const scenario = String(setup.scenario ?? "VALID_SETUP");
   const setupTier = String(setup.scenario_flags?.setupTier ?? "FULL");
@@ -6361,7 +6442,9 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
     `${scenario}`,
     `Entry ${entry}`,
     `SL ${stopLoss}`,
-    `TP ${takeProfit}`,
+    targets.length === 3
+      ? `TP1 ${formatPrice(targets[0].price)} | TP2 ${formatPrice(targets[1].price)} | TP3 ${formatPrice(targets[2].price)}`
+      : `TP ${takeProfit}`,
     `RR ${rr}`,
     grade ? `Grade ${grade}` : null,
     confidence != null ? `Confidence ${confidence}%` : null
@@ -6382,6 +6465,11 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
       entry,
       stopLoss,
       takeProfit,
+      tp1: targets[0]?.price ?? null,
+      tp2: targets[1]?.price ?? null,
+      tp3: targets[2]?.price ?? targetValue,
+      targets,
+      targetMethod: "RISK_MULTIPLE_MILESTONES",
       rewardToRisk: rr,
       grade,
       confidence,

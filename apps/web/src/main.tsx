@@ -6387,6 +6387,7 @@ function NotificationDetails({ item }: { item: any }) {
   const entry = data.entry ?? data.entryPrice ?? data.entry_price ?? extractNotificationField(item.body, "entry");
   const stop = data.stopLoss ?? data.stop_loss ?? data.sl ?? extractNotificationField(item.body, "sl") ?? extractNotificationField(item.body, "stop");
   const target = data.takeProfit ?? data.take_profit ?? data.tp ?? extractNotificationField(item.body, "tp") ?? extractNotificationField(item.body, "target");
+  const targets = Array.isArray(data.targets) ? data.targets : [];
   const rewardToRisk = data.rewardToRisk ?? data.reward_to_risk ?? data.rr ?? extractNotificationField(item.body, "rr");
   const setupTier = data.setupTier ?? data.setup_tier ?? extractNotificationField(item.body, "setup");
   const scenario = data.scenario ?? extractNotificationScenario(item.body);
@@ -6421,6 +6422,17 @@ function NotificationDetails({ item }: { item: any }) {
             <Metric label="Grade" value={grade ?? "--"} />
             <Metric label="Evidence score" value={confidence == null ? "--" : `${confidence}/100`} />
           </div>
+          {targets.length > 0 ? (
+            <div className="paper-target-progress">
+              {targets.map((targetItem: any) => (
+                <div key={targetItem.targetNumber ?? targetItem.target_number} className={`paper-target-step ${String(targetItem.status ?? "PENDING").toLowerCase()}`}>
+                  <span>TP{targetItem.targetNumber ?? targetItem.target_number}</span>
+                  <strong>{formatNotificationValue(targetItem.price, "price")}</strong>
+                  <small>{targetItem.riskMultiple ?? targetItem.risk_multiple}R · {targetItem.status ?? "PENDING"}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {data.finalReason || data.final_reason ? <p className="reason">{String(data.finalReason ?? data.final_reason)}</p> : null}
         </div>
       ) : null}
@@ -6507,9 +6519,10 @@ function notificationCategory(item: any, data: any) {
   const explicit = String(data.category ?? "").trim().toUpperCase();
   if (explicit) return explicit;
   const haystack = `${item?.event_type ?? ""} ${item?.title ?? ""} ${item?.body ?? ""}`.toUpperCase();
+  if (/TP[12]_HIT/.test(haystack)) return "TRADE_LIFECYCLE";
   if (data.entry || data.entryPrice || data.entry_price || data.stopLoss || data.stop_loss || data.takeProfit || data.take_profit) return "TRADE_SETUP";
   if (/ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
-  if (/TP_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/TP[123]?_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
   if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
   if (/SESSION|WINDOW|PRESESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
   if (/FEED|TWELVE|CANDLE|CACHE|MARKET_DATA/.test(haystack)) return "FEED";
@@ -7902,9 +7915,9 @@ function TradeSignalsWorkspace({
             <SignalPrice label="TP · Module target" value={formatPriceValue(longTargetPrice(selected))} tone="target" />
           ) : (
             <>
-              <SignalPrice label={targetLabel(selected, 0, "TP1 · 50 pips")} value={formatPriceValue(selected.tp1)} tone="target" />
-              <SignalPrice label={targetLabel(selected, 1, "TP2 · 100 pips")} value={formatPriceValue(selected.tp2)} tone="target" />
-              <SignalPrice label={targetLabel(selected, 2, "TP3 · 150 pips")} value={formatPriceValue(selected.tp3)} tone="target" />
+              <SignalPrice label={targetLabel(selected, 0, "TP1 · 1R")} value={formatPriceValue(selected.tp1)} tone="target" />
+              <SignalPrice label={targetLabel(selected, 1, "TP2 · 1.5R")} value={formatPriceValue(selected.tp2)} tone="target" />
+              <SignalPrice label={targetLabel(selected, 2, "TP3 · strategy target")} value={formatPriceValue(selected.tp3)} tone="target" />
             </>
           )}
           <SignalPrice label="Setup score" value={chanceLabel(selected)} tone={chanceTone(selected)} />
@@ -8002,7 +8015,7 @@ function TradeSignalsWorkspace({
 
       <div className="trade-horizon-note">
         <strong>{horizonFilter === "LONG" ? "Long setup" : "Short setup"}</strong>
-        <span>{horizonFilter === "LONG" ? "Shows the strongest profile-approved module trade with one TP." : "Intraday setup uses TP1 50 pips, TP2 100 pips, and TP3 150 pips."}</span>
+        <span>{horizonFilter === "LONG" ? "Shows the strongest profile-approved module trade with one TP." : "Intraday targets scale from structural risk: TP1 at 1R, TP2 at 1.5R, and TP3 at the approved strategy target."}</span>
       </div>
 
       <div className="trade-signal-grid">
@@ -8064,9 +8077,9 @@ function TradeSignalsWorkspace({
                 <SignalPrice label="TP" value={formatPriceValue(longTargetPrice(signal))} tone="target" />
               ) : (
                 <>
-                  <SignalPrice label={targetLabel(signal, 0, "TP1 50p")} value={formatPriceValue(signal.tp1)} tone="target" />
-                  <SignalPrice label={targetLabel(signal, 1, "TP2 100p")} value={formatPriceValue(signal.tp2)} tone="target" />
-                  <SignalPrice label={targetLabel(signal, 2, "TP3 150p")} value={formatPriceValue(signal.tp3)} tone="target" />
+                  <SignalPrice label={targetLabel(signal, 0, "TP1 1R")} value={formatPriceValue(signal.tp1)} tone="target" />
+                  <SignalPrice label={targetLabel(signal, 1, "TP2 1.5R")} value={formatPriceValue(signal.tp2)} tone="target" />
+                  <SignalPrice label={targetLabel(signal, 2, "TP3 strategy target")} value={formatPriceValue(signal.tp3)} tone="target" />
                 </>
               )}
             </div>
@@ -8195,8 +8208,8 @@ function PredictionsWorkspace({
           <SignalPrice label="Predicted entry" value={formatSignalRange(selected.entryRange)} />
           <SignalPrice label="Stop / invalidation" value={formatPriceValue(selected.stopLoss)} tone="stop" />
           <SignalPrice label="Main TP" value={formatPriceValue(selected.target)} tone="target" />
-          <SignalPrice label="TP1 50p" value={formatPriceValue(selected.tp1)} tone="target" />
-          <SignalPrice label="TP2 100p" value={formatPriceValue(selected.tp2)} tone="target" />
+          <SignalPrice label={targetLabel(selected, 0, "TP1 · 1R")} value={formatPriceValue(selected.tp1)} tone="target" />
+          <SignalPrice label={targetLabel(selected, 1, "TP2 · 1.5R")} value={formatPriceValue(selected.tp2)} tone="target" />
           <SignalPrice label="Setup score" value={predictionScoreLabel(selected)} tone={predictionTone(selected)} />
         </div>
 
@@ -8364,6 +8377,8 @@ function formatPredictionEvidence(item: any) {
 
 function targetLabel(signal: any, index: number, fallback: string) {
   const target = signal?.targets?.[index];
+  const progress = target?.status === "HIT" ? " · HIT" : target?.status === "CANCELLED" ? " · CLOSED" : "";
+  if (target?.riskMultiple != null) return `${target.label ?? `TP${index + 1}`} · ${target.riskMultiple}R${progress}`;
   return target?.pips == null ? fallback : `${target.label ?? `TP${index + 1}`} · ${target.pips} pips`;
 }
 
@@ -8485,9 +8500,18 @@ function PaperTradingWorkspace({
             <Metric label="Entry" value={formatPriceValue(selected.entry)} />
             <Metric label={selected.status === "ACTIVE" ? "Current" : "Exit"} value={formatPriceValue(selected.status === "ACTIVE" ? selected.currentPrice : selected.exit)} />
             <Metric label="Stop loss" value={formatPriceValue(selected.stopLoss)} />
-            <Metric label="Take profit" value={formatPriceValue(selected.takeProfit)} />
+            <Metric label="Final target" value={formatPriceValue(selected.takeProfit)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label={selected.status === "ACTIVE" ? "Unrealized" : "Result"} value={`${formatR(selected.status === "ACTIVE" ? selected.unrealizedR : selected.resultR)}R`} />
+          </div>
+          <div className="paper-target-progress" aria-label="Paper trade target progress">
+            {(selected.targets ?? []).map((target: any) => (
+              <div key={target.targetNumber} className={`paper-target-step ${String(target.status).toLowerCase()}`}>
+                <span>TP{target.targetNumber} · {Number(target.riskMultiple).toFixed(target.targetNumber === 2 ? 1 : 2)}R</span>
+                <strong>{formatPriceValue(target.price)}</strong>
+                <small>{target.status === "HIT" ? `Hit ${formatNepalTime(target.hitAt)}` : target.status}</small>
+              </div>
+            ))}
           </div>
           <div className="paper-focus-footer">
             <div>
@@ -8551,7 +8575,7 @@ function PaperTradingWorkspace({
 }
 
 function paperTradeTone(status: string, condition: string) {
-  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET") return "good";
+  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || /^TP[12] HIT$/.test(condition)) return "good";
   if (status === "LOSS" || condition === "NEAR STOP") return "bad";
   if (condition === "IN DRAWDOWN") return "warn";
   return "";

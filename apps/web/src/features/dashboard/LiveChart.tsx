@@ -574,23 +574,24 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     if (!candleSeriesRef.current) return;
     priceLinesRef.current.forEach((line) => candleSeriesRef.current?.removePriceLine(line as never));
     priceLinesRef.current = [];
-    const defaultLines = [
-      { title: "Entry", price: numberValue(activeEvidenceSetup?.entry_price), color: "#16a46c" },
-      { title: "Stop", price: numberValue(activeEvidenceSetup?.stop_price), color: "#e05252" },
-      { title: "Target", price: numberValue(activeEvidenceSetup?.target_price), color: "#7c9cff" }
-    ];
+    const tradePlanLines = chartTradePlanLines(activeEvidenceSetup);
     const lines = moduleCode === "orb_max_options"
-      ? defaultLines
+      ? tradePlanLines
       : priceLines?.length
-        ? priceLines
+        ? [
+            ...priceLines
+              .filter((line) => !isTradePlanLine(line.title)),
+            ...tradePlanLines
+          ]
             .filter((line) => shouldShowPriceLine(moduleCode, line, indicatorVisibility))
             .map((line) => ({ ...line, price: numberValue(line.price) }))
-        : defaultLines;
+        : tradePlanLines;
     for (const line of lines) {
-      if (line.price == null) continue;
+      const price = numberValue(line.price);
+      if (price == null) continue;
       priceLinesRef.current.push(
         candleSeriesRef.current.createPriceLine({
-          price: line.price,
+          price,
           color: line.color,
           lineWidth: 2,
           lineStyle: 2,
@@ -791,6 +792,38 @@ function numberValue(value: unknown) {
   if (value == null || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isTradePlanLine(title: string) {
+  const normalized = String(title ?? "").trim().toUpperCase();
+  return normalized === "ENTRY"
+    || normalized === "STOP"
+    || normalized === "SL"
+    || normalized === "TARGET"
+    || /^TP[1-3](\s|$)/.test(normalized);
+}
+
+function chartTradePlanLines(setup: TwelveDataChartProps["setup"]): ChartPriceLine[] {
+  const entry = numberValue(setup?.entry_price);
+  const stop = numberValue(setup?.stop_price);
+  const finalTarget = numberValue(setup?.target_price);
+  const direction = String(setup?.direction ?? "").toUpperCase();
+  if (entry == null || stop == null || finalTarget == null || !["LONG", "SHORT", "BUY", "SELL"].includes(direction)) return [];
+  const risk = Math.abs(entry - stop);
+  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
+  const finalDistance = (finalTarget - entry) * multiplier;
+  if (risk <= 0 || finalDistance <= 0) return [];
+  const finalR = finalDistance / risk;
+  const targets = [Math.min(1, finalR), Math.min(1.5, finalR), finalR];
+  return [
+    { title: "Entry", price: entry, color: "#16a46c" },
+    { title: "Structural SL", price: stop, color: "#e05252" },
+    ...targets.map((riskMultiple, index) => ({
+      title: `TP${index + 1} ${riskMultiple.toFixed(2)}R`,
+      price: entry + multiplier * risk * riskMultiple,
+      color: index === 2 ? "#7c9cff" : "#35c98b"
+    }))
+  ];
 }
 
 function module1OrbRangeState(

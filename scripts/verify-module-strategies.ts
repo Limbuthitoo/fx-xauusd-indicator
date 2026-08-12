@@ -12,6 +12,7 @@ import {
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { buildPaperTargetPlan, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 
 const module1OpeningCandles: Candle[] = [
   candle("2026-08-10T13:30:00Z", 100.0, 100.8, 99.4, 100.5),
@@ -298,11 +299,52 @@ assert.equal(isScheduledTwelveDataTrigger("TENANT_BACKFILL"), false, "Tenant rea
 const summerFeedWindow = sharedNewYorkFeedWindow("2026-08-10");
 assert.equal(summerFeedWindow.startAt, "2026-08-10T13:30:00.000Z", "Shared live polling starts at 09:30 New York");
 assert.equal(summerFeedWindow.endAt, "2026-08-10T20:00:00.000Z", "Shared live polling ends at 16:00 New York");
+const longTargets = buildPaperTargetPlan(100, 95, 110, "LONG");
+assert.deepEqual(longTargets.map((target) => target.price), [105, 107.5, 110], "LONG paper milestones must be 1R, 1.5R, and the strategy target");
+const shortTargets = buildPaperTargetPlan(100, 105, 90, "SHORT");
+assert.deepEqual(shortTargets.map((target) => target.price), [95, 92.5, 90], "SHORT paper milestones must be 1R, 1.5R, and the strategy target");
+assert.deepEqual(buildPaperTargetPlan(100, 101, 110, "LONG"), [], "Invalid LONG stop geometry must not produce target milestones");
+const pendingLongTargets: PaperTarget[] = longTargets.map((target) => ({
+  target_number: target.targetNumber,
+  price: target.price,
+  risk_multiple: target.riskMultiple,
+  status: "PENDING"
+}));
+const progressTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 108, low: 99 });
+assert.deepEqual(progressTouch.pendingHit.map((target) => target.target_number), [1, 2], "A completed candle may advance multiple reached milestones");
+pendingLongTargets[0].status = "HIT";
+pendingLongTargets[1].status = "HIT";
+const longFinalTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 111, low: 99 });
+assert.deepEqual(longFinalTouch.pendingHit.map((target) => target.target_number), [3], "LONG sequence must leave only TP3 pending after TP1 and TP2");
+const longStopAfterProgress = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 104, low: 94 });
+assert.equal(longStopAfterProgress.stopHit, true, "A LONG stop after TP1/TP2 progress must still close at structural SL without partial realized R");
+const pendingShortTargets: PaperTarget[] = shortTargets.map((target) => ({
+  target_number: target.targetNumber,
+  price: target.price,
+  risk_multiple: target.riskMultiple,
+  status: "PENDING"
+}));
+const shortProgressTouch = paperTargetTouches({ direction: "SHORT", actual_stop: 105 }, pendingShortTargets, { high: 101, low: 92 });
+assert.deepEqual(shortProgressTouch.pendingHit.map((target) => target.target_number), [1, 2], "SHORT sequence must recognize TP1 and TP2 in descending price order");
+pendingShortTargets[0].status = "HIT";
+pendingShortTargets[1].status = "HIT";
+const shortFinalTouch = paperTargetTouches({ direction: "SHORT", actual_stop: 105 }, pendingShortTargets, { high: 101, low: 89 });
+assert.deepEqual(shortFinalTouch.pendingHit.map((target) => target.target_number), [3], "SHORT sequence must leave only TP3 pending after TP1 and TP2");
+const ambiguousTargets: PaperTarget[] = longTargets.map((target) => ({
+  target_number: target.targetNumber,
+  price: target.price,
+  risk_multiple: target.riskMultiple,
+  status: "PENDING"
+}));
+const ambiguousTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, ambiguousTargets, { high: 106, low: 94 });
+assert.equal(ambiguousTouch.stopHit, true);
+assert.equal(ambiguousTouch.ambiguous, true, "A candle touching stop and target must use the conservative stop-first policy");
 console.log(JSON.stringify({
   status: "PASS",
   module1: { scenario: module1.scenario, direction: module1.direction, score: module1.favorabilityScore },
   module2: { scenario: module2.scenario, direction: module2.direction, score: module2.favorabilityScore },
-  catchup: "startup=2016, 5-minute gap=8, 10-hour gap=122"
+  catchup: "startup=2016, 5-minute gap=8, 10-hour gap=122",
+  paperTargets: "PASS"
 }, null, 2));
 
 function candle(timestampUtc: string, open: number, high: number, low: number, close: number): Candle {

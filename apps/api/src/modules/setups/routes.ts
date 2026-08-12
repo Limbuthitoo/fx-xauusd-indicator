@@ -17,6 +17,7 @@ import { getTenantOrbStrategyConfiguration } from "../admin/settings.js";
 import { runMainBrainPython } from "../admin/learning.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
+import { cancelPendingPaperTargets, ensurePaperTradeTargets } from "../trades/paper-targets.js";
 
 type ReplayCase = "BUY" | "SELL" | "RETEST" | "FAKEOUT" | "SWEEP_REVERSAL" | "OVEREXTENDED" | "NO_TRADE";
 type Module2ReplayCase =
@@ -49,8 +50,8 @@ const XAUUSD_PAPER_SPEC = {
   commissionPerLot: 0
 };
 
-const DAY_TRADING_TARGET_PIPS = [50, 100, 150] as const;
 const XAUUSD_PIP_SIZE = XAUUSD_PAPER_SPEC.tickSize;
+const SIGNAL_TARGET_R_MULTIPLES = [1, 1.5] as const;
 const DAY_TRADING_HOLD_WINDOW = {
   label: "Intraday only",
   preferredHours: "4-5",
@@ -287,6 +288,7 @@ export async function setupRoutes(app: FastifyInstance) {
          t.result_r,
          t.opened_at,
          t.closed_at,
+         target_progress.targets AS paper_targets,
          latest.close AS current_price,
          latest.timestamp_utc AS current_price_at
        FROM setup_candidates sc
@@ -296,6 +298,18 @@ export async function setupRoutes(app: FastifyInstance) {
          AND tm.status = 'ENABLED'
        LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
        LEFT JOIN trades t ON t.trade_plan_id = tp.id
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(jsonb_build_object(
+           'targetNumber', ptt.target_number,
+           'price', ptt.price,
+           'riskMultiple', ptt.risk_multiple,
+           'status', ptt.status,
+           'hitAt', ptt.hit_at,
+           'hitPrice', ptt.hit_price
+         ) ORDER BY ptt.target_number) AS targets
+         FROM paper_trade_targets ptt
+         WHERE ptt.trade_id = t.id
+       ) target_progress ON true
        LEFT JOIN LATERAL (
          SELECT c.close, c.timestamp_utc
          FROM candles c
@@ -1552,14 +1566,25 @@ function signalSetupView(row: any, evaluations: any[]) {
   const paperTarget = Number(row.actual_target ?? row.target_price);
   const targetDistance = Math.abs(paperTarget - entry);
   const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
-  const multiplier = direction === "SHORT" ? -1 : 1;
   const flags = row.scenario_flags ?? {};
   const zone = flags.entryZone ?? flags.entry_zone ?? null;
   const zoneLow = Number(zone?.low);
   const zoneHigh = Number(zone?.high);
   const hasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
   const riskDistance = Math.abs(entry - stopLoss);
-  const [tp1, tp2, tp3] = DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(entry + multiplier * pips * XAUUSD_PIP_SIZE));
+  const targetPlan = riskBasedTargetPlan(entry, stopLoss, paperTarget, direction);
+  const lifecycleTargets = Array.isArray(row.paper_targets) && row.paper_targets.length > 0
+    ? row.paper_targets.map((target: any) => ({
+        targetNumber: Number(target.targetNumber),
+        label: `TP${Number(target.targetNumber)}`,
+        price: Number(target.price),
+        riskMultiple: Number(target.riskMultiple),
+        status: String(target.status ?? "PENDING"),
+        hitAt: target.hitAt ?? null,
+        hitPrice: target.hitPrice == null ? null : Number(target.hitPrice)
+      }))
+    : targetPlan.targets.map((target: any) => ({ ...target, status: "PENDING", hitAt: null, hitPrice: null }));
+  const [tp1, tp2, tp3] = targetPlan.prices;
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
   const freshness = liveSetupFreshness(row.detected_at, row.current_price_at, currentPrice, entry, stopLoss, false);
   const checklistPassed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
@@ -1625,11 +1650,12 @@ function signalSetupView(row: any, evaluations: any[]) {
     tp1,
     tp2,
     tp3,
-    targets: [
-      { label: "TP1", pips: DAY_TRADING_TARGET_PIPS[0], price: tp1 },
-      { label: "TP2", pips: DAY_TRADING_TARGET_PIPS[1], price: tp2 },
-      { label: "TP3", pips: DAY_TRADING_TARGET_PIPS[2], price: tp3 }
-    ],
+    targets: lifecycleTargets,
+    targetProgress: {
+      hit: lifecycleTargets.filter((target: any) => target.status === "HIT").length,
+      pending: lifecycleTargets.filter((target: any) => target.status === "PENDING").length,
+      total: lifecycleTargets.length
+    },
     longTradePlan: {
       label: "Profile-approved trade",
       targetLabel: "TP",
@@ -1640,6 +1666,7 @@ function signalSetupView(row: any, evaluations: any[]) {
         : "Long setup waits until one valid module profile is approved."
     },
     pipSize: XAUUSD_PIP_SIZE,
+    targetMethod: "STRUCTURAL_RISK_MULTIPLE",
     tradeHorizon: DAY_TRADING_HOLD_WINDOW,
     paperTarget,
     riskDistance,
@@ -1777,9 +1804,8 @@ function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
   const entry = numericOrNull(brain?.entry ?? row.actual_entry ?? row.entry_price) ?? entryZone.midpoint;
   const stopLoss = numericOrNull(brain?.stop ?? row.actual_stop ?? row.stop_price) ?? predictedStop(row, flags, direction, entry);
   const target = numericOrNull(brain?.target ?? row.actual_target ?? row.target_price) ?? predictedTarget(entry, stopLoss, direction);
-  const [tp1, tp2, tp3] = (direction === "SHORT" || direction === "LONG") && entry != null
-    ? DAY_TRADING_TARGET_PIPS.map((pips) => roundSignalPrice(Number(entry ?? 0) + (direction === "SHORT" ? -1 : 1) * pips * XAUUSD_PIP_SIZE))
-    : [null, null, null];
+  const targetPlan = riskBasedTargetPlan(entry, stopLoss, target, direction);
+  const [tp1, tp2, tp3] = targetPlan.prices;
   const passed = evaluations.filter((evaluation) => evaluation.status === "PASS").length;
   const blocking = evaluations.filter((evaluation) => evaluation.status !== "PASS" && evaluation.blocking).slice(0, 5);
   const total = evaluations.length;
@@ -1814,6 +1840,8 @@ function predictionSetupView(row: any, evaluations: any[], brain: any = null) {
     tp1,
     tp2,
     tp3,
+    targets: targetPlan.targets,
+    targetMethod: "STRUCTURAL_RISK_MULTIPLE",
     rewardToRisk: row.reward_to_risk == null ? rr : Number(row.reward_to_risk),
     probability,
     confidence,
@@ -2034,6 +2062,44 @@ function roundSignalPrice(value: number) {
   return Number(value.toFixed(2));
 }
 
+function riskBasedTargetPlan(entryValue: unknown, stopValue: unknown, targetValue: unknown, directionValue: unknown) {
+  const entry = numericOrNull(entryValue);
+  const stop = numericOrNull(stopValue);
+  const suppliedTarget = numericOrNull(targetValue);
+  const direction = String(directionValue ?? "").toUpperCase();
+  const hasDirection = ["LONG", "SHORT", "BUY", "SELL"].includes(direction);
+  const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;
+  if (entry == null || stop == null || !hasDirection) {
+    return { prices: [null, null, null] as const, targets: [] as any[] };
+  }
+
+  const riskDistance = Math.abs(entry - stop);
+  if (riskDistance <= 0) {
+    return { prices: [null, null, null] as const, targets: [] as any[] };
+  }
+
+  const targetIsDirectional = suppliedTarget != null && (suppliedTarget - entry) * multiplier > 0;
+  const finalTarget = targetIsDirectional ? suppliedTarget : entry + multiplier * riskDistance * 2;
+  const finalRiskMultiple = Math.abs(finalTarget - entry) / riskDistance;
+  const riskMultiples = [
+    Math.min(SIGNAL_TARGET_R_MULTIPLES[0], finalRiskMultiple),
+    Math.min(SIGNAL_TARGET_R_MULTIPLES[1], finalRiskMultiple),
+    finalRiskMultiple
+  ];
+  const prices = riskMultiples.map((riskMultiple) => roundSignalPrice(entry + multiplier * riskDistance * riskMultiple)) as [number, number, number];
+  return {
+    prices,
+    targets: prices.map((price, index) => ({
+      label: `TP${index + 1}`,
+      price,
+      riskMultiple: Number(riskMultiples[index].toFixed(2)),
+      distance: roundSignalPrice(Math.abs(price - entry)),
+      pips: Math.round(Math.abs(price - entry) / XAUUSD_PIP_SIZE),
+      source: index === 2 && targetIsDirectional ? "STRATEGY_TARGET" : "STRUCTURAL_RISK"
+    }))
+  };
+}
+
 function signalChanceScore(confidence: unknown, checklistPassed: number, checklistTotal: number, fullChecklistMatched: boolean, direction: "LONG" | "SHORT", profileApproved = false) {
   const numericConfidence = Number(confidence);
   if (Number.isFinite(numericConfidence)) return Math.min(99, Math.max(1, Math.round(numericConfidence + (profileApproved ? 2 : 0))));
@@ -2186,6 +2252,7 @@ async function closeModuleReplayPaperTrade(setup: any, tenantId: string | null, 
     "UPDATE trades SET actual_exit = $2, result_r = $3, outcome = $4, closed_at = now() WHERE id = $1 RETURNING *",
     [trade.id, resultR > 0 ? trade.actual_target : exit, resultR, outcome]
   );
+  await cancelPendingPaperTargets(trade.id, event);
   await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.plan_id]);
   await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,$2,$3)", [trade.id, `${eventPrefix}_${event}`, { setupId: setup.id, resultR, outcome, replay: true, moduleCode: setup.module_code }]);
   await query(
@@ -3183,7 +3250,10 @@ async function openModule2ReplayPaperTrade(setup: any, tenantId: string | null) 
     [setup.id, setup.entry_price, setup.stop_price, setup.target_price, rewardToRisk]
   );
   const existing = await query("SELECT * FROM trades WHERE trade_plan_id = $1 ORDER BY opened_at DESC LIMIT 1", [plan.rows[0].id]);
-  if (existing.rows[0]) return existing.rows[0];
+  if (existing.rows[0]) {
+    await ensurePaperTradeTargets(existing.rows[0].id);
+    return existing.rows[0];
+  }
   const trade = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
@@ -3191,6 +3261,7 @@ async function openModule2ReplayPaperTrade(setup: any, tenantId: string | null) 
     ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE') RETURNING *`,
     [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price]
   );
+  await ensurePaperTradeTargets(trade.rows[0].id);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1 AND tenant_id = $2", [setup.id, tenantId]);
   await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'MODULE2_QA_ENTRY_HIT',$2)", [trade.rows[0].id, { setupId: setup.id, replay: true }]);
   await query(
@@ -3228,7 +3299,10 @@ async function openModuleReplayPaperTrade(setup: any, tenantId: string | null, e
     [setup.id, setup.entry_price, setup.stop_price, setup.target_price, rewardToRisk]
   );
   const existing = await query("SELECT * FROM trades WHERE trade_plan_id = $1 ORDER BY opened_at DESC LIMIT 1", [plan.rows[0].id]);
-  if (existing.rows[0]) return existing.rows[0];
+  if (existing.rows[0]) {
+    await ensurePaperTradeTargets(existing.rows[0].id);
+    return existing.rows[0];
+  }
   const trade = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
@@ -3236,6 +3310,7 @@ async function openModuleReplayPaperTrade(setup: any, tenantId: string | null, e
     ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE') RETURNING *`,
     [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price]
   );
+  await ensurePaperTradeTargets(trade.rows[0].id);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1 AND tenant_id = $2", [setup.id, tenantId]);
   await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,$2,$3)", [trade.rows[0].id, `${eventPrefix}_ENTRY_HIT`, { setupId: setup.id, replay: true, moduleCode: setup.module_code }]);
   await query(

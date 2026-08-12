@@ -22,6 +22,33 @@ try {
   );
   checks.push({ name: "Active subscribers", status: tenants.length > 0 ? "PASS" : "FAIL", detail: `${tenants.length} active subscriber(s) have Module 1 or Module 2.` });
 
+  const paperTargetTables = await rows(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name = 'paper_trade_targets'`
+  );
+  checks.push({
+    name: "Paper target lifecycle schema",
+    status: paperTargetTables.length === 1 ? "PASS" : "FAIL",
+    detail: paperTargetTables.length === 1
+      ? "Paper trade TP1/TP2/TP3 milestone persistence is installed."
+      : "paper_trade_targets is missing. Run migration 082 before deployment verification."
+  });
+  const lifecycleColumns = await rows(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'trades'
+       AND column_name IN ('structural_stop', 'initial_risk_distance')`
+  );
+  checks.push({
+    name: "Paper structural-risk snapshot",
+    status: lifecycleColumns.length === 2 ? "PASS" : "FAIL",
+    detail: lifecycleColumns.length === 2
+      ? "Paper trades preserve immutable structural SL and initial R distance."
+      : "Migration 082 structural_stop/initial_risk_distance columns are missing."
+  });
+
   const missingRisk = await rows(
     `SELECT t.id, t.name
      FROM platform_tenants t

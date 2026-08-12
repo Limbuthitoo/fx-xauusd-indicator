@@ -4927,3 +4927,39 @@ aside {
     grid-column: 2;
   }
 }
+.paper-target-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.paper-target-step {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #29372e;
+  border-radius: 6px;
+  background: #0d1410;
+  display: grid;
+  gap: 4px;
+}
+
+.paper-target-step span,
+.paper-target-step small {
+  color: #8e9d93;
+}
+
+.paper-target-step.hit {
+  border-color: #16b979;
+  background: #0d241a;
+}
+
+.paper-target-step.cancelled {
+  opacity: 0.62;
+}
+
+@media (max-width: 720px) {
+  .paper-target-progress {
+    grid-template-columns: 1fr;
+  }
+}
