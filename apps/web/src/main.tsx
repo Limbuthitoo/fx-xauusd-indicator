@@ -202,8 +202,8 @@ function App() {
       ...bundle,
       orbAdmin: bundle.orbAdmin ?? previous.orbAdmin,
       moduleCommand: bundle.moduleCommand?.length ? bundle.moduleCommand : previous.moduleCommand ?? [],
-      weeklyReport: bundle.weeklyReport?.length ? bundle.weeklyReport : previous.weeklyReport ?? [],
-      monthlyReport: bundle.monthlyReport?.length ? bundle.monthlyReport : previous.monthlyReport ?? [],
+      weeklyReport: needsReports ? bundle.weeklyReport ?? [] : previous.weeklyReport ?? [],
+      monthlyReport: needsReports ? bundle.monthlyReport ?? [] : previous.monthlyReport ?? [],
       targetPerformance: bundle.targetPerformance ?? previous.targetPerformance,
       productionObservation: bundle.productionObservation ?? previous.productionObservation,
       latestBacktest: bundle.latestBacktest ?? previous.latestBacktest,
@@ -1267,7 +1267,7 @@ function App() {
 
         {activeSection === "reports" && !accountLocked ? (
           <section className="admin-page-grid">
-            {selectedModuleCode === "orb_max_options" ? <LearningPanel state={state} onRun={runOrbLearning} /> : null}
+            <MvpReportOverviewPanel state={state} moduleCode={selectedModuleCode} moduleName={activeModule?.name} />
             <Panel icon={<FileText />} title="Weekly Report">
               <Metric label="Week win ratio" value={formatPercent(latestWeek?.winRatio)} />
               <Metric label="Week trades" value={latestWeek?.totalTrades ?? 0} />
@@ -1308,14 +1308,6 @@ function App() {
                   onSelectTrade={loadModule2TradeDetail}
                   onLifecycle={runModule2Lifecycle}
                 />
-                <Module2LearningPanel
-                  learning={state.module2Learning}
-                  reviews={state.module2LearningReviews}
-                  onRun={runModule2Learning}
-                  onCreateReview={createModule2LearningReview}
-                  onUpdateReview={updateModule2LearningReview}
-                  latestBacktest={state.latestBacktest}
-                />
                 <Module2HealthPanel health={state.module2Health} onRun={runModule2HealthMonitor} />
               <Module2HandoffReportPanel operator={state.module2Operator} />
                 <Module2LaunchEvidenceLogPanel rehearsals={state.module2Rehearsals} />
@@ -1338,6 +1330,7 @@ function App() {
 
         {activeSection === "learning" && !accountLocked ? (
           <section className="admin-page-grid">
+            <LearningEvidencePanel state={state} moduleCode={selectedModuleCode} moduleName={activeModule?.name} />
             <UnifiedLearningDashboard
               state={state}
               modules={enabledModules}
@@ -1351,6 +1344,17 @@ function App() {
                 setActiveSection("reports");
               }}
             />
+            {selectedModuleCode === "orb_max_options" ? <LearningPanel state={state} onRun={runOrbLearning} /> : null}
+            {selectedModuleCode === "high_probability_strategy_2" ? (
+              <Module2LearningPanel
+                learning={state.module2Learning}
+                reviews={state.module2LearningReviews}
+                onRun={runModule2Learning}
+                onCreateReview={createModule2LearningReview}
+                onUpdateReview={updateModule2LearningReview}
+                latestBacktest={state.latestBacktest}
+              />
+            ) : null}
           </section>
         ) : null}
 
@@ -4421,6 +4425,61 @@ function SignalLifecycleStrip({ lifecycle }: { lifecycle: ModuleSignalLifecycle 
   );
 }
 
+function moduleMvpCounts(state: PanelState, moduleCode: string) {
+  const signals = (state.tradeSignals?.signals ?? []).filter((item: any) => item.moduleCode === moduleCode);
+  const predictions = (state.tradePredictions?.predictions ?? []).filter((item: any) => item.moduleCode === moduleCode);
+  const observation = state.productionObservation?.summary ?? {};
+  const latestSignal = signals[0];
+  const latestPrediction = predictions[0];
+  return {
+    signals,
+    predictions,
+    observation,
+    latestSignal,
+    latestPrediction
+  };
+}
+
+function MvpReportOverviewPanel({ state, moduleCode, moduleName }: { state: PanelState; moduleCode: string; moduleName?: string }) {
+  const data = moduleMvpCounts(state, moduleCode);
+  const lifecycle = moduleSignalLifecycle(state, moduleCode);
+  return (
+    <Panel icon={<Target />} title={`${moduleShortName(moduleCode, moduleName)} Signal Report`}>
+      <SignalLifecycleStrip lifecycle={lifecycle} />
+      <div className="metrics-grid compact">
+        <Metric label="Current predictions" value={data.predictions.length} />
+        <Metric label="Current BUY / SELL" value={data.signals.length} />
+        <Metric label="7-day expected signals" value={data.observation.expected_signals ?? 0} />
+        <Metric label="7-day observed signals" value={data.observation.observed_signals ?? 0} />
+        <Metric label="Failed signal chains" value={data.observation.failures ?? 0} />
+        <Metric label="Evidence maturity" value={data.observation.evidence?.status ?? "EARLY"} />
+      </div>
+      <p className="reason">{lifecycle.reason}</p>
+      <p className="reason">Reports separate primary Predictions and BUY/SELL delivery from secondary paper results. Win rate, R, and target reach describe the paper mirror only.</p>
+    </Panel>
+  );
+}
+
+function LearningEvidencePanel({ state, moduleCode, moduleName }: { state: PanelState; moduleCode: string; moduleName?: string }) {
+  const data = moduleMvpCounts(state, moduleCode);
+  const lifecycle = moduleSignalLifecycle(state, moduleCode);
+  const target = state.targetPerformance?.month?.summary ?? {};
+  return (
+    <Panel icon={<LineChart />} title={`${moduleShortName(moduleCode, moduleName)} Learning Inputs`}>
+      <div className="metrics-grid compact">
+        <Metric label="Live predictions" value={data.predictions.length} />
+        <Metric label="Live BUY / SELL" value={data.signals.length} />
+        <Metric label="Observed signals" value={data.observation.observed_signals ?? 0} />
+        <Metric label="Resolved paper sample" value={target.decided ?? 0} />
+        <Metric label="Paper expectancy" value={`${formatR(target.expectancyR)}R`} />
+        <Metric label="Evidence maturity" value={target.evidence?.status ?? data.observation.evidence?.status ?? "EARLY"} />
+      </div>
+      <p className="reason">{lifecycle.reason}</p>
+      <p className="reason">Learning may study setup, prediction, delivery, paper, journal, and backtest evidence. It must remain module-specific, advisory, and sample-aware; it never silently changes live strategy thresholds.</p>
+    </Panel>
+  );
+}
+
 function UnifiedLearningDashboard({
   state,
   modules,
@@ -4452,9 +4511,9 @@ function UnifiedLearningDashboard({
           <Metric label="Pending reviews" value={state.module2LearningReviews?.filter((row: any) => row.status === "PENDING").length ?? 0} />
           <Metric label="Best expectancy" value={formatR(Math.max(...rows.map((row) => row.expectancy), 0))} />
           <Metric label="Most samples" value={[...rows].sort((left, right) => right.sampleSize - left.sampleSize)[0]?.name ?? "--"} />
-          <Metric label="Mode" value="Paper learning only" />
+          <Metric label="Mode" value="Signal-first evidence" />
         </div>
-        <p className="reason">Learning remains separate by module. This page only compares results and recommendations so you can decide which strategy deserves more monitoring.</p>
+        <p className="reason">Learning remains separate by module. It reviews Predictions and BUY/SELL delivery first, then uses resolved paper trades, journals, and backtests to measure outcomes and recommend reviewed changes.</p>
       </Panel>
 
       <Panel icon={<Database />} title="Learning Comparison">
@@ -4506,7 +4565,7 @@ function UnifiedLearningDashboard({
               <span><span className={`pill ${item.confidence === "HIGH" ? "good" : item.confidence === "MEDIUM" ? "warn" : "neutral"}`}>{item.confidence ?? "LOW"}</span> {item.rationale ?? item.suggested_action?.action ?? "Review module learning evidence."}</span>
             </div>
           ))}
-          {recommendations.length === 0 ? <p className="reason">No learning recommendations yet. Run learning after paper trades or backtests exist.</p> : null}
+          {recommendations.length === 0 ? <p className="reason">No learning recommendations yet. Collect genuine signal observations and resolved paper/backtest outcomes before running learning.</p> : null}
         </div>
       </Panel>
     </>

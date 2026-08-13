@@ -20,8 +20,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const needsLearning = section === "learning";
     const needsNotifications = section === "notifications";
     const needsPaper = section === "paper";
-    const needsSignals = ["signals", "orb", "health", "live"].includes(section);
-    const needsPredictions = ["predictions", "orb", "health", "live"].includes(section);
+    const needsSignals = ["signals", "orb", "health", "live", "reports", "learning"].includes(section);
+    const needsPredictions = ["predictions", "orb", "health", "live", "reports", "learning"].includes(section);
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
     const needsLive = section === "live";
@@ -98,11 +98,11 @@ export async function dashboardRoutes(app: FastifyInstance) {
       injectJson(app, request, "GET", `/api/trades/current?moduleCode=${moduleCode}`, undefined),
       needsReports ? injectJson(app, request, "GET", `/api/reports/weekly?moduleCode=${moduleCode}`, undefined, []) : [],
       needsReports ? injectJson(app, request, "GET", `/api/reports/monthly?moduleCode=${moduleCode}`, undefined, []) : [],
-      needsReports ? Promise.all([
+      needsReports || needsLearning ? Promise.all([
         injectJson(app, request, "GET", `/api/reports/target-performance?moduleCode=${moduleCode}&period=week`, undefined, null),
         injectJson(app, request, "GET", `/api/reports/target-performance?moduleCode=${moduleCode}&period=month`, undefined, null)
       ]).then(([week, month]) => ({ week, month })) : null,
-      needsReports || needsCommand ? injectJson(app, request, "GET", `/api/analytics/production-observation?moduleCode=${moduleCode}&days=7`, undefined, null) : null,
+      needsReports || needsCommand || needsLearning || needsData ? injectJson(app, request, "GET", `/api/analytics/production-observation?moduleCode=${moduleCode}&days=7`, undefined, null) : null,
       needsReports || needsLearning ? injectJson(app, request, "GET", `/api/backtests/latest?moduleCode=${moduleCode}`, undefined) : null,
       isModule1 && needsData ? injectJson(app, request, "GET", "/api/orb/data-readiness", undefined) : null,
       isModule1 ? injectJson(app, request, "GET", "/api/sessions/current/orb-range-audit", undefined) : null,
@@ -121,8 +121,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/session-reports", undefined, []) : [],
       isModule2 && needsReports ? injectJson(app, request, "GET", "/api/module2/closeouts", undefined, []) : [],
       isModule2 && (needsReports || needsModule2LiveOps || needsCommand) ? injectJson(app, request, "GET", "/api/module2/variant-metrics", undefined, null) : null,
-      needsCommand ? injectJson(app, request, "GET", "/api/analytics/modules/confidence", undefined) : null,
-      needsCommand ? injectJson(app, request, "GET", "/api/analytics/production-readiness", undefined) : null,
+      needsCommand || needsReports || needsLearning ? injectJson(app, request, "GET", "/api/analytics/modules/confidence", undefined) : null,
+      needsCommand || needsData ? injectJson(app, request, "GET", "/api/analytics/production-readiness", undefined) : null,
       needsNotifications ? injectJson(app, request, "GET", `/api/notifications?limit=50${notificationQuery}`, undefined, []) : [],
       needsNotifications ? injectJson(app, request, "GET", "/api/notifications/summary", undefined, []) : [],
       needsSettings ? injectJson(app, request, "GET", "/api/tenant/settings", undefined, []) : [],
