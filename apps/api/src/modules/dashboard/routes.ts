@@ -47,6 +47,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       currentTrade,
       weeklyReport,
       monthlyReport,
+      targetPerformance,
       latestBacktest,
       orbDataReadiness,
       orbRangeAudit,
@@ -96,6 +97,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       injectJson(app, request, "GET", `/api/trades/current?moduleCode=${moduleCode}`, undefined),
       needsReports ? injectJson(app, request, "GET", `/api/reports/weekly?moduleCode=${moduleCode}`, undefined, []) : [],
       needsReports ? injectJson(app, request, "GET", `/api/reports/monthly?moduleCode=${moduleCode}`, undefined, []) : [],
+      needsReports ? Promise.all([
+        injectJson(app, request, "GET", `/api/reports/target-performance?moduleCode=${moduleCode}&period=week`, undefined, null),
+        injectJson(app, request, "GET", `/api/reports/target-performance?moduleCode=${moduleCode}&period=month`, undefined, null)
+      ]).then(([week, month]) => ({ week, month })) : null,
       needsReports || needsLearning ? injectJson(app, request, "GET", `/api/backtests/latest?moduleCode=${moduleCode}`, undefined) : null,
       isModule1 && needsData ? injectJson(app, request, "GET", "/api/orb/data-readiness", undefined) : null,
       isModule1 ? injectJson(app, request, "GET", "/api/sessions/current/orb-range-audit", undefined) : null,
@@ -135,7 +140,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       isModule1 && (!Array.isArray(orbRanges) || orbRanges.length < 2)
         ? await injectJson(app, request, "GET", "/api/sessions/orb-ranges?limit=2", undefined, [])
         : orbRanges;
-    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges: effectiveOrbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module2VariantMetrics, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
+    return { clocks, session, strategies, analytics, orbAdmin, currentSetup, moduleCommand, automationStatus, feedStatus, twelveStatus, cacheStatus, newsStatus, tradePlan, currentTrade, sessionReview, weeklyReport, monthlyReport, targetPerformance, latestBacktest, orbDataReadiness, orbRangeAudit, orbRanges: effectiveOrbRanges, orbRehearsals, module2JournalTrades, module2Audit, module2Readiness, module2TuningHistory, module2Health, module2DataReadiness, module2Operator, module2Rehearsals, module2Learning, module2LearningReviews, module2SessionReports, module2Closeouts, module2VariantMetrics, strategyConfidence, productionReadiness, notifications, notificationSummary, settings, orbModuleSettings, activeModuleSettings, auditLogs, orbLearning, tenantContext, tenantPushStatus, paperTrading, tradeSignals, tradePredictions };
   });
 
   app.get("/api/platform/bundle", async (request) => {
@@ -149,11 +154,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const client = redisClient();
     const cached = client ? await client.get(cacheKey).catch(() => null) : null;
     if (cached) return JSON.parse(cached);
-    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad] = await Promise.all([
+    const [platform, platformAutomation, platformUsage, platformSystemHealth, platformPaperLifecycle, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad] = await Promise.all([
       injectJson(app, request, "GET", "/api/platform/overview", undefined),
       injectJson(app, request, "GET", "/api/platform/automation/status", undefined, []),
       injectJson(app, request, "GET", "/api/platform/usage/twelve-data", undefined),
       injectJson(app, request, "GET", "/api/platform/system-health", undefined),
+      injectJson(app, request, "GET", "/api/platform/paper-lifecycle-health", undefined),
       injectJson(app, request, "GET", "/api/platform/security-audit", undefined),
       injectJson(app, request, "GET", "/api/platform/operational-events", undefined),
       injectJson(app, request, "GET", "/api/platform/backups/status", undefined),
@@ -164,7 +170,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       platformValidationOverview(),
       platformRequestLoad()
     ]);
-    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad, cachedAt: new Date().toISOString() };
+    const payload = { platform, platformAutomation, platformUsage, platformSystemHealth, platformPaperLifecycle, platformSecurityAudit, platformOperationalEvents, platformBackupStatus, platformBusinessSettings, platformPushOverview, platformTickets, platformAppReleases, platformStrategyValidation, requestLoad, cachedAt: new Date().toISOString() };
     if (client) await client.set(cacheKey, JSON.stringify(payload), "EX", 5).catch(() => undefined);
     return payload;
   });

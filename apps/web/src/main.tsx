@@ -46,6 +46,7 @@ type PanelState = {
   sessionReview?: any;
   weeklyReport?: any[];
   monthlyReport?: any[];
+  targetPerformance?: { week?: any; month?: any };
   latestBacktest?: any;
   orbDataReadiness?: any;
   orbRangeAudit?: any;
@@ -78,6 +79,7 @@ type PanelState = {
   platformAutomation?: any[];
   platformUsage?: any;
   platformSystemHealth?: any;
+  platformPaperLifecycle?: any;
   platformSecurityAudit?: any;
   platformOperationalEvents?: any;
   platformBackupStatus?: any;
@@ -163,6 +165,7 @@ function App() {
         platformAutomation: bundle?.platformAutomation ?? [],
         platformUsage: bundle?.platformUsage,
         platformSystemHealth: bundle?.platformSystemHealth,
+        platformPaperLifecycle: bundle?.platformPaperLifecycle,
         platformSecurityAudit: bundle?.platformSecurityAudit,
         platformOperationalEvents: bundle?.platformOperationalEvents,
         platformBackupStatus: bundle?.platformBackupStatus,
@@ -198,6 +201,7 @@ function App() {
       moduleCommand: bundle.moduleCommand?.length ? bundle.moduleCommand : previous.moduleCommand ?? [],
       weeklyReport: bundle.weeklyReport?.length ? bundle.weeklyReport : previous.weeklyReport ?? [],
       monthlyReport: bundle.monthlyReport?.length ? bundle.monthlyReport : previous.monthlyReport ?? [],
+      targetPerformance: bundle.targetPerformance ?? previous.targetPerformance,
       latestBacktest: bundle.latestBacktest ?? previous.latestBacktest,
       orbDataReadiness: bundle.orbDataReadiness ?? previous.orbDataReadiness,
       orbRehearsals: bundle.orbRehearsals?.length ? bundle.orbRehearsals : previous.orbRehearsals ?? [],
@@ -1267,6 +1271,7 @@ function App() {
               <Metric label="Month total R" value={formatR(latestMonth?.totalR)} />
               <Metric label="Month average R" value={formatR(latestMonth?.avgR)} />
             </Panel>
+            <TargetPerformancePanel performance={state.targetPerformance} moduleName={activeModule?.name} />
             <ModulePerformancePanel state={state} moduleCode={selectedModuleCode} moduleName={activeModule?.name} />
             <StrategyConfidencePanel confidence={state.strategyConfidence} activeModuleCode={selectedModuleCode} />
             <ScenarioStatsPanel state={state} />
@@ -1795,7 +1800,7 @@ function PlatformAdminApp({
           {platformSection === "billing" ? <PlatformBillingPanel billing={platform.billing} onInvoiceStatus={updateManualInvoiceStatus} /> : null}
           {platformSection === "automation" ? <PlatformAutomationPanel rows={state.platformAutomation ?? []} usage={usage} onRunNow={runAutomationNow} onForceSync={forceSyncNow} onToggle={updateTenantAutomation} /> : null}
           {platformSection === "usage" ? <PlatformUsagePanel usage={usage} onForceSync={forceSyncNow} /> : null}
-          {platformSection === "system" ? <PlatformSystemPanel user={user} message={message} health={state.platformSystemHealth} audit={state.platformSecurityAudit} operational={state.platformOperationalEvents} backups={state.platformBackupStatus} requestLoad={state.platformRequestLoad} /> : null}
+          {platformSection === "system" ? <PlatformSystemPanel user={user} message={message} health={state.platformSystemHealth} lifecycle={state.platformPaperLifecycle} audit={state.platformSecurityAudit} operational={state.platformOperationalEvents} backups={state.platformBackupStatus} requestLoad={state.platformRequestLoad} /> : null}
           {platformSection === "settings" ? <PlatformBusinessSettingsPanel settings={state.platformBusinessSettings} pushOverview={state.platformPushOverview} onSave={updatePlatformBusinessSettings} onTestPush={sendPlatformPushTest} /> : null}
         </section>
       </section>
@@ -2585,7 +2590,7 @@ function PlatformUsagePanel({ usage, onForceSync }: { usage: any; onForceSync: (
   );
 }
 
-function PlatformSystemPanel({ user, message, health, audit, operational, backups, requestLoad }: { user: AdminUser; message: string; health?: any; audit?: any; operational?: any; backups?: any; requestLoad?: any }) {
+function PlatformSystemPanel({ user, message, health, lifecycle, audit, operational, backups, requestLoad }: { user: AdminUser; message: string; health?: any; lifecycle?: any; audit?: any; operational?: any; backups?: any; requestLoad?: any }) {
   const services = health?.services ?? [];
   const database = services.find((service: any) => service.name === "PostgreSQL")?.detail ?? {};
   const redis = services.find((service: any) => service.name === "Redis")?.detail ?? {};
@@ -2611,9 +2616,18 @@ function PlatformSystemPanel({ user, message, health, audit, operational, backup
         <Metric label="Redis" value={redis.status ?? "UNKNOWN"} />
         <Metric label="Backup" value={backups?.status ?? "UNKNOWN"} />
         <Metric label="Slow routes" value={requestLoad?.summary?.slow_requests ?? 0} />
+        <Metric label="Paper lifecycle" value={lifecycle?.status ?? "UNKNOWN"} />
       </div>
       <p className="reason">{message}</p>
       <div className="platform-list">
+        <div className="platform-row">
+          <div>
+            <strong>Paper Target Lifecycle</strong>
+            <span>{lifecycle?.trades ?? 0} observed trade(s) · {lifecycle?.active ?? 0} active · {lifecycle?.staleActive ?? 0} stale</span>
+            <em>{lifecycle?.incompleteTargetLadders ?? 0} incomplete ladder(s) · {lifecycle?.terminalStateConflicts ?? 0} terminal conflict(s) · latest {formatNepalTime(lifecycle?.latestTradeAt)}</em>
+          </div>
+          <span className={`pill ${lifecycle?.status === "HEALTHY" ? "good" : "warn"}`}>{lifecycle?.status ?? "UNKNOWN"}</span>
+        </div>
         {services.map((service: any) => (
           <div className="platform-row" key={service.name}>
             <div>
@@ -7398,6 +7412,52 @@ function AuditPanel({ state }: { state: PanelState }) {
   );
 }
 
+function TargetPerformancePanel({ performance, moduleName }: { performance?: { week?: any; month?: any }; moduleName?: string }) {
+  const [period, setPeriod] = useState<"week" | "month">("week");
+  const report = performance?.[period];
+  const summary = report?.summary ?? {};
+  const profiles = report?.byProfile ?? [];
+  return (
+    <Panel icon={<LineChart />} title="Target Performance">
+      <div className="paper-segmented">
+        <button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>Week</button>
+        <button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>Month</button>
+      </div>
+      <p className="reason">{moduleName ?? "Selected strategy"} · {summary.evidence?.message ?? "No closed paper-trade evidence yet."}</p>
+      <div className="paper-summary-grid">
+        <Metric label="Trades / decided" value={`${summary.trades ?? 0} / ${summary.decided ?? 0}`} />
+        <Metric label="TP1 reach" value={formatPercent(summary.tp1ReachRate)} />
+        <Metric label="TP2 reach" value={formatPercent(summary.tp2ReachRate)} />
+        <Metric label="TP3 reach" value={formatPercent(summary.tp3ReachRate)} />
+        <Metric label="TP1 to TP2" value={formatPercent(summary.tp1ToTp2)} />
+        <Metric label="TP2 to TP3" value={formatPercent(summary.tp2ToTp3)} />
+        <Metric label="SL after TP1" value={formatPercent(summary.stopAfterTp1Rate)} />
+        <Metric label="SL after TP2" value={formatPercent(summary.stopAfterTp2Rate)} />
+        <Metric label="Expectancy" value={`${formatR(summary.expectancyR)}R`} />
+        <Metric label="Profit factor" value={summary.profitFactor == null ? "No losses yet" : formatR(summary.profitFactor)} />
+        <Metric label="Average hold" value={formatHoldSeconds(summary.averageHoldSeconds)} />
+        <Metric label="Evidence" value={summary.evidence?.status ?? "EARLY"} />
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Scenario / variant</th><th>Trades</th><th>TP1</th><th>TP2</th><th>TP3</th><th>Win rate</th><th>Exp.</th><th>PF</th></tr></thead>
+          <tbody>
+            {profiles.map((row: any) => (
+              <tr key={row.profileCode}>
+                <td>{row.profileName}</td><td>{row.trades}</td><td>{formatPercent(row.tp1ReachRate)}</td>
+                <td>{formatPercent(row.tp2ReachRate)}</td><td>{formatPercent(row.tp3ReachRate)}</td>
+                <td>{formatPercent(row.winRate)}</td><td>{formatR(row.expectancyR)}R</td><td>{row.profitFactor == null ? "--" : formatR(row.profitFactor)}</td>
+              </tr>
+            ))}
+            {profiles.length === 0 ? <tr><td colSpan={8}>No non-QA paper trades in this period.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      <p className="reason">TP1 and TP2 are progress milestones. Realized R remains based on the final TP3, SL, or recorded exit; no partial exit is assumed.</p>
+    </Panel>
+  );
+}
+
 function LearningPanel({ state, onRun }: { state: PanelState; onRun: () => Promise<void> }) {
   const learning = state.orbLearning;
   const overall = learning?.summary?.overall ?? {};
@@ -9019,6 +9079,14 @@ function formatPriceValue(value: unknown) {
 
 function formatR(value: unknown) {
   return Number(value ?? 0).toFixed(2);
+}
+
+function formatHoldSeconds(value: unknown) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "--";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
 function formatNepalTime(value?: string | null) {

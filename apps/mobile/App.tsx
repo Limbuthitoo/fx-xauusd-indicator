@@ -57,6 +57,7 @@ type ModuleRow = {
   currentTrade?: any;
   weekly?: any;
   monthly?: any;
+  targetPerformance?: { week?: any; month?: any };
   session?: any;
 };
 
@@ -1646,6 +1647,8 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
       </View>
       {modules.map((module) => {
         const trades = journalByModule[module.code] ?? [];
+        const targets = module.targetPerformance?.week?.summary ?? {};
+        const monthTargets = module.targetPerformance?.month?.summary ?? {};
         return (
           <View key={module.code} style={styles.card}>
             <View style={styles.moduleHeader}>
@@ -1658,6 +1661,17 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
                 <Text style={styles.journalLabel}>Week WR</Text>
               </View>
             </View>
+            <View style={styles.metricsGrid}>
+              <Metric label="TP1 Reach" value={formatPercent(targets.tp1ReachRate)} />
+              <Metric label="TP2 Reach" value={formatPercent(targets.tp2ReachRate)} />
+              <Metric label="TP3 Reach" value={formatPercent(targets.tp3ReachRate)} />
+              <Metric label="Expectancy" value={`${formatR(targets.expectancyR)}R`} />
+              <Metric label="Profit Factor" value={targets.profitFactor == null ? "--" : formatR(targets.profitFactor)} />
+              <Metric label="Evidence" value={targets.evidence?.status ?? "EARLY"} />
+              <Metric label="Month TP1" value={formatPercent(monthTargets.tp1ReachRate)} />
+              <Metric label="Month TP3" value={formatPercent(monthTargets.tp3ReachRate)} />
+            </View>
+            <Text style={styles.ruleExplanation}>{targets.evidence?.message ?? "No closed target lifecycle evidence this week."}</Text>
             {trades.slice(0, 8).map((trade) => (
               <JournalTradeCard key={trade.id} trade={trade} module={module} />
             ))}

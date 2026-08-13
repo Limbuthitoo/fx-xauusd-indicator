@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { tenantReportHistoryMonths } from "../billing/limits.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
+import { buildTargetPerformanceReport } from "./target-performance.js";
 
 export async function analyticsRoutes(app: FastifyInstance) {
   app.get("/api/analytics/production-readiness", async (request) => {
@@ -372,6 +373,41 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const session = await requireTenantModule(request, moduleCode);
     return buildPerformanceReport("month", session.tenantId, moduleCode);
+  });
+
+  app.get("/api/reports/target-performance", async (request) => {
+    const search = request.query as { moduleCode?: string; period?: "week" | "month" };
+    const moduleCode = search.moduleCode ?? "orb_max_options";
+    const period = search.period === "month" ? "month" : "week";
+    const session = await requireTenantModule(request, moduleCode);
+    return buildTargetPerformanceReport(session.tenantId!, moduleCode, period);
+  });
+
+  app.get("/api/platform/paper-lifecycle-health", async (request) => {
+    const session = requireAdmin(request);
+    if (!session.platformSuperAdmin) {
+      const error = new Error("Platform super-admin access required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
+    }
+    const result = await query(
+      `SELECT count(*)::int AS trades,
+         count(*) FILTER (WHERE outcome = 'ACTIVE')::int AS active,
+         count(*) FILTER (WHERE outcome = 'ACTIVE' AND opened_at < now() - interval '12 hours')::int AS stale_active,
+         count(*) FILTER (WHERE target_count <> 3)::int AS incomplete_target_ladders,
+         count(*) FILTER (WHERE outcome = 'ACTIVE' AND (tp3_hit OR sl_hit))::int AS terminal_state_conflicts,
+         max(opened_at) AS latest_trade_at
+       FROM paper_trade_target_performance WHERE is_qa = false`
+    );
+    const row = result.rows[0] ?? {};
+    const stale = Number(row.stale_active ?? 0);
+    const incomplete = Number(row.incomplete_target_ladders ?? 0);
+    const conflicts = Number(row.terminal_state_conflicts ?? 0);
+    return {
+      checkedAt: new Date().toISOString(), status: stale + incomplete + conflicts > 0 ? "CAUTION" : "HEALTHY",
+      trades: Number(row.trades ?? 0), active: Number(row.active ?? 0), staleActive: stale,
+      incompleteTargetLadders: incomplete, terminalStateConflicts: conflicts, latestTradeAt: row.latest_trade_at ?? null
+    };
   });
 
   app.get("/api/module2/production-audit", async (request) => {

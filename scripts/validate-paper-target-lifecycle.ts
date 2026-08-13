@@ -16,6 +16,18 @@ try {
   ))[0];
   add("Migration 082", Boolean(migration), "Migration 082 is recorded in the checksum ledger.", "Migration 082 is missing from schema_migrations.", migration);
 
+  const analyticsMigration = (await rows(
+    `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
+  ))[0];
+  checks.push({
+    name: "Migration 083",
+    status: analyticsMigration ? "PASS" : "WARN",
+    detail: analyticsMigration
+      ? "Target performance analytics migration is recorded in the checksum ledger."
+      : "Migration 083 is not applied yet; lifecycle integrity can be checked, but target analytics are unavailable.",
+    evidence: analyticsMigration ?? null
+  });
+
   const schema = await rows(
     `SELECT
        to_regclass('public.paper_trade_targets') IS NOT NULL AS targets_table,
@@ -28,6 +40,24 @@ try {
   add("Lifecycle schema", schemaReady, "Target table, structural-risk columns, and milestone uniqueness index are installed.", "The multi-target schema is incomplete.", schemaRow);
 
   if (!schemaReady) finish();
+
+  if (analyticsMigration) {
+    const analyticsSchema = (await rows(
+      `SELECT to_regclass('public.paper_trade_target_performance') IS NOT NULL AS performance_view,
+              to_regclass('public.paper_trade_targets_hit_status_idx') IS NOT NULL AS target_hit_index,
+              to_regclass('public.trades_outcome_opened_idx') IS NOT NULL AS trade_outcome_index`
+    ))[0] ?? {};
+    add("Analytics schema", Object.values(analyticsSchema).every(Boolean), "Performance view and reporting indexes are installed.", "Target performance analytics schema is incomplete.", analyticsSchema);
+
+    const analyticsConflicts = await rows(
+      `SELECT trade_id, outcome, target_count, tp1_hit, tp2_hit, tp3_hit, sl_hit
+       FROM paper_trade_target_performance
+       WHERE (tp2_hit AND NOT tp1_hit) OR (tp3_hit AND NOT tp2_hit)
+          OR (outcome = 'ACTIVE' AND (tp3_hit OR sl_hit))
+       LIMIT 50`
+    );
+    add("Analytics lifecycle consistency", analyticsConflicts.length === 0, "Analytics contains no skipped milestone or active-terminal conflicts.", `${analyticsConflicts.length} analytics lifecycle conflict(s) found.`, analyticsConflicts);
+  }
 
   const missingTargets = await rows(
     `SELECT t.id, sc.module_code, sc.direction, t.outcome, t.opened_at, count(ptt.id)::int AS target_count
