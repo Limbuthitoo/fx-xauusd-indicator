@@ -7,13 +7,20 @@ const { buildProductionObservationReport, refreshProductionSignalObservations } 
 const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: string; evidence?: unknown }> = [];
 
 try {
-  const migration = await query("SELECT filename, applied_at FROM schema_migrations WHERE filename = '084_production_signal_observation.sql'");
-  add("Migration 084", migration.rows.length === 1, "Production observation migration is recorded.", "Migration 084 is missing.", migration.rows[0] ?? null);
+  const migration = await query(
+    "SELECT filename, applied_at FROM schema_migrations WHERE filename IN ('084_production_signal_observation.sql', '085_production_observer_query_indexes.sql') ORDER BY filename"
+  );
+  add("Observation migrations", migration.rows.length === 2, "Production observation migrations 084 and 085 are recorded.", "Observation migration 084 or 085 is missing.", migration.rows);
 
   const schema = await query(
     `SELECT to_regclass('public.production_signal_observations') IS NOT NULL AS observation_table,
             to_regclass('public.production_signal_observations_tenant_module_idx') IS NOT NULL AS tenant_module_index,
-            to_regclass('public.production_signal_observations_status_idx') IS NOT NULL AS status_index`
+            to_regclass('public.production_signal_observations_status_idx') IS NOT NULL AS status_index,
+            to_regclass('public.setup_candidates_observer_scan_idx') IS NOT NULL AS candidate_scan_index,
+            to_regclass('public.notifications_setup_signal_idx') IS NOT NULL AS signal_lookup_index,
+            to_regclass('public.operational_events_brain_setup_idx') IS NOT NULL AS brain_lookup_index,
+            to_regclass('public.journal_entries_setup_tenant_idx') IS NOT NULL AS journal_lookup_index,
+            to_regclass('public.trade_events_terminal_lookup_idx') IS NOT NULL AS terminal_lookup_index`
   );
   add("Observation schema", Object.values(schema.rows[0] ?? {}).every(Boolean), "Observation table and indexes are installed.", "Observation schema is incomplete.", schema.rows[0]);
 

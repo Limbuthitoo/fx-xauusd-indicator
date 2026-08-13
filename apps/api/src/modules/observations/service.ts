@@ -4,6 +4,10 @@ import { recordOperationalEvent } from "../../infrastructure/observability/opera
 const MODULE_CODES = ["orb_max_options", "high_probability_strategy_2"];
 const SIGNAL_STATUSES = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"];
 const ARTIFACT_GRACE_MINUTES = 15;
+const configuredBatchSize = Number(process.env.PRODUCTION_OBSERVATION_BATCH_SIZE ?? 100);
+const OBSERVATION_BATCH_SIZE = Number.isFinite(configuredBatchSize)
+  ? Math.min(500, Math.max(25, Math.floor(configuredBatchSize)))
+  : 100;
 
 export async function refreshProductionSignalObservations(input: { tenantId?: string; moduleCode?: string; days?: number } = {}) {
   const days = Math.min(30, Math.max(1, Number(input.days ?? 7)));
@@ -11,12 +15,43 @@ export async function refreshProductionSignalObservations(input: { tenantId?: st
     "SELECT applied_at FROM schema_migrations WHERE filename = '084_production_signal_observation.sql' LIMIT 1"
   );
   const observerCutoverAt = cutoverResult.rows[0]?.applied_at ?? new Date().toISOString();
-  const params: unknown[] = [days, MODULE_CODES, SIGNAL_STATUSES];
+  const params: unknown[] = [days, MODULE_CODES, SIGNAL_STATUSES, OBSERVATION_BATCH_SIZE];
   const tenantFilter = input.tenantId ? `AND sc.tenant_id = $${params.push(input.tenantId)}` : "";
   const moduleFilter = input.moduleCode ? `AND sc.module_code = $${params.push(input.moduleCode)}` : "";
   const candidates = await query(
-    `SELECT sc.*, ts.session_date, ts.session_preset,
-            existing.observation_status AS prior_observation_status,
+    `WITH selected_candidates AS MATERIALIZED (
+       SELECT sc.*, ts.session_date, ts.session_preset,
+              existing.observation_status AS prior_observation_status
+       FROM setup_candidates sc
+       JOIN trading_sessions ts ON ts.id = sc.session_id
+       LEFT JOIN production_signal_observations existing ON existing.setup_candidate_id = sc.id
+       WHERE sc.module_code = ANY($2::text[])
+         AND sc.detected_at >= now() - ($1::text || ' days')::interval
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
+         AND (sc.direction IN ('LONG','SHORT') OR sc.status = ANY($3::text[]))
+         AND (
+           existing.id IS NULL
+           OR sc.detected_at >= now() - interval '18 hours'
+           OR (
+             existing.signal_expected = true
+             AND (
+               existing.observation_status <> 'PASS'
+               OR EXISTS (
+                 SELECT 1 FROM trade_plans open_plan
+                 JOIN trades open_trade ON open_trade.trade_plan_id = open_plan.id
+                 WHERE open_plan.setup_candidate_id = sc.id AND open_trade.closed_at IS NULL
+               )
+             )
+           )
+         )
+         ${tenantFilter} ${moduleFilter}
+       ORDER BY (existing.id IS NULL) DESC, sc.detected_at DESC
+       LIMIT $4
+     )
+     SELECT sc.*,
             tp.id AS trade_plan_id,
             t.id AS trade_id, t.outcome AS trade_outcome, t.opened_at, t.closed_at,
             COALESCE(targets.target_count, 0)::int AS target_count,
@@ -26,9 +61,7 @@ export async function refreshProductionSignalObservations(input: { tenantId?: st
             brain.metadata AS brain_metadata,
             journal.id AS journal_id,
             COALESCE(blockers.rows, '[]'::jsonb) AS blockers
-     FROM setup_candidates sc
-     JOIN trading_sessions ts ON ts.id = sc.session_id
-     LEFT JOIN production_signal_observations existing ON existing.setup_candidate_id = sc.id
+     FROM selected_candidates sc
      LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
      LEFT JOIN trades t ON t.trade_plan_id = tp.id
      LEFT JOIN LATERAL (
@@ -47,7 +80,7 @@ export async function refreshProductionSignalObservations(input: { tenantId?: st
        SELECT n.id FROM notifications n
        WHERE n.tenant_id = sc.tenant_id
          AND n.event_type IN ('SETUP_READY','MODULE2_SETUP_READY')
-         AND (n.data->>'setupCandidateId' = sc.id::text OR n.event_key LIKE '%' || sc.id::text)
+         AND n.data->>'setupCandidateId' = sc.id::text
        ORDER BY n.created_at DESC LIMIT 1
      ) signal ON true
      LEFT JOIN LATERAL (
@@ -70,24 +103,8 @@ export async function refreshProductionSignalObservations(input: { tenantId?: st
        WHERE sre.setup_candidate_id = sc.id
          AND sre.status NOT IN ('PASS', 'NOT_APPLICABLE')
      ) blockers ON true
-     WHERE sc.module_code = ANY($2::text[])
-       AND sc.detected_at >= now() - ($1::text || ' days')::interval
-       AND sc.scenario <> 'QA_TEST_SIGNAL'
-       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
-       AND (sc.direction IN ('LONG','SHORT') OR sc.status = ANY($3::text[]))
-       AND (
-         existing.id IS NULL
-         OR sc.detected_at >= now() - interval '18 hours'
-         OR (
-           existing.signal_expected = true
-           AND (existing.observation_status <> 'PASS' OR (t.id IS NOT NULL AND t.closed_at IS NULL))
-         )
-       )
-       ${tenantFilter} ${moduleFilter}
      ORDER BY sc.detected_at DESC
-     LIMIT 1000`,
+    `,
     params
   );
 
@@ -140,7 +157,13 @@ export async function refreshProductionSignalObservations(input: { tenantId?: st
       });
     }
   }
-  return { observed: candidates.rows.length, changedFailures, generatedAt: new Date().toISOString() };
+  return {
+    observed: candidates.rows.length,
+    batchSize: OBSERVATION_BATCH_SIZE,
+    batchFull: candidates.rows.length === OBSERVATION_BATCH_SIZE,
+    changedFailures,
+    generatedAt: new Date().toISOString()
+  };
 }
 
 export async function buildProductionObservationReport(input: { tenantId?: string; moduleCode?: string; days?: number } = {}) {
