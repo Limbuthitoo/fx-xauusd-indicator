@@ -372,8 +372,13 @@ function App() {
   const activeModule = enabledModules.find((module: any) => module.code === activeModuleCode) ?? (enabledModules.length === 0 ? null : { code: activeModuleCode, name: moduleShortName(activeModuleCode) });
   const selectedModuleCode = activeModuleCode;
   const activeCommandSnapshot = (state.moduleCommand ?? []).find((item: any) => item.moduleCode === selectedModuleCode) ?? {};
-  const currentModuleSetup = state.currentSetup?.module_code === selectedModuleCode ? state.currentSetup : activeCommandSnapshot.setup;
-  const currentModuleTrade = state.currentTrade?.module_code === selectedModuleCode ? state.currentTrade : activeCommandSnapshot.trade;
+  const activeNewYorkDate = state.session?.session_date
+    ? String(state.session.session_date).slice(0, 10)
+    : newYorkDateForUi();
+  const candidateModuleSetup = state.currentSetup?.module_code === selectedModuleCode ? state.currentSetup : activeCommandSnapshot.setup;
+  const candidateModuleTrade = state.currentTrade?.module_code === selectedModuleCode ? state.currentTrade : activeCommandSnapshot.trade;
+  const currentModuleSetup = artifactBelongsToNewYorkDate(candidateModuleSetup?.detected_at, activeNewYorkDate) ? candidateModuleSetup : null;
+  const currentModuleTrade = artifactBelongsToNewYorkDate(candidateModuleTrade?.opened_at, activeNewYorkDate) ? candidateModuleTrade : null;
   const currentModuleTradePlan = state.tradePlan?.module_code === selectedModuleCode ? state.tradePlan : undefined;
   const signal = getSignal(currentModuleSetup, currentModuleTrade);
   const orb = state.session?.opening_range;
@@ -9150,6 +9155,23 @@ function formatNepalTime(value?: string | null) {
     hour12: true,
     timeZoneName: "short"
   }).format(new Date(value));
+}
+
+function newYorkDateForUi(value: string | Date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(value));
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+}
+
+function artifactBelongsToNewYorkDate(value: unknown, sessionDate: string) {
+  if (!value) return false;
+  const timestamp = new Date(String(value));
+  return !Number.isNaN(timestamp.getTime()) && newYorkDateForUi(timestamp) === sessionDate;
 }
 
 function dateInputValue(value?: string | null) {

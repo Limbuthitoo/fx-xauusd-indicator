@@ -361,6 +361,7 @@ export async function setupRoutes(app: FastifyInstance) {
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const evidenceMode = search.evidence === "true" && moduleCode === "high_probability_strategy_2";
     const auth = await requireTenantModule(request, moduleCode);
+    const currentSessionDate = newYorkDate();
     const setup = await query(
       `SELECT
          sc.*,
@@ -368,6 +369,9 @@ export async function setupRoutes(app: FastifyInstance) {
          latest.timestamp_utc AS latest_candle_at,
          (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc) AS live_current
        FROM setup_candidates sc
+       JOIN trading_sessions current_session
+         ON current_session.id = sc.session_id
+        AND current_session.session_date = $4::date
        LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
        LEFT JOIN trades t ON t.trade_plan_id = tp.id AND t.outcome = 'ACTIVE'
        JOIN LATERAL (
@@ -394,7 +398,7 @@ export async function setupRoutes(app: FastifyInstance) {
          CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'sweep' THEN 0 ELSE 1 END,
          sc.detected_at DESC
        LIMIT 1`,
-      [auth.tenantId, moduleCode, evidenceMode]
+      [auth.tenantId, moduleCode, evidenceMode, currentSessionDate]
     );
     if (!setup.rows[0]) return null;
     const evaluations = await query("SELECT * FROM setup_rule_evaluations WHERE setup_candidate_id = $1 ORDER BY evaluated_at", [setup.rows[0].id]);

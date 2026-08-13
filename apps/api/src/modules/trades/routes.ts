@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
+import { newYorkDate } from "../../infrastructure/time.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones } from "./paper-targets.js";
 
@@ -362,11 +363,15 @@ export async function tradeRoutes(app: FastifyInstance) {
     const search = request.query as { moduleCode?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
+    const currentSessionDate = newYorkDate();
     const { rows } = await query(`
       SELECT t.*, tp.setup_candidate_id, sc.symbol, sc.direction, sc.scenario, sc.module_code
       FROM trades t
       JOIN trade_plans tp ON tp.id = t.trade_plan_id
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+      JOIN trading_sessions current_session
+        ON current_session.id = sc.session_id
+       AND current_session.session_date = $3::date
       JOIN LATERAL (
         SELECT c.timestamp_utc
         FROM candles c
@@ -385,7 +390,7 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND (t.outcome = 'ACTIVE' OR sc.detected_at >= latest.timestamp_utc)
       ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, now()) DESC
       LIMIT 1
-    `, [auth.tenantId, moduleCode]);
+    `, [auth.tenantId, moduleCode, currentSessionDate]);
     return rows[0] ?? null;
   });
 
@@ -394,6 +399,7 @@ export async function tradeRoutes(app: FastifyInstance) {
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
     const symbol = search.symbol ?? "XAUUSD";
+    const currentSessionDate = newYorkDate();
     const limit = Math.min(Number(search.limit ?? 100), 500);
     const { rows } = await query(
       `SELECT
@@ -410,6 +416,9 @@ export async function tradeRoutes(app: FastifyInstance) {
        FROM trades t
        JOIN trade_plans tp ON tp.id = t.trade_plan_id
        JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+       JOIN trading_sessions current_session
+         ON current_session.id = sc.session_id
+        AND current_session.session_date = $5::date
        WHERE sc.symbol = $1
          AND sc.tenant_id = $3
          AND sc.module_code = $4
@@ -418,7 +427,7 @@ export async function tradeRoutes(app: FastifyInstance) {
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
        ORDER BY COALESCE(t.opened_at, t.closed_at) DESC
        LIMIT $2`,
-      [symbol, limit, auth.tenantId, moduleCode]
+      [symbol, limit, auth.tenantId, moduleCode, currentSessionDate]
     );
     return rows.flatMap((trade: any) => {
       const entryMarker = trade.opened_at

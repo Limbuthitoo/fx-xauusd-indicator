@@ -85,6 +85,7 @@ export type TwelveDataChartProps = {
   moduleCode?: string;
   moduleName?: string;
   session?: {
+    session_date?: string | null;
     session_start_at?: string | null;
     opening_range_end_at?: string | null;
     signal_window_end_at?: string | null;
@@ -105,6 +106,7 @@ export type TwelveDataChartProps = {
     opening_range_end_at?: string | null;
     sessionStartAt?: string | null;
     openingRangeEndAt?: string | null;
+    session_date?: string | null;
   }>;
   setup?: {
     id?: string;
@@ -274,21 +276,27 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   const [evidenceSetup, setEvidenceSetup] = useState<TwelveDataChartProps["setup"] | null>(null);
   const [indicatorVisibility, setIndicatorVisibility] = useState<ChartIndicatorVisibility>(() => defaultIndicatorVisibility(moduleCode, showEma, showOrbSessionLevels, indicatorDefaults));
   const effectiveShowEma = showEma && indicatorVisibility.ema !== false;
+  const currentNewYorkDate = useMemo(() => currentChartSessionDate(candles, session), [candles, session]);
+  const currentSessionSetup = useMemo(
+    () => setupBelongsToSession(activeSetup, currentNewYorkDate) ? activeSetup : null,
+    [activeSetup, currentNewYorkDate]
+  );
   const activeEvidenceSetup = useMemo(() => {
-    if (moduleCode !== "high_probability_strategy_2") return activeSetup;
-    if (!activeSetup) return evidenceSetup;
-    if (!evidenceSetup || evidenceSetup.id !== activeSetup.id) return activeSetup;
+    const currentEvidence = setupBelongsToSession(evidenceSetup, currentNewYorkDate) ? evidenceSetup : null;
+    if (moduleCode !== "high_probability_strategy_2") return currentSessionSetup;
+    if (!currentSessionSetup) return currentEvidence;
+    if (!currentEvidence || currentEvidence.id !== currentSessionSetup.id) return currentSessionSetup;
     return {
-      ...activeSetup,
-      ...evidenceSetup,
+      ...currentSessionSetup,
+      ...currentEvidence,
       scenario_flags: {
-        ...(activeSetup.scenario_flags ?? {}),
-        ...(evidenceSetup.scenario_flags ?? {})
+        ...(currentSessionSetup.scenario_flags ?? {}),
+        ...(currentEvidence.scenario_flags ?? {})
       },
-      evaluations: evidenceSetup.evaluations ?? activeSetup.evaluations,
-      coreEvidence: evidenceSetup.coreEvidence ?? activeSetup.coreEvidence
+      evaluations: currentEvidence.evaluations ?? currentSessionSetup.evaluations,
+      coreEvidence: currentEvidence.coreEvidence ?? currentSessionSetup.coreEvidence
     };
-  }, [moduleCode, activeSetup, evidenceSetup]);
+  }, [moduleCode, currentSessionSetup, evidenceSetup, currentNewYorkDate]);
   const horizontalRangeIsActive = moduleCode === "orb_max_options" && isModule1HorizontalRangeActive(activeEvidenceSetup);
   const effectiveShowOrbSessionLevels = showOrbSessionLevels && indicatorVisibility.orbLevels !== false && !horizontalRangeIsActive;
   const orbRangeState = useMemo(
@@ -300,8 +308,12 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     [moduleCode, orbRangeState, openingRange]
   );
   const effectiveOrbRanges = useMemo(
-    () => moduleCode === "orb_max_options" ? module1VisibleOrbRanges(orbRanges, effectiveOpeningRange) : [],
-    [moduleCode, orbRanges, effectiveOpeningRange]
+    () => moduleCode === "orb_max_options" ? module1VisibleOrbRanges(orbRanges, effectiveOpeningRange, currentNewYorkDate) : [],
+    [moduleCode, orbRanges, effectiveOpeningRange, currentNewYorkDate]
+  );
+  const currentTradeMarkers = useMemo(
+    () => tradeMarkers.filter((marker) => timestampBelongsToSession(marker.time, currentNewYorkDate)),
+    [tradeMarkers, currentNewYorkDate]
   );
 
   useEffect(() => {
@@ -554,17 +566,17 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     candleSeriesRef.current.setMarkers(
       [
         ...moduleEvidenceMarkers(activeEvidenceSetup).filter((marker) => shouldShowEvidenceMarker(moduleCode, marker, indicatorVisibility)),
-        ...validSetupMarker(activeSetup),
-        ...paperTradeMarkers(tradeMarkers)
+        ...validSetupMarker(currentSessionSetup),
+        ...paperTradeMarkers(currentTradeMarkers)
       ]
         .sort((left, right) => Number(left.time) - Number(right.time))
     );
     if (cleanCandles.length > 0 && !didSetInitialRangeRef.current) {
-      applyCompactLatestRange(cleanCandles.length);
+      applyCurrentSessionRange(cleanCandles);
       didSetInitialRangeRef.current = true;
     }
     window.requestAnimationFrame(() => refreshOverlays(cleanCandles));
-  }, [candles, setup, evidenceSetup, tradeMarkers, effectiveShowEma, effectiveShowOrbSessionLevels, indicatorVisibility, moduleCode]);
+  }, [candles, currentSessionSetup, activeEvidenceSetup, currentTradeMarkers, effectiveShowEma, effectiveShowOrbSessionLevels, indicatorVisibility, moduleCode]);
 
   useEffect(() => {
     window.requestAnimationFrame(() => refreshOverlays(normalizeCandles(candles)));
@@ -625,7 +637,24 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
   function showLatestRange() {
     if (candles.length === 0) return;
     userAdjustedRangeRef.current = false;
-    applyCompactLatestRange(candles.length);
+    applyCurrentSessionRange(normalizeCandles(candles));
+  }
+
+  function applyCurrentSessionRange(cleanCandles: TwelveDataCandle[]) {
+    if (!chartRef.current || cleanCandles.length === 0) return;
+    const latestSessionDate = currentChartSessionDate(cleanCandles, session);
+    const sessionStart = session?.session_start_at && timestampBelongsToSession(session.session_start_at, latestSessionDate)
+      ? new Date(session.session_start_at).getTime()
+      : new Date(zonedDateTimeToUtc(latestSessionDate, "09:00", "America/New_York")).getTime();
+    const sessionIndex = cleanCandles.findIndex((candle) => new Date(candle.timestampUtc).getTime() >= sessionStart);
+    const tradingDayIndex = cleanCandles.findIndex((candle) => timestampBelongsToSession(candle.timestampUtc, latestSessionDate));
+    const firstFocusIndex = sessionIndex >= 0 ? sessionIndex : tradingDayIndex;
+    if (firstFocusIndex < 0) return applyCompactLatestRange(cleanCandles.length);
+    const firstVisibleIndex = Math.max(0, firstFocusIndex - 6);
+    applyVisibleLogicalRange({
+      from: (firstVisibleIndex - 0.5) as Logical,
+      to: (cleanCandles.length - 1 + CHART_RIGHT_OFFSET) as Logical
+    });
   }
 
   function applyCompactLatestRange(candleCount: number) {
@@ -903,18 +932,37 @@ function normalizeOrbRanges(
 
 function module1VisibleOrbRanges(
   ranges: NonNullable<TwelveDataChartProps["orbRanges"]>,
-  fallback: TwelveDataChartProps["openingRange"]
+  fallback: TwelveDataChartProps["openingRange"],
+  currentSessionDate: string
 ) {
   const normalized = normalizeOrbRanges(ranges, fallback);
   const newYorkRanges = normalized
     .filter((range) => sessionShortLabel(range.session_preset) === "NY" || range.shortLabel === "NY")
-    .filter((range) => range.session_start_at);
+    .filter((range) => range.session_start_at)
+    .filter((range) => timestampBelongsToSession(range.session_start_at!, currentSessionDate));
   if (newYorkRanges.length > 0) {
     const latest = newYorkRanges
       .sort((left, right) => new Date(right.session_start_at ?? 0).getTime() - new Date(left.session_start_at ?? 0).getTime())[0];
     return latest ? [latest] : [];
   }
-  return normalized.slice(0, 1).filter((range) => range.session_start_at);
+  return normalized
+    .filter((range) => range.session_start_at && timestampBelongsToSession(range.session_start_at, currentSessionDate))
+    .slice(0, 1);
+}
+
+function currentChartSessionDate(candles: TwelveDataCandle[], session?: TwelveDataChartProps["session"]) {
+  const explicitDate = String(session?.session_date ?? "").slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(explicitDate)) return explicitDate;
+  const latestTimestamp = candles.at(-1)?.timestampUtc;
+  return newYorkDateForTimestamp(latestTimestamp ?? new Date().toISOString());
+}
+
+function timestampBelongsToSession(timestamp: string, sessionDate: string) {
+  return Boolean(timestamp) && newYorkDateForTimestamp(timestamp) === sessionDate;
+}
+
+function setupBelongsToSession(setup: TwelveDataChartProps["setup"], sessionDate: string) {
+  return Boolean(setup?.detected_at && timestampBelongsToSession(setup.detected_at, sessionDate));
 }
 
 function sessionShortLabel(preset?: string | null) {
