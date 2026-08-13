@@ -6,6 +6,7 @@ import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { buildTargetPerformanceReport } from "../analytics/target-performance.js";
+import { buildProductionObservationReport } from "../observations/service.js";
 
 export async function mobileRoutes(app: FastifyInstance) {
   app.get("/api/mobile/app-update", async (request) => {
@@ -194,7 +195,7 @@ export async function mobileRoutes(app: FastifyInstance) {
     ]);
     const moduleRows = [];
     for (const module of modules.rows as any[]) {
-      const [setup, trade, weekly, monthly, targetWeek, targetMonth, latestSession] = await Promise.all([
+      const [setup, trade, weekly, monthly, targetWeek, targetMonth, observation, latestSession] = await Promise.all([
         query(
           `SELECT
              sc.id, sc.status, sc.scenario, sc.direction, sc.favorability_score, sc.favorability_grade,
@@ -237,6 +238,7 @@ export async function mobileRoutes(app: FastifyInstance) {
         modulePerformance(session.tenantId, module.code, "month"),
         buildTargetPerformanceReport(session.tenantId, module.code, "week"),
         buildTargetPerformanceReport(session.tenantId, module.code, "month"),
+        buildProductionObservationReport({ tenantId: session.tenantId, moduleCode: module.code, days: 7 }),
         query(
           `SELECT state, session_start_at, opening_range_end_at, signal_window_end_at
            FROM trading_sessions
@@ -255,6 +257,7 @@ export async function mobileRoutes(app: FastifyInstance) {
         weekly,
         monthly,
         targetPerformance: { week: targetWeek, month: targetMonth },
+        productionObservation: observation,
         session: latestSession.rows[0] ?? null
       });
     }

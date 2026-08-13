@@ -58,6 +58,7 @@ type ModuleRow = {
   weekly?: any;
   monthly?: any;
   targetPerformance?: { week?: any; month?: any };
+  productionObservation?: any;
   session?: any;
 };
 
@@ -1649,6 +1650,7 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
         const trades = journalByModule[module.code] ?? [];
         const targets = module.targetPerformance?.week?.summary ?? {};
         const monthTargets = module.targetPerformance?.month?.summary ?? {};
+        const observation = module.productionObservation ?? {};
         return (
           <View key={module.code} style={styles.card}>
             <View style={styles.moduleHeader}>
@@ -1672,6 +1674,13 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
               <Metric label="Month TP3" value={formatPercent(monthTargets.tp3ReachRate)} />
             </View>
             <Text style={styles.ruleExplanation}>{targets.evidence?.message ?? "No closed target lifecycle evidence this week."}</Text>
+            <View style={styles.metricsGrid}>
+              <Metric label="Signal Observer" value={observation.status ?? "AWAITING"} />
+              <Metric label="BUY / SELL" value={observation.summary?.observed_signals ?? 0} />
+              <Metric label="Paper Audit" value={observation.summary?.paper_trades ?? 0} />
+              <Metric label="Chain Failures" value={observation.summary?.failures ?? 0} />
+            </View>
+            <Text style={styles.ruleExplanation}>{observation.summary?.evidence?.message ?? "Waiting for genuine production signal evidence."}</Text>
             {trades.slice(0, 8).map((trade) => (
               <JournalTradeCard key={trade.id} trade={trade} module={module} />
             ))}

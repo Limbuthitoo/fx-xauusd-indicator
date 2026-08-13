@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import { config } from "./infrastructure/config.js";
 import { startWorkerHeartbeat, writeWorkerHeartbeat } from "./infrastructure/workers/heartbeat.js";
 import { startMarketDataWorker } from "./modules/market-data/routes.js";
+import { refreshProductionSignalObservations } from "./modules/observations/service.js";
 
 const startedAt = new Date().toISOString();
 
 verifyPythonBrainRuntime();
 
 startMarketDataWorker();
+const observationTimer = startProductionObservationWorker();
 const heartbeatTimer = startWorkerHeartbeat({
   workerName: "market-data-worker",
   status: "RUNNING",
@@ -31,6 +33,7 @@ console.log(JSON.stringify({
 
 async function shutdown(signal: string) {
   clearInterval(heartbeatTimer);
+  clearInterval(observationTimer);
   await writeWorkerHeartbeat({
     workerName: "market-data-worker",
     status: "STOPPING",
@@ -66,4 +69,17 @@ function verifyPythonBrainRuntime() {
       `Python brain runtime is unavailable (${pythonBin} cannot import psycopg): ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function startProductionObservationWorker() {
+  const run = () => refreshProductionSignalObservations({ days: 7 }).catch((error) => {
+    console.error(JSON.stringify({
+      level: "error",
+      service: "production-signal-observer",
+      message: "Production signal observation failed.",
+      error: error instanceof Error ? error.message : String(error)
+    }));
+  });
+  setTimeout(run, 30_000);
+  return setInterval(run, 5 * 60_000);
 }

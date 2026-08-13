@@ -20,6 +20,7 @@ import { liveStreamRoutes } from "./modules/live-stream/routes.js";
 import { marketDataRoutes } from "./modules/market-data/routes.js";
 import { mobileRoutes } from "./modules/mobile/routes.js";
 import { notificationRoutes } from "./modules/notifications/routes.js";
+import { observationRoutes } from "./modules/observations/routes.js";
 import { newsRoutes } from "./modules/news/routes.js";
 import { riskRoutes } from "./modules/risk/routes.js";
 import { sessionRoutes } from "./modules/sessions/routes.js";
@@ -99,6 +100,7 @@ await app.register(candleRoutes);
 await app.register(marketDataRoutes);
 await app.register(mobileRoutes);
 await app.register(notificationRoutes);
+await app.register(observationRoutes);
 await app.register(newsRoutes);
 await app.register(dashboardRoutes);
 

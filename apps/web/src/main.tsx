@@ -47,6 +47,7 @@ type PanelState = {
   weeklyReport?: any[];
   monthlyReport?: any[];
   targetPerformance?: { week?: any; month?: any };
+  productionObservation?: any;
   latestBacktest?: any;
   orbDataReadiness?: any;
   orbRangeAudit?: any;
@@ -80,6 +81,7 @@ type PanelState = {
   platformUsage?: any;
   platformSystemHealth?: any;
   platformPaperLifecycle?: any;
+  platformProductionObservation?: any;
   platformSecurityAudit?: any;
   platformOperationalEvents?: any;
   platformBackupStatus?: any;
@@ -166,6 +168,7 @@ function App() {
         platformUsage: bundle?.platformUsage,
         platformSystemHealth: bundle?.platformSystemHealth,
         platformPaperLifecycle: bundle?.platformPaperLifecycle,
+        platformProductionObservation: bundle?.platformProductionObservation,
         platformSecurityAudit: bundle?.platformSecurityAudit,
         platformOperationalEvents: bundle?.platformOperationalEvents,
         platformBackupStatus: bundle?.platformBackupStatus,
@@ -202,6 +205,7 @@ function App() {
       weeklyReport: bundle.weeklyReport?.length ? bundle.weeklyReport : previous.weeklyReport ?? [],
       monthlyReport: bundle.monthlyReport?.length ? bundle.monthlyReport : previous.monthlyReport ?? [],
       targetPerformance: bundle.targetPerformance ?? previous.targetPerformance,
+      productionObservation: bundle.productionObservation ?? previous.productionObservation,
       latestBacktest: bundle.latestBacktest ?? previous.latestBacktest,
       orbDataReadiness: bundle.orbDataReadiness ?? previous.orbDataReadiness,
       orbRehearsals: bundle.orbRehearsals?.length ? bundle.orbRehearsals : previous.orbRehearsals ?? [],
@@ -1272,6 +1276,7 @@ function App() {
               <Metric label="Month average R" value={formatR(latestMonth?.avgR)} />
             </Panel>
             <TargetPerformancePanel performance={state.targetPerformance} moduleName={activeModule?.name} />
+            <ProductionObservationPanel observation={state.productionObservation} moduleName={activeModule?.name} />
             <ModulePerformancePanel state={state} moduleCode={selectedModuleCode} moduleName={activeModule?.name} />
             <StrategyConfidencePanel confidence={state.strategyConfidence} activeModuleCode={selectedModuleCode} />
             <ScenarioStatsPanel state={state} />
@@ -1800,7 +1805,7 @@ function PlatformAdminApp({
           {platformSection === "billing" ? <PlatformBillingPanel billing={platform.billing} onInvoiceStatus={updateManualInvoiceStatus} /> : null}
           {platformSection === "automation" ? <PlatformAutomationPanel rows={state.platformAutomation ?? []} usage={usage} onRunNow={runAutomationNow} onForceSync={forceSyncNow} onToggle={updateTenantAutomation} /> : null}
           {platformSection === "usage" ? <PlatformUsagePanel usage={usage} onForceSync={forceSyncNow} /> : null}
-          {platformSection === "system" ? <PlatformSystemPanel user={user} message={message} health={state.platformSystemHealth} lifecycle={state.platformPaperLifecycle} audit={state.platformSecurityAudit} operational={state.platformOperationalEvents} backups={state.platformBackupStatus} requestLoad={state.platformRequestLoad} /> : null}
+          {platformSection === "system" ? <PlatformSystemPanel user={user} message={message} health={state.platformSystemHealth} lifecycle={state.platformPaperLifecycle} observation={state.platformProductionObservation} audit={state.platformSecurityAudit} operational={state.platformOperationalEvents} backups={state.platformBackupStatus} requestLoad={state.platformRequestLoad} /> : null}
           {platformSection === "settings" ? <PlatformBusinessSettingsPanel settings={state.platformBusinessSettings} pushOverview={state.platformPushOverview} onSave={updatePlatformBusinessSettings} onTestPush={sendPlatformPushTest} /> : null}
         </section>
       </section>
@@ -2590,7 +2595,7 @@ function PlatformUsagePanel({ usage, onForceSync }: { usage: any; onForceSync: (
   );
 }
 
-function PlatformSystemPanel({ user, message, health, lifecycle, audit, operational, backups, requestLoad }: { user: AdminUser; message: string; health?: any; lifecycle?: any; audit?: any; operational?: any; backups?: any; requestLoad?: any }) {
+function PlatformSystemPanel({ user, message, health, lifecycle, observation, audit, operational, backups, requestLoad }: { user: AdminUser; message: string; health?: any; lifecycle?: any; observation?: any; audit?: any; operational?: any; backups?: any; requestLoad?: any }) {
   const services = health?.services ?? [];
   const database = services.find((service: any) => service.name === "PostgreSQL")?.detail ?? {};
   const redis = services.find((service: any) => service.name === "Redis")?.detail ?? {};
@@ -2617,9 +2622,18 @@ function PlatformSystemPanel({ user, message, health, lifecycle, audit, operatio
         <Metric label="Backup" value={backups?.status ?? "UNKNOWN"} />
         <Metric label="Slow routes" value={requestLoad?.summary?.slow_requests ?? 0} />
         <Metric label="Paper lifecycle" value={lifecycle?.status ?? "UNKNOWN"} />
+        <Metric label="Signal observer" value={observation?.status ?? "UNKNOWN"} />
       </div>
       <p className="reason">{message}</p>
       <div className="platform-list">
+        <div className="platform-row">
+          <div>
+            <strong>Production Signal Observation</strong>
+            <span>{observation?.summary?.observed_signals ?? 0} BUY/SELL signal(s) observed · {observation?.summary?.paper_trades ?? 0} paper audit row(s)</span>
+            <em>{observation?.summary?.failures ?? 0} failed chain(s) · {observation?.summary?.warnings ?? 0} warning(s) · {observation?.summary?.evidence?.message ?? "Awaiting genuine setup evidence."}</em>
+          </div>
+          <span className={`pill ${observation?.status === "HEALTHY" ? "good" : observation?.status === "FAIL" ? "bad" : "warn"}`}>{observation?.status ?? "UNKNOWN"}</span>
+        </div>
         <div className="platform-row">
           <div>
             <strong>Paper Target Lifecycle</strong>
@@ -7454,6 +7468,42 @@ function TargetPerformancePanel({ performance, moduleName }: { performance?: { w
         </table>
       </div>
       <p className="reason">TP1 and TP2 are progress milestones. Realized R remains based on the final TP3, SL, or recorded exit; no partial exit is assumed.</p>
+    </Panel>
+  );
+}
+
+function ProductionObservationPanel({ observation, moduleName }: { observation?: any; moduleName?: string }) {
+  const summary = observation?.summary ?? {};
+  return (
+    <Panel icon={<ShieldCheck />} title="Production Signal Observation">
+      <p className="reason">{moduleName ?? "Selected strategy"} · {summary.evidence?.message ?? "The observer is waiting for genuine non-QA setup evidence."}</p>
+      <div className="paper-summary-grid">
+        <Metric label="Status" value={observation?.status ?? "AWAITING EVIDENCE"} />
+        <Metric label="Observed setups" value={summary.observed ?? 0} />
+        <Metric label="Expected signals" value={summary.expected_signals ?? 0} />
+        <Metric label="BUY / SELL" value={summary.observed_signals ?? 0} />
+        <Metric label="Paper audit" value={summary.paper_trades ?? 0} />
+        <Metric label="Failed chains" value={summary.failures ?? 0} />
+        <Metric label="Warnings" value={summary.warnings ?? 0} />
+        <Metric label="Evidence" value={summary.evidence?.status ?? "EARLY"} />
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Detected</th><th>Scenario</th><th>Side</th><th>Signal</th><th>Paper</th><th>Status</th><th>Missing</th></tr></thead>
+          <tbody>
+            {(observation?.recent ?? []).slice(0, 12).map((row: any) => (
+              <tr key={row.id}>
+                <td>{formatNepalTime(row.setup_detected_at)}</td><td>{formatScenario(row.scenario)}</td><td>{row.direction ?? "--"}</td>
+                <td>{row.signal_observed ? "YES" : row.signal_expected ? "MISSING" : "WAIT"}</td><td>{row.paper_trade_observed ? "YES" : row.paper_tracking_expected ? "WAIT" : "N/A"}</td>
+                <td><span className={`pill ${row.observation_status === "PASS" ? "good" : row.observation_status === "FAIL" ? "bad" : "warn"}`}>{row.observation_status}</span></td>
+                <td>{Array.isArray(row.missing_steps) && row.missing_steps.length ? row.missing_steps.join(", ") : "--"}</td>
+              </tr>
+            ))}
+            {(observation?.recent ?? []).length === 0 ? <tr><td colSpan={7}>No genuine setup has entered the observation window yet.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      <p className="reason">Prediction and BUY/SELL are primary MVP evidence. Paper tracking, target milestones, and journals are audited separately and never suppress a valid signal.</p>
     </Panel>
   );
 }
