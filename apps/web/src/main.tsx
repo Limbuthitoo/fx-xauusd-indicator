@@ -3826,6 +3826,7 @@ function AllDayStrategyCenterPanel({
   const liveSignals = activeSignals.length;
   const selectedRow = rows.find((row) => row.moduleCode === activeModuleCode) ?? rows[0];
   const selectedSignal = selectedRow ? activeSignals.find((item: any) => item.moduleCode === selectedRow.moduleCode) : null;
+  const lifecycle = selectedRow ? moduleSignalLifecycle(state, selectedRow.moduleCode) : null;
   return (
     <Panel icon={<Layers />} title="New York Strategy Center">
       <div className="strategy-validation-hero">
@@ -3850,7 +3851,8 @@ function AllDayStrategyCenterPanel({
             <Metric label="Setup score" value={selectedSignal?.chance == null ? selectedRow.confidenceLabel : `${selectedSignal.chance}/100`} />
             <Metric label="Checklist" value={selectedSignal?.checklist ? `${selectedSignal.checklist.passed}/${selectedSignal.checklist.total}` : checklistCountLabel(selectedRow.setup)} />
           </div>
-          <p className="reason">{selectedSignal?.reason ?? selectedRow.nextAction}</p>
+          {lifecycle ? <SignalLifecycleStrip lifecycle={lifecycle} /> : null}
+          <p className="reason">{lifecycle?.reason ?? selectedSignal?.reason ?? selectedRow.nextAction}</p>
           <div className="admin-actions inline-actions">
             <button onClick={() => onSelectModule(selectedRow.moduleCode)}>Refresh Module</button>
             <button onClick={() => onOpenChart(selectedRow.moduleCode)}>Open Chart</button>
@@ -4040,6 +4042,7 @@ function ProductionHealthDashboard({
   const overall = rawOverall === "BLOCKED" ? "NEEDS ATTENTION" : rawOverall;
   const chartReason = liveChartDiagnostic(state);
   const latestCandle = state.cacheStatus?.latestCandle ?? state.feedStatus?.latestCandle;
+  const lifecycle = moduleSignalLifecycle(state, activeModuleCode);
   return (
     <>
       <Panel icon={<ShieldCheck />} title="Production Health">
@@ -4065,6 +4068,11 @@ function ProductionHealthDashboard({
           <button onClick={onOpenData}><Database size={16} />Open Data Admin</button>
         </div>
         <p className="reason">{chartReason.message}</p>
+      </Panel>
+
+      <Panel icon={<Target />} title={`${moduleShortName(activeModuleCode)} Signal Lifecycle`}>
+        <SignalLifecycleStrip lifecycle={lifecycle} />
+        <p className="reason">{lifecycle.reason}</p>
       </Panel>
 
       <Panel icon={<Database />} title="Feed, Cache, Scheduler">
@@ -4347,6 +4355,70 @@ function commandNextAction({ setup, trade, rehearsalStatus, auditStatus, confide
   if (auditStatus !== "PASS") return "Resolve production audit before trusting signals.";
   if (!confidence?.confidence?.trust) return "Feature-ready. Collect non-QA paper/backtest samples for trust.";
   return "Ready. Wait for the next valid New York-session signal.";
+}
+
+type ModuleSignalLifecycle = {
+  setup: { label: string; tone: string };
+  prediction: { label: string; tone: string };
+  signal: { label: string; tone: string };
+  paper: { label: string; tone: string };
+  reason: string;
+};
+
+function moduleSignalLifecycle(state: PanelState, moduleCode: string): ModuleSignalLifecycle {
+  const setup = state.currentSetup?.module_code === moduleCode ? state.currentSetup : null;
+  const prediction = (state.tradePredictions?.predictions ?? []).find((item: any) => item.moduleCode === moduleCode);
+  const signal = (state.tradeSignals?.signals ?? []).find((item: any) => item.moduleCode === moduleCode);
+  const trade = state.currentTrade?.module_code === moduleCode || state.currentTrade?.moduleCode === moduleCode ? state.currentTrade : null;
+  const failedRule = (setup?.evaluations ?? []).find((row: any) => row.blocking && row.status === "FAIL")
+    ?? (setup?.evaluations ?? []).find((row: any) => row.status === "FAIL")
+    ?? (setup?.evaluations ?? []).find((row: any) => row.status === "WAITING");
+  const setupReady = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status));
+  const paperActive = trade?.outcome === "ACTIVE" || trade?.status === "ACTIVE";
+  const paperClosed = Boolean(trade && !paperActive);
+  const predictionScore = Number(prediction?.probability);
+  const predictionLabel = prediction
+    ? `${Number.isFinite(predictionScore) ? Math.round(predictionScore) : "--"}/100 ${prediction.action ?? "WATCH"}`
+    : signal || setupReady || trade ? "PROMOTED" : "No 80+ setup";
+  const signalLabel = signal ? `${signal.action ?? signal.direction ?? "READY"}` : setupReady ? "Persisting" : "Not ready";
+  const reason = paperActive
+    ? `${trade.direction === "SHORT" ? "SELL" : "BUY"} paper mirror is active and tracking TP/SL for performance measurement.`
+    : signal
+      ? signal.reason ?? "A confirmed BUY/SELL signal is available. Paper mirroring is checked independently."
+      : prediction
+        ? prediction.nextAction ?? "Prediction evidence passed 80/100; mandatory signal and risk gates are still completing."
+        : failedRule?.explanation
+          ?? setup?.final_reason
+          ?? "No current candidate has reached the 80/100 prediction floor or BUY/SELL readiness. Waiting for a completed 5-minute setup candle.";
+  return {
+    setup: { label: setup ? formatScenario(setup.status ?? "CANDIDATE") : "WAITING", tone: setupReady ? "good" : setup?.status === "BLOCKED" ? "bad" : "warn" },
+    prediction: { label: predictionLabel, tone: prediction || signal || setupReady || trade ? "good" : "warn" },
+    signal: { label: signalLabel, tone: signal ? (signal.action === "SELL" ? "bad" : "good") : "warn" },
+    paper: { label: paperActive ? "ACTIVE" : paperClosed ? "CLOSED" : signal ? "PENDING" : "NONE", tone: paperActive ? "good" : paperClosed ? "neutral" : "warn" },
+    reason
+  };
+}
+
+function SignalLifecycleStrip({ lifecycle }: { lifecycle: ModuleSignalLifecycle }) {
+  const stages = [
+    ["Setup", lifecycle.setup],
+    ["Prediction", lifecycle.prediction],
+    ["BUY / SELL", lifecycle.signal],
+    ["Paper mirror", lifecycle.paper]
+  ] as const;
+  return (
+    <div className="signal-lifecycle-strip">
+      {stages.map(([label, stage], index) => (
+        <React.Fragment key={label}>
+          <div className={`signal-lifecycle-stage ${stage.tone}`}>
+            <span>{label}</span>
+            <strong>{stage.label}</strong>
+          </div>
+          {index < stages.length - 1 ? <span className="signal-lifecycle-arrow">→</span> : null}
+        </React.Fragment>
+      ))}
+    </div>
+  );
 }
 
 function UnifiedLearningDashboard({
@@ -7550,10 +7622,10 @@ function getSignal(setup?: any, trade?: any) {
       reason: "A valid BUY/SELL signal is active. Paper tracking is open for win-rate and TP/SL measurement."
     };
   }
-  if (setup?.status === "LONG SETUP READY" || setup?.status === "PAPER_TRADE_OPENED") {
+  if ((setup?.status === "LONG SETUP READY" || setup?.status === "TRADE_PLANNED" || setup?.status === "PAPER_TRADE_OPENED") && setup?.direction !== "SHORT") {
     return { label: "BUY", tone: "good", reason: setup.final_reason ?? "Valid long ORB setup detected." };
   }
-  if (setup?.status === "SHORT SETUP READY") {
+  if (setup?.status === "SHORT SETUP READY" || ((setup?.status === "TRADE_PLANNED" || setup?.status === "PAPER_TRADE_OPENED") && setup?.direction === "SHORT")) {
     return { label: "SELL", tone: "bad", reason: setup.final_reason ?? "Valid short ORB setup detected." };
   }
   if (setup?.status === "BLOCKED" || setup?.status === "NO TRADE") {

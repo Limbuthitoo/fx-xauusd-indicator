@@ -833,6 +833,9 @@ function isTradePlanLine(title: string) {
 }
 
 function chartTradePlanLines(setup: TwelveDataChartProps["setup"]): ChartPriceLine[] {
+  const status = String(setup?.status ?? "");
+  const confirmed = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(status);
+  if (!confirmed) return [];
   const entry = numberValue(setup?.entry_price);
   const stop = numberValue(setup?.stop_price);
   const finalTarget = numberValue(setup?.target_price);
@@ -1122,6 +1125,7 @@ function validSetupMarker(setup: TwelveDataChartProps["setup"]): SeriesMarker<Ti
   const isValid =
     setup.status === "LONG SETUP READY" ||
     setup.status === "SHORT SETUP READY" ||
+    setup.status === "TRADE_PLANNED" ||
     setup.status === "PAPER_TRADE_OPENED";
   if (!isValid) return [];
   return [

@@ -20,8 +20,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const needsLearning = section === "learning";
     const needsNotifications = section === "notifications";
     const needsPaper = section === "paper";
-    const needsSignals = section === "signals" || section === "orb";
-    const needsPredictions = section === "predictions";
+    const needsSignals = ["signals", "orb", "health", "live"].includes(section);
+    const needsPredictions = ["predictions", "orb", "health", "live"].includes(section);
     const needsSettings = section === "settings";
     const needsData = section === "data" || section === "health";
     const needsLive = section === "live";
@@ -133,8 +133,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       needsSettings ? injectJson(app, request, "GET", `/api/tenant/modules/${moduleCode}/settings`, undefined, []) : [],
       section === "account" || needsSettings ? injectJson(app, request, "GET", "/api/mobile/push-status", undefined, null) : null,
       needsPaper ? injectJson(app, request, "GET", "/api/trades/paper?limit=500", undefined, { summary: {}, trades: [] }) : null,
-      needsSignals ? injectJson(app, request, "GET", "/api/setups/signals?limit=100", undefined, { summary: {}, signals: [] }) : null,
-      needsPredictions ? injectJson(app, request, "GET", "/api/setups/predictions?limit=100", undefined, { summary: {}, predictions: [] }) : null
+      needsSignals ? injectJson(app, request, "GET", `/api/setups/signals?limit=100&moduleCode=${section === "signals" ? "ALL" : moduleCode}`, undefined, { summary: {}, signals: [] }) : null,
+      needsPredictions ? injectJson(app, request, "GET", `/api/setups/predictions?limit=100&moduleCode=${section === "predictions" ? "ALL" : moduleCode}`, undefined, { summary: {}, predictions: [] }) : null
     ]);
 
     const sessionReview = session?.id ? await injectJson(app, request, "GET", `/api/sessions/${session.id}/review`, undefined) : undefined;

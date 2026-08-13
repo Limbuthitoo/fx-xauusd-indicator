@@ -393,10 +393,10 @@ export async function setupRoutes(app: FastifyInstance) {
          AND ($3::boolean = false OR sc.scenario_flags IS NOT NULL)
        ORDER BY
          CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END,
+         sc.detected_at DESC,
          CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'entryZone' THEN 0 ELSE 1 END,
          CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'bos' THEN 0 ELSE 1 END,
-         CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'sweep' THEN 0 ELSE 1 END,
-         sc.detected_at DESC
+         CASE WHEN $3::boolean = true AND sc.scenario_flags ? 'sweep' THEN 0 ELSE 1 END
        LIMIT 1`,
       [auth.tenantId, moduleCode, evidenceMode, currentSessionDate]
     );

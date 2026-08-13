@@ -614,6 +614,8 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Production observation is exposed to tenant web reports, mobile paper analytics, and platform system health. Validate it after migration with `npm run validate:production-observation -- .env.production`.
 - The live chart is current-session-first. It may retain older candles for EMA/context and manual leftward panning, but the automatic viewport opens on the current New York trading date and only that date's setup, Module 1 ORB range, Module 2 evidence, and paper-trade markers may render as live artifacts. `/api/setups/current` and `/api/trades/chart-markers` enforce the same New York-date boundary server-side.
 - On Docker/VPS deployments, run PostgreSQL-aware validators inside the API container. Its internal `DATABASE_URL` is authoritative and avoids host-port or special-character password mismatches.
+- Live trade geometry is semantic: candidate FVG/order-block/ORB geometry may be rendered as module evidence, but chart lines named Entry, Structural SL, and TP1/TP2/TP3 render only after the setup reaches BUY/SELL readiness, trade planning, or paper tracking. The newest current-session candidate must drive live evidence instead of an older candidate being preferred merely because it contains more evidence keys.
+- System Status and Strategy Center show the selected module's unified Setup -> Prediction -> BUY/SELL -> Paper mirror lifecycle. They load module-scoped signal and prediction data and state the first rule/reason preventing progression. Predictions and BUY/SELL remain primary MVP outputs; paper is explicitly displayed as a secondary performance mirror.
 
 ## Operating Principles
 
