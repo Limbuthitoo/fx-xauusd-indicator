@@ -380,6 +380,7 @@ function App() {
   const currentModuleSetup = artifactBelongsToNewYorkDate(candidateModuleSetup?.detected_at, activeNewYorkDate) ? candidateModuleSetup : null;
   const currentModuleTrade = artifactBelongsToNewYorkDate(candidateModuleTrade?.opened_at, activeNewYorkDate) ? candidateModuleTrade : null;
   const currentModuleTradePlan = state.tradePlan?.module_code === selectedModuleCode ? state.tradePlan : undefined;
+  const currentModuleSignalPlan = immutableModuleSignalPlan(currentModuleSetup, currentModuleTradePlan, currentModuleTrade);
   const signal = getSignal(currentModuleSetup, currentModuleTrade);
   const orb = state.session?.opening_range;
   const orbStrategyConfig = (state.orbModuleSettings ?? []).find((item: any) => item.key === "orb.strategy")?.value ?? {};
@@ -1173,6 +1174,7 @@ function App() {
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 orbRanges={selectedModuleCode === "orb_max_options" ? state.orbRanges ?? [] : []}
                 setup={currentModuleSetup}
+                signalPlan={currentModuleSignalPlan}
                 priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, chartIndicatorDefaults)}
                 showEma={selectedModuleCode !== "orb_max_options"}
                 showOrbSessionLevels={showModule1OrbSessionLevels}
@@ -9117,10 +9119,7 @@ function moduleChartPriceLines(moduleCode: string, setup?: any, visibility?: Cha
       { title: "Zone High", price: zone.high, color: "#a78bfa" },
       { title: "Zone 50%", price: zone.midpoint, color: "#c4b5fd" },
       { title: "Zone Low", price: zone.low, color: "#a78bfa" }
-    ]),
-    { title: "Entry", price: moduleSetup.entry_price, color: "#16a46c" },
-    { title: "Stop", price: moduleSetup.stop_price, color: "#e05252" },
-    { title: "Target", price: moduleSetup.target_price, color: "#7c9cff" }
+    ])
   ];
 }
 
@@ -9303,6 +9302,39 @@ function artifactBelongsToNewYorkDate(value: unknown, sessionDate: string) {
   if (!value) return false;
   const timestamp = new Date(String(value));
   return !Number.isNaN(timestamp.getTime()) && newYorkDateForUi(timestamp) === sessionDate;
+}
+
+function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
+  const direction = trade?.direction ?? tradePlan?.direction ?? setup?.direction ?? null;
+  if (trade?.actual_entry != null && trade?.actual_stop != null && trade?.actual_target != null) {
+    return {
+      status: "PAPER_TRADE_OPENED",
+      direction,
+      entry: trade.actual_entry,
+      stop: trade.actual_stop,
+      target: trade.actual_target
+    };
+  }
+  if (tradePlan?.planned_entry != null && tradePlan?.planned_stop != null && tradePlan?.planned_target != null) {
+    return {
+      status: "TRADE_PLANNED",
+      direction,
+      entry: tradePlan.planned_entry,
+      stop: tradePlan.planned_stop,
+      target: tradePlan.planned_target
+    };
+  }
+  const setupReady = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status));
+  if (setupReady && setup?.entry_price != null && setup?.stop_price != null && setup?.target_price != null) {
+    return {
+      status: setup.status,
+      direction,
+      entry: setup.entry_price,
+      stop: setup.stop_price,
+      target: setup.target_price
+    };
+  }
+  return null;
 }
 
 function dateInputValue(value?: string | null) {

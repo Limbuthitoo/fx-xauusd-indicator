@@ -186,6 +186,11 @@ export async function setupRoutes(app: FastifyInstance) {
          sc.*,
          sm.name AS module_name,
          tp.reward_to_risk,
+         tp.planned_entry,
+         tp.planned_stop,
+         tp.planned_target,
+         tp.status AS trade_plan_status,
+         tp.created_at AS trade_plan_created_at,
          t.id AS trade_id,
          t.outcome AS trade_outcome,
          t.actual_entry,
@@ -275,10 +280,15 @@ export async function setupRoutes(app: FastifyInstance) {
          AND (t.outcome = 'ACTIVE' OR sc.detected_at >= latest.timestamp_utc - interval '${MAX_LIVE_PREDICTION_AGE_MINUTES} minutes')`;
     params.push(limit);
     const setups = await query(
-      `SELECT
+       `SELECT
          sc.*,
          sm.name AS module_name,
          tp.reward_to_risk,
+         tp.planned_entry,
+         tp.planned_stop,
+         tp.planned_target,
+         tp.status AS trade_plan_status,
+         tp.created_at AS trade_plan_created_at,
          t.id AS trade_id,
          t.outcome AS trade_outcome,
          t.actual_entry,
@@ -1565,16 +1575,19 @@ export async function setupRoutes(app: FastifyInstance) {
 }
 
 function signalSetupView(row: any, evaluations: any[]) {
-  const entry = Number(row.actual_entry ?? row.entry_price);
-  const stopLoss = Number(row.actual_stop ?? row.stop_price);
-  const paperTarget = Number(row.actual_target ?? row.target_price);
+  // Promoted signals are immutable contracts. Later candles may update
+  // predictions, but persisted plan/trade geometry owns BUY/SELL output.
+  const entry = Number(row.actual_entry ?? row.planned_entry ?? row.entry_price);
+  const stopLoss = Number(row.actual_stop ?? row.planned_stop ?? row.stop_price);
+  const paperTarget = Number(row.actual_target ?? row.planned_target ?? row.target_price);
   const targetDistance = Math.abs(paperTarget - entry);
   const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
   const flags = row.scenario_flags ?? {};
   const zone = flags.entryZone ?? flags.entry_zone ?? null;
   const zoneLow = Number(zone?.low);
   const zoneHigh = Number(zone?.high);
-  const hasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
+  const hasPersistedContract = row.actual_entry != null || row.planned_entry != null;
+  const hasZone = !hasPersistedContract && Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
   const riskDistance = Math.abs(entry - stopLoss);
   const targetPlan = riskBasedTargetPlan(entry, stopLoss, paperTarget, direction);
   const lifecycleTargets = Array.isArray(row.paper_targets) && row.paper_targets.length > 0

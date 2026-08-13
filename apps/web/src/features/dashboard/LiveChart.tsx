@@ -122,6 +122,13 @@ export type TwelveDataChartProps = {
     evaluations?: any[];
     coreEvidence?: any;
   } | null;
+  signalPlan?: {
+    status?: string | null;
+    direction?: string | null;
+    entry?: number | string | null;
+    stop?: number | string | null;
+    target?: number | string | null;
+  } | null;
   priceLines?: ChartPriceLine[];
   showEma?: boolean;
   showOrbSessionLevels?: boolean;
@@ -245,7 +252,7 @@ const CHART_RIGHT_OFFSET = 16;
 const INITIAL_CHART_CANDLES = 300;
 const OLDER_CANDLE_PAGE = 300;
 
-export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, orbRanges = [], setup, priceLines, showEma = true, showOrbSessionLevels = true, indicatorDefaults, onMessage }: TwelveDataChartProps) {
+export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_max_options", moduleName, session, openingRange, orbRanges = [], setup, signalPlan, priceLines, showEma = true, showOrbSessionLevels = true, indicatorDefaults, onMessage }: TwelveDataChartProps) {
   const chartCandleLimit = Math.ceil(7 * 24 * (60 / timeframeMinutes)) + 10;
   const activeSetup = !setup?.module_code || setup.module_code === moduleCode ? setup : null;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -586,7 +593,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
     if (!candleSeriesRef.current) return;
     priceLinesRef.current.forEach((line) => candleSeriesRef.current?.removePriceLine(line as never));
     priceLinesRef.current = [];
-    const tradePlanLines = chartTradePlanLines(activeEvidenceSetup);
+    const tradePlanLines = chartTradePlanLines(signalPlan);
     const lines = moduleCode === "orb_max_options"
       ? tradePlanLines
       : priceLines?.length
@@ -612,7 +619,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
         })
       );
     }
-  }, [effectiveOpeningRange, effectiveOrbRanges, activeEvidenceSetup, priceLines, moduleCode, effectiveShowOrbSessionLevels, indicatorVisibility]);
+  }, [effectiveOpeningRange, effectiveOrbRanges, signalPlan, priceLines, moduleCode, effectiveShowOrbSessionLevels, indicatorVisibility]);
 
   const liveIndicators = useMemo(() => indicatorSnapshot(normalizeCandles(candles), indicators), [candles, indicators]);
   const latest = candles.at(-1);
@@ -832,14 +839,14 @@ function isTradePlanLine(title: string) {
     || /^TP[1-3](\s|$)/.test(normalized);
 }
 
-function chartTradePlanLines(setup: TwelveDataChartProps["setup"]): ChartPriceLine[] {
-  const status = String(setup?.status ?? "");
+function chartTradePlanLines(plan: TwelveDataChartProps["signalPlan"]): ChartPriceLine[] {
+  const status = String(plan?.status ?? "");
   const confirmed = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(status);
   if (!confirmed) return [];
-  const entry = numberValue(setup?.entry_price);
-  const stop = numberValue(setup?.stop_price);
-  const finalTarget = numberValue(setup?.target_price);
-  const direction = String(setup?.direction ?? "").toUpperCase();
+  const entry = numberValue(plan?.entry);
+  const stop = numberValue(plan?.stop);
+  const finalTarget = numberValue(plan?.target);
+  const direction = String(plan?.direction ?? "").toUpperCase();
   if (entry == null || stop == null || finalTarget == null || !["LONG", "SHORT", "BUY", "SELL"].includes(direction)) return [];
   const risk = Math.abs(entry - stop);
   const multiplier = direction === "SHORT" || direction === "SELL" ? -1 : 1;

@@ -188,30 +188,26 @@ export async function tradeRoutes(app: FastifyInstance) {
     const search = request.query as { moduleCode?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const auth = await requireTenantModule(request, moduleCode);
+    const currentSessionDate = newYorkDate();
     const { rows } = await query(`
-      SELECT tp.*, sc.symbol, sc.direction, sc.scenario, sc.module_code, sc.status AS setup_status
+      SELECT tp.*, sc.symbol, sc.direction, sc.scenario, sc.module_code, sc.status AS setup_status,
+        sc.detected_at AS setup_detected_at, sc.expires_at AS setup_expires_at,
+        t.id AS active_trade_id, t.actual_entry, t.actual_stop, t.actual_target, t.opened_at AS trade_opened_at
       FROM trade_plans tp
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+      JOIN trading_sessions current_session
+        ON current_session.id = sc.session_id
+       AND current_session.session_date = $3::date
       LEFT JOIN trades t ON t.trade_plan_id = tp.id AND t.outcome = 'ACTIVE'
-      JOIN LATERAL (
-        SELECT c.timestamp_utc
-        FROM candles c
-        WHERE c.symbol = sc.symbol
-          AND c.timeframe_minutes = 5
-          AND c.source LIKE 'TWELVE_DATA%'
-        ORDER BY c.timestamp_utc DESC
-        LIMIT 1
-      ) latest ON true
       WHERE sc.tenant_id = $1
         AND sc.module_code = $2
         AND sc.scenario <> 'QA_TEST_SIGNAL'
         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
         AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
-        AND (t.id IS NOT NULL OR sc.detected_at >= latest.timestamp_utc)
       ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END, tp.created_at DESC
       LIMIT 1
-    `, [auth.tenantId, moduleCode]);
+    `, [auth.tenantId, moduleCode, currentSessionDate]);
     return rows[0] ?? null;
   });
 
