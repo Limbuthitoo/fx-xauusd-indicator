@@ -612,6 +612,7 @@ curl https://fx.bijaysubbalimbu.com.np/api/market-data/twelve-data/live/status
 - Observation is signal-first: Prediction and BUY/SELL are primary MVP evidence. Paper tracking is expected only when the setup is paper-eligible; a delayed or disabled paper audit must not suppress a valid signal. Missing primary artifacts or broken target/journal lifecycles become deduplicated `MVP_SIGNAL_LIFECYCLE_FAILED` operational events after a 15-minute grace period.
 - Observation evidence is sample-aware: fewer than 20 observed BUY/SELL signals is `EARLY`, 20-49 is `RESEARCH`, and 50+ is `MONITORABLE`. The system may compare modules/scenarios/variants at every stage, but threshold changes require reviewed evidence rather than automatic live mutation.
 - Production observation is exposed to tenant web reports, mobile paper analytics, and platform system health. Validate it after migration with `npm run validate:production-observation -- .env.production`.
+- On Docker/VPS deployments, run PostgreSQL-aware validators inside the API container. Its internal `DATABASE_URL` is authoritative and avoids host-port or special-character password mismatches.
 
 ## Operating Principles
 

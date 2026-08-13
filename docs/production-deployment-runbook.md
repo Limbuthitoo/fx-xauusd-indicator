@@ -165,6 +165,17 @@ ADMIN_OTP='current-six-digit-code' npm run deploy:vps-production -- .env.product
 
 This guarded command performs `npm ci`, production environment checks, a PostgreSQL backup, a rebuilt migration run, service rebuild/restart, deterministic BUY/SELL target-sequence tests, migration `082` lifecycle validation, platform health validation, and an HTTP `101` WebSocket upgrade check. Add `TENANT_TOKEN`, or `TENANT_EMAIL` plus `TENANT_PASSWORD`, to include authenticated Prediction, BUY/SELL, notification, paper, and journal proof surfaces.
 
+PostgreSQL-aware validators run inside the API container so they use the same internal `DATABASE_URL` as the healthy production service. To run the production observer check separately:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml \
+  --profile prod exec -T api \
+  sh -lc 'cd /app && npm run validate:production-observation'
+```
+
+Do not run this validator directly on the VPS host unless you explicitly provide a URL using the published PostgreSQL port and URL-encode any special characters in its password.
+
 After Firebase credentials are set, open Platform Admin > Settings and run **Send Platform Push Test**.
 
 ## Backup

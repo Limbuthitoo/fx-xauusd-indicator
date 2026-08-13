@@ -45,8 +45,9 @@ done
 
 echo "[8/9] Verifying deterministic target sequences and PostgreSQL lifecycle integrity"
 npm run verify:modules
-npm run validate:paper-lifecycle -- "$ENV_FILE"
-npm run validate:mvp-runtime -- "$ENV_FILE"
+"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:paper-lifecycle"
+"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:mvp-runtime"
+"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:production-observation"
 
 echo "[9/9] Verifying public API, WebSocket, and optional authenticated tenant flow"
 npm run deploy:verify -- "$ENV_FILE"
