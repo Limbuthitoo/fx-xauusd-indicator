@@ -204,6 +204,7 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND sc.scenario <> 'QA_TEST_SIGNAL'
         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+        AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
       ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode, currentSessionDate]);
@@ -406,6 +407,7 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND sc.scenario <> 'QA_TEST_SIGNAL'
         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+        AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
         AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE')
         AND (t.outcome = 'ACTIVE' OR sc.detected_at >= latest.timestamp_utc)
       ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, now()) DESC
@@ -430,9 +432,17 @@ export async function tradeRoutes(app: FastifyInstance) {
         t.outcome,
         t.opened_at,
         t.closed_at,
+        t.actual_stop,
+        t.actual_target,
+        tp.planned_entry,
+        tp.planned_stop,
+        tp.planned_target,
+        tp.reward_to_risk,
         sc.symbol,
         sc.direction,
-        sc.scenario
+        sc.scenario,
+        sc.favorability_score,
+        sc.scenario_flags
        FROM trades t
        JOIN trade_plans tp ON tp.id = t.trade_plan_id
        JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -445,6 +455,7 @@ export async function tradeRoutes(app: FastifyInstance) {
          AND sc.scenario <> 'QA_TEST_SIGNAL'
          AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
          AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
        ORDER BY COALESCE(t.opened_at, t.closed_at) DESC
        LIMIT $2`,
       [symbol, limit, auth.tenantId, moduleCode, currentSessionDate]
@@ -460,7 +471,13 @@ export async function tradeRoutes(app: FastifyInstance) {
               price: trade.actual_entry,
               direction: trade.direction,
               scenario: trade.scenario,
-              text: `${trade.direction === "SHORT" ? "Sell" : "Buy"} paper`
+              entry: trade.actual_entry ?? trade.planned_entry,
+              stop: trade.actual_stop ?? trade.planned_stop,
+              target: trade.actual_target ?? trade.planned_target,
+              rewardToRisk: trade.reward_to_risk,
+              confidence: trade.favorability_score,
+              setupTier: trade.scenario_flags?.setupTier ?? null,
+              text: "Paper trade audit entry"
             }
           ]
         : [];

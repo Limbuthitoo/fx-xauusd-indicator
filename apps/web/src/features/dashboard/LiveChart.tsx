@@ -32,6 +32,12 @@ type TradeChartMarker = {
   scenario?: string;
   outcome?: string;
   resultR?: number | string | null;
+  entry?: number | string | null;
+  stop?: number | string | null;
+  target?: number | string | null;
+  rewardToRisk?: number | string | null;
+  confidence?: number | string | null;
+  setupTier?: string | null;
   text: string;
 };
 
@@ -77,6 +83,7 @@ export type ChartIndicatorVisibility = {
   entryZone?: boolean;
   displacement?: boolean;
   bos?: boolean;
+  paperTrades?: boolean;
 };
 
 export type TwelveDataChartProps = {
@@ -118,6 +125,8 @@ export type TwelveDataChartProps = {
     entry_price?: number | string | null;
     stop_price?: number | string | null;
     target_price?: number | string | null;
+    favorability_score?: number | string | null;
+    favorability_grade?: string | null;
     scenario_flags?: any;
     evaluations?: any[];
     coreEvidence?: any;
@@ -154,7 +163,8 @@ const lineColors = {
 
 const module1IndicatorDefaults: ChartIndicatorVisibility = {
   orbLevels: true,
-  horizontalRange: true
+  horizontalRange: true,
+  paperTrades: false
 };
 
 const module2IndicatorDefaults: ChartIndicatorVisibility = {
@@ -163,7 +173,8 @@ const module2IndicatorDefaults: ChartIndicatorVisibility = {
   sweep: true,
   entryZone: true,
   displacement: true,
-  bos: true
+  bos: true,
+  paperTrades: false
 };
 
 function defaultIndicatorVisibility(moduleCode: string, showEma: boolean, showOrbSessionLevels: boolean, defaults?: ChartIndicatorVisibility): ChartIndicatorVisibility {
@@ -179,7 +190,8 @@ function chartIndicatorOptions(moduleCode: string, showEma: boolean): Array<{ ke
   if (moduleCode === "orb_max_options") {
     return [
       { key: "orbLevels", label: "ORB levels" },
-      { key: "horizontalRange", label: "Horizontal range" }
+      { key: "horizontalRange", label: "Horizontal range" },
+      { key: "paperTrades", label: "Paper audit" }
     ];
   }
   if (moduleCode === "high_probability_strategy_2") {
@@ -189,7 +201,8 @@ function chartIndicatorOptions(moduleCode: string, showEma: boolean): Array<{ ke
       { key: "sweep", label: "Sweep" },
       { key: "entryZone", label: "FVG / zone" },
       { key: "displacement", label: "Displacement" },
-      { key: "bos", label: "MSS / BOS" }
+      { key: "bos", label: "MSS / BOS" },
+      { key: "paperTrades", label: "Paper audit" }
     ];
   }
   return showEma ? [{ key: "ema", label: "EMA" }] : [];
@@ -574,7 +587,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
       [
         ...moduleEvidenceMarkers(activeEvidenceSetup).filter((marker) => shouldShowEvidenceMarker(moduleCode, marker, indicatorVisibility)),
         ...validSetupMarker(currentSessionSetup),
-        ...paperTradeMarkers(currentTradeMarkers)
+        ...(indicatorVisibility.paperTrades === true ? paperTradeMarkers(currentTradeMarkers) : [])
       ]
         .sort((left, right) => Number(left.time) - Number(right.time))
     );
@@ -1129,19 +1142,32 @@ function latestAtr(candles: TwelveDataCandle[], period: number) {
 function validSetupMarker(setup: TwelveDataChartProps["setup"]): SeriesMarker<Time>[] {
   if (!setup?.detected_at || !setup.direction) return [];
   const isLong = setup.direction === "LONG";
+  const confidence = numberValue(setup.favorability_score ?? setup.scenario_flags?.confidence);
+  const confidenceLabel = confidence == null ? "" : ` · ${confidence.toFixed(0)}% confidence`;
   const isValid =
     setup.status === "LONG SETUP READY" ||
     setup.status === "SHORT SETUP READY" ||
     setup.status === "TRADE_PLANNED" ||
     setup.status === "PAPER_TRADE_OPENED";
-  if (!isValid) return [];
+  if (!isValid) {
+    if (confidence == null || confidence < 80) return [];
+    return [
+      {
+        time: toChartTime(setup.detected_at),
+        position: isLong ? "belowBar" : "aboveBar",
+        color: "#f0b429",
+        shape: "circle",
+        text: `Watch ${isLong ? "BUY" : "SELL"}${confidenceLabel} · awaiting confirmation`
+      }
+    ];
+  }
   return [
     {
       time: toChartTime(setup.detected_at),
       position: isLong ? "belowBar" : "aboveBar",
       color: isLong ? "#16a46c" : "#e05252",
       shape: isLong ? "arrowUp" : "arrowDown",
-      text: `${isLong ? "BUY" : "SELL"} ${setup.scenario ? setup.scenario.replaceAll("_", " ") : "ORB"}`
+      text: `${isLong ? "BUY" : "SELL"} SIGNAL${confidenceLabel} · ${setup.scenario ? setup.scenario.replaceAll("_", " ") : "ORB"}`
     }
   ];
 }
@@ -1249,12 +1275,26 @@ function paperTradeMarkers(markers: TradeChartMarker[]): SeriesMarker<Time>[] {
   return markers.map((marker) => {
     const isShort = marker.direction === "SHORT";
     if (marker.type === "ENTRY") {
+      const tier = String(marker.setupTier ?? "TRACKING").replaceAll("_", " ");
+      const confidence = numberValue(marker.confidence);
+      const rewardToRisk = numberValue(marker.rewardToRisk);
+      const entry = numberValue(marker.entry);
+      const stop = numberValue(marker.stop);
+      const target = numberValue(marker.target);
+      const details = [
+        tier,
+        confidence == null ? null : `${confidence.toFixed(0)}%`,
+        entry == null ? null : `E ${entry.toFixed(2)}`,
+        stop == null ? null : `SL ${stop.toFixed(2)}`,
+        target == null ? null : `TP ${target.toFixed(2)}`,
+        rewardToRisk == null ? null : `${rewardToRisk.toFixed(2)}R`
+      ].filter(Boolean).join(" · ");
       return {
         time: toChartTime(marker.time),
         position: isShort ? "aboveBar" : "belowBar",
         color: isShort ? "#e05252" : "#16a46c",
         shape: isShort ? "arrowDown" : "arrowUp",
-        text: marker.text
+        text: `Paper audit ${isShort ? "SELL" : "BUY"}${details ? ` · ${details}` : ""}`
       };
     }
     return {
