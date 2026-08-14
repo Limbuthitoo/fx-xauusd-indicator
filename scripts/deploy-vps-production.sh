@@ -3,6 +3,7 @@ set -euo pipefail
 
 ENV_FILE="${1:-.env.production}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml -f docker-compose.prod.yml)
+VALIDATION_TIMEOUT_SECONDS="${VALIDATION_TIMEOUT_SECONDS:-300}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Environment file not found: $ENV_FILE" >&2
@@ -45,9 +46,16 @@ done
 
 echo "[8/9] Verifying deterministic target sequences and PostgreSQL lifecycle integrity"
 npm run verify:modules
-"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:paper-lifecycle"
-"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:mvp-runtime"
-"${COMPOSE[@]}" exec -T api sh -lc "cd /app && npm run validate:production-observation"
+run_validation() {
+  local script="$1"
+  echo "Running $script in an isolated production-tools container"
+  "${COMPOSE[@]}" --profile prod-tools run --rm --no-deps migrate \
+    sh -lc "cd /app && timeout -s TERM ${VALIDATION_TIMEOUT_SECONDS} npm run ${script}"
+}
+
+run_validation validate:paper-lifecycle
+run_validation validate:mvp-runtime
+run_validation validate:production-observation
 
 echo "[9/9] Verifying public API, WebSocket, and optional authenticated tenant flow"
 npm run deploy:verify -- "$ENV_FILE"
