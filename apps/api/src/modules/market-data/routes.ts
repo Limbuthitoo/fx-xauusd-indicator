@@ -2816,7 +2816,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
         );
   const evaluationRange = await selectModule1EvaluationRange(session, current, range);
   const saved = await evaluateAndSaveSetup(session, evaluationRange, current, previousResult.rows);
-  const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options");
+  const brainDecision = await runProductionBrainSweep(session.tenant_id, "orb_max_options", saved?.setup?.id);
   const paperTrade = await attemptProductionPaperTrade({
     session,
     moduleCode: "orb_max_options",
@@ -2953,7 +2953,7 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
     configSnapshot: configVersion
   };
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
-  const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode);
+  const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode, saved?.setup?.id);
   await notifyModule2Stage(session, decision);
   await applyModule2SetupLifecycle(saved?.setup, decision, current);
   const paperTrade = await attemptProductionPaperTrade({
@@ -3608,14 +3608,15 @@ async function latestMainBrainDecisions(tenantId: string | null, moduleCode?: st
   };
 }
 
-async function runProductionBrainSweep(tenantId: string | null, moduleCode: string) {
+async function runProductionBrainSweep(tenantId: string | null, moduleCode: string, setupId?: string | null) {
   if (!tenantId) return { skipped: true, reason: "TENANT_REQUIRED" };
   try {
-    const result = await runMainBrainPython(tenantId, moduleCode);
+    const result = await runMainBrainPython(tenantId, moduleCode, setupId ? { setupId } : undefined);
     const decision = Array.isArray(result?.decisions) ? result.decisions[0] : null;
     return {
       status: "COMPLETED",
       moduleCode,
+      setupId: decision?.setupId ?? null,
       decisionType: decision?.decisionType ?? null,
       action: decision?.action ?? null,
       shouldEmitSignal: Boolean(decision?.shouldEmitSignal ?? decision?.shouldOpenPaperTrade),
@@ -3646,10 +3647,15 @@ async function runProductionBrainSweep(tenantId: string | null, moduleCode: stri
 function brainApprovesSignal(brainDecision: any, setup: any) {
   if (!setup?.direction) return false;
   const expectedAction = setup.direction === "LONG" ? "BUY" : "SELL";
+  const expectedGeometry = [setup.entry_price, setup.stop_price, setup.target_price].map(Number);
+  const brainGeometry = [brainDecision?.entry, brainDecision?.stop, brainDecision?.target].map(Number);
   return ["COMPLETED", "DETERMINISTIC_FALLBACK"].includes(brainDecision?.status)
+    && String(brainDecision?.setupId ?? "") === String(setup.id)
     && (brainDecision?.shouldEmitSignal === true || brainDecision?.shouldOpenPaperTrade === true)
     && brainDecision?.action === expectedAction
-    && [brainDecision.entry, brainDecision.stop, brainDecision.target].every((value) => Number.isFinite(Number(value)));
+    && expectedGeometry.every(Number.isFinite)
+    && brainGeometry.every(Number.isFinite)
+    && brainGeometry.every((value, index) => Math.abs(value - expectedGeometry[index]) <= 0.00001);
 }
 
 function deterministicBrainFallback(brainDecision: any, setup: any, productionReady: boolean) {
@@ -3660,6 +3666,7 @@ function deterministicBrainFallback(brainDecision: any, setup: any, productionRe
   return {
     status: "DETERMINISTIC_FALLBACK",
     moduleCode: setup.module_code,
+    setupId: setup.id,
     action: setup.direction === "LONG" ? "BUY" : "SELL",
     shouldEmitSignal: true,
     shouldTrackPaperTrade: setup.scenario_flags?.paperTrackingEligible !== false,
@@ -4060,7 +4067,7 @@ async function attemptProductionPaperTrade({
     });
     return { skipped: true, reason: "STRATEGY_PROFILE_RELEASE_BLOCKED", releaseGate };
   }
-  const primaryBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode);
+  const primaryBrainDecision = brainDecision ?? await runProductionBrainSweep(session.tenant_id, moduleCode, setup.id);
   const effectiveBrainDecision = deterministicBrainFallback(primaryBrainDecision, setup, productionReady);
   const brainApproved = brainApprovesSignal(effectiveBrainDecision, setup);
   await auditBrainSignalGate(session.tenant_id, moduleCode, setup, productionReady, effectiveBrainDecision, brainApproved);
@@ -4316,7 +4323,6 @@ function requiredEntryRules(moduleCode: string) {
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
-    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ];
 }
@@ -4330,7 +4336,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module2PaperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
   if (ruleCode === "STRICT_CHECKLIST" || ruleCode === "REPLAY_MATCH") return { ruleLayer: "FINAL", requiredForEntry: false };
-  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: moduleCode === "high_probability_strategy_2" };
+  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
   if (moduleCode === "orb_max_options") {
     const mandatory = requiredEntryRules(moduleCode);
     const breakoutRule =

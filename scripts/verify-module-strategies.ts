@@ -12,6 +12,7 @@ import {
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 
 const module1OpeningCandles: Candle[] = [
@@ -90,7 +91,7 @@ const module1 = evaluateSetup({
       allowAddingToLoss: false
     },
     favorability: {
-      minimumScoreForPaperTrade: 0,
+      minimumScoreForPaperTrade: 100,
       preferredSpreadPercentOfRange: 0.12,
       minimumAtrPercentOfRange: 0.1
     },
@@ -105,6 +106,14 @@ assert.equal(module1Range.status, "LOCKED", "Module 1 opening range must lock fr
 assert.equal(isModule1ActiveOrbPreset("NEW_YORK_ORB"), true, "Module 1 must actively evaluate New York ORB");
 assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), false, "Module 1 must not actively evaluate London ORB");
 assert.equal(module1.status, "LONG SETUP READY", `Module 1 should produce a long setup, got ${module1.scenario}: ${module1.finalReason}`);
+assert.ok(module1.favorabilityScore < 100, "Module 1 regression setup must remain below the legacy confidence threshold");
+assert.equal(module1.scenario.includes("LOW_FAVORABILITY"), false, "Module 1 confidence must not veto a valid strategy profile");
+const monitoringBrain = { action: "WAIT", decisionType: "ORB_WAITING_FOR_RULES", severity: "INFO" };
+assert.equal(brainRejectsPrediction(monitoringBrain), false, "A nonterminal Python-brain WAIT must not reject an upcoming prediction");
+assert.equal(predictionProbability({}, [], 85, false, false, monitoringBrain), 85, "A Python-brain WAIT must not cap 80%+ prediction confidence");
+const blockingBrain = { action: "WAIT", decisionType: "ORB_CHECKLIST_MISMATCH", severity: "ERROR" };
+assert.equal(brainRejectsPrediction(blockingBrain), true, "A terminal Python-brain safety mismatch must reject prediction promotion");
+assert.equal(predictionProbability({}, [], 85, false, false, blockingBrain), 79, "A terminal Python-brain rejection must stay below the visible prediction threshold");
 assert.equal((module1.scenarioFlags.matrix as any)?.mandatoryChecklistMatched, true, "Module 1 mandatory checklist must be complete");
 assert.equal(module1.scenarioFlags.breakoutAt, module1Signal.timestampUtc, "Module 1 must persist the first candle timestamp for a breakout episode");
 assertTradePlan(module1, "LONG", "Module 1");
@@ -251,6 +260,31 @@ assert.ok(
   "Module 2 must never use a sweep that occurred before its liquidity level was confirmed"
 );
 assertTradePlan(module2, module2.direction as "LONG" | "SHORT", "Module 2");
+const module2BelowPredictionThreshold = evaluateLiquiditySweepSetup({
+  now: module2Candles.at(-1)!.timestampUtc,
+  symbol: "XAUUSD",
+  setupCandles: module2Candles,
+  biasCandles: Array.from({ length: 30 }, (_, index) => candle(at("2026-08-10T06:00:00Z", index, 15), 110 - index * 0.2, 110.3 - index * 0.2, 109.5 - index * 0.2, 109.7 - index * 0.2)),
+  spread: 0.01,
+  newsStatus: "CLEAR",
+  configuration: {
+    minimumSweepDistanceATR: 0.05,
+    maximumSweepDistanceATR: 2,
+    minimumDisplacementRangeATR: 0.8,
+    minimumBodyPercentage: 0.55,
+    minimumBosCloseDistanceATR: 0,
+    minimumFvgSizeATR: 0.05,
+    minimumRiskReward: 0.01,
+    maximumStopATR: 10,
+    minimumSignalScore: 110,
+    requireHtfBias: false
+  }
+});
+assert.ok(["LONG SETUP READY", "SHORT SETUP READY"].includes(module2BelowPredictionThreshold.status), "A risk-approved independent Module 2 variant must not be vetoed by the prediction score threshold");
+const predictionScoreRule = module2BelowPredictionThreshold.evaluations.find((row) => row.ruleCode === "SIGNAL_SCORE");
+assert.equal(predictionScoreRule?.status, "FAIL", "The below-threshold setup must remain excluded from 80%+ predictions");
+assert.equal(predictionScoreRule?.blocking, false, "Prediction confidence must remain advisory for BUY/SELL promotion");
+assert.equal(module2BelowPredictionThreshold.scenarioFlags.mandatoryChecklistMatched, true, "Prediction score must not invalidate a completed Module 2 strategy and risk contract");
 assert.equal(validTradeGeometry("LONG", 100, 101, 102), false, "Module 2 must reject a LONG stop above entry");
 assert.equal(validTradeGeometry("SHORT", 100, 99, 98), false, "Module 2 must reject a SHORT stop below entry");
 assert.equal(validTradeGeometry("LONG", 100, 99, 102), true, "Module 2 must accept valid LONG geometry");

@@ -133,7 +133,7 @@ def decide_module(cur, tenant_id: str, module_code: str, candles: dict[str, Any]
 
 def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False, setup_id: str | None = None) -> dict[str, Any] | None:
     replay_filter = "AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'" if proof_mode else "AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'"
-    freshness_filter = "" if proof_mode else """
+    freshness_filter = "" if proof_mode or setup_id else """
           AND (
             t.outcome = 'ACTIVE'
             OR sc.detected_at >= (

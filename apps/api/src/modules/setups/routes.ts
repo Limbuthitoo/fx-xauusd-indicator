@@ -107,7 +107,6 @@ const MODULE2_STRICT_REQUIRED_RULES = [
   "CONFIRM_ENTRY_CANDLE",
   "DIRECTIONAL_CONFLICT_CLEAR",
   "RISK_OK",
-  "SIGNAL_SCORE",
   "VARIANT_SELECTED"
 ] as const;
 const MODULE2_CONFIRMATION_RULES = ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE"] as const;
@@ -138,7 +137,7 @@ const MODULE2_QA_CASES: Array<{
   { code: "DISPLACEMENT_NO_BOS", label: "Displacement but no BOS", expected: "WAITING_FOR_BOS", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "BOS_CHOCH_CONFIRMED" },
   { code: "BOS_NO_RETRACE", label: "BOS but no retrace", expected: "WAITING_FOR_RETRACE", expectedStatus: "WAIT", opensPaperTrade: false, failureRule: "CONFIRM_ENTRY_CANDLE" },
   { code: "INVALIDATED_SETUP", label: "Invalidated setup", expected: "SETUP_INVALIDATED", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" },
-  { code: "LOW_SCORE_NO_TRADE", label: "Low-score no trade", expected: "LOW_SCORE_NO_TRADE", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" }
+  { code: "LOW_SCORE_NO_TRADE", label: "No approved variant control", expected: "LOW_SCORE_NO_TRADE", expectedStatus: "NO TRADE", opensPaperTrade: false, failureRule: "CONFIRMATION_COUNT" }
 ];
 const MODULE2_VARIANT_MATRIX_CASES: Module2ReplayCase[] = [
   "SWEEP_ONLY",
@@ -1732,7 +1731,6 @@ function isSignalHardBlocker(moduleCode: string, evaluation: any) {
       "SWEEP_REJECTION_CONFIRMED",
       "SWEEP_ACCEPTANCE_BLOCK",
       "RISK_OK",
-      "SIGNAL_SCORE",
       "VARIANT_SELECTED"
     ].includes(code);
   }
@@ -1788,7 +1786,6 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
     "RISK_OK",
-    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ].includes(code)) return "mandatory";
   return "other";
@@ -1944,10 +1941,10 @@ function predictedTarget(entry: number | null, stop: number | null, direction: "
   return roundSignalPrice(entry + (direction === "SHORT" ? -1 : 1) * risk * 2);
 }
 
-function predictionProbability(row: any, evaluations: any[], confidence: unknown, mandatoryMatched: boolean, fullChecklistMatched: boolean, brain: any = null) {
+export function predictionProbability(row: any, evaluations: any[], confidence: unknown, mandatoryMatched: boolean, fullChecklistMatched: boolean, brain: any = null) {
   const numericConfidence = Number(confidence);
   const brainApproved = brainApprovesPrediction(brain);
-  const brainBlocked = brain && !brainApproved;
+  const brainBlocked = brainRejectsPrediction(brain);
   if (Number.isFinite(numericConfidence)) {
     const value = Math.min(99, Math.max(1, Math.round(numericConfidence + (brainApproved ? 3 : 0))));
     return brainBlocked ? Math.min(79, value) : value;
@@ -1965,8 +1962,9 @@ function predictionProbability(row: any, evaluations: any[], confidence: unknown
 
 function predictionStatus(row: any, mandatoryMatched: boolean, fullChecklistMatched: boolean, brain: any = null) {
   if (row.trade_outcome === "ACTIVE") return "ACTIVE PAPER TRADE";
-  if (brain && !brainApprovesPrediction(brain)) return "BRAIN WAIT";
+  if (brainRejectsPrediction(brain)) return "BRAIN BLOCKED";
   if (brainApprovesPrediction(brain)) return fullChecklistMatched ? "BRAIN VALID ENTRY" : "BRAIN CORE ENTRY";
+  if (brain) return "BRAIN MONITORING";
   if (["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(row.status)) return fullChecklistMatched ? "VALID ENTRY" : "CORE ENTRY";
   if (mandatoryMatched) return "CORE PREDICTION";
   if (row.direction) return "WATCHLIST";
@@ -2002,6 +2000,13 @@ function brainApprovesPrediction(brain: any) {
   return (hasDirectionalAction || isManagedTrade)
     && [brain.entry, brain.stop, brain.target].every((value) => Number.isFinite(Number(value)))
     && !["ERROR", "CRITICAL"].includes(String(brain.severity ?? ""));
+}
+
+export function brainRejectsPrediction(brain: any) {
+  if (!brain) return false;
+  if (["ERROR", "CRITICAL"].includes(String(brain.severity ?? "").toUpperCase())) return true;
+  const decisionType = String(brain.decisionType ?? "").toUpperCase();
+  return ["BLOCKED", "INVALIDATED", "NO_TRADE", "CHECKLIST_MISMATCH"].some((state) => decisionType.includes(state));
 }
 
 function brainPredictionView(brain: any) {
@@ -3193,7 +3198,7 @@ function module2ReplayReason(replayCase: Module2ReplayCase) {
     DISPLACEMENT_NO_BOS: "Sweep and displacement appeared, but structure was not broken by candle close.",
     BOS_NO_RETRACE: "BOS confirmed and the zone exists, but price has not retraced into the entry zone.",
     INVALIDATED_SETUP: "The setup was invalidated before entry confirmation.",
-    LOW_SCORE_NO_TRADE: "The hard-rule sequence formed, but confirmation/quality layer counts are below the trading threshold."
+    LOW_SCORE_NO_TRADE: "No signal-approved confirmation profile completed. Confidence remains advisory and is not the reason for rejection."
   };
   return reasons[replayCase];
 }
@@ -3202,7 +3207,7 @@ function module2ReplayReasons(replayCase: Module2ReplayCase, score: number) {
   return [
     replayCase.includes("SELL") ? "Buy-side liquidity swept" : "Sell-side liquidity swept",
     "Module 2 replay evidence snapshot",
-    replayCase === "LOW_SCORE_NO_TRADE" ? "Score below production threshold" : `Score ${score}/110`,
+    replayCase === "LOW_SCORE_NO_TRADE" ? "No signal-approved variant completed" : `Score ${score}/110`,
     "No Twelve Data credit used"
   ];
 }
@@ -3217,7 +3222,7 @@ function module2ReplayQaSummary(replay: ReturnType<typeof buildModule2Replay>, t
     .filter((code) => statusByRule.get(code) === "PASS").length;
   const qualityCount = [...MODULE2_QUALITY_RULES]
     .filter((code) => statusByRule.get(code) === "PASS").length;
-  const safetyRulesPassed = ["RISK_OK", "VARIANT_SELECTED", "SIGNAL_SCORE"].every((code) => statusByRule.get(code) === "PASS");
+  const safetyRulesPassed = ["RISK_OK", "VARIANT_SELECTED"].every((code) => statusByRule.get(code) === "PASS");
   const paperEligible = replay.status.includes("SETUP READY") && replay.entryPrice != null && replay.stopPrice != null && replay.targetPrice != null;
   const scenarioMatched = replay.scenario === testCase.expected || replay.flags.state === testCase.expected;
   const statusMatched = replay.status === testCase.expectedStatus;

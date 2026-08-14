@@ -3509,7 +3509,7 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
   const cockpit = module2CockpitState(state, setup, trade);
   const signal = getSignal(setup, trade);
   const rows = liveScopedChecklistRows(liquiditySweepChecklistRows(setup?.evaluations ?? [], setup), setup);
-  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"].includes(row.rule_code ?? row.ruleCode));
+  const mandatory = rows.filter((row: any) => ["MODULE2_STATE", "NY_SESSION_ACTIVE", "DAILY_TRADE_LIMIT", "LIQUIDITY_LEVEL_IDENTIFIED", "LIQUIDITY_SWEEP_CONFIRMED", "SWEEP_REJECTION_CONFIRMED", "SWEEP_ACCEPTANCE_BLOCK", "RISK_OK", "VARIANT_SELECTED"].includes(row.rule_code ?? row.ruleCode));
   const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
   const passed = (items: any[]) => items.filter((row: any) => row.status === "PASS").length;
@@ -3594,8 +3594,8 @@ function module2MonitorStages(setup: any, evaluations: any[]) {
     },
     {
       label: "Risk",
-      status: stageStatus(["RISK_OK", "SIGNAL_SCORE", "VARIANT_SELECTED"]),
-      value: setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100`
+      status: stageStatus(["RISK_OK", "VARIANT_SELECTED"]),
+      value: setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100 confidence`
     }
   ];
 }
@@ -7391,7 +7391,6 @@ function OrbStrategySettings({ settings, onUpdate }: { settings: any[]; onUpdate
           <label>Max extension<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.maximumEntryExtensionPercentOfRange ?? 0.25} onChange={(event) => patch("breakout.maximumEntryExtensionPercentOfRange", Number(event.target.value))} /></label>
           <label>Retest zone<input type="number" min="0" max="1" step="0.01" value={draft?.retest?.zonePercentOfRange ?? 0.1} onChange={(event) => patch("retest.zonePercentOfRange", Number(event.target.value))} /></label>
           <label>Retest candles<input type="number" min="1" max="50" value={draft?.retest?.maximumCandles ?? 4} onChange={(event) => patch("retest.maximumCandles", Number(event.target.value))} /></label>
-          <label>Min favorability<input type="number" min="1" max="100" value={draft?.favorability?.minimumScoreForPaperTrade ?? 70} onChange={(event) => patch("favorability.minimumScoreForPaperTrade", Number(event.target.value))} /></label>
           <label>Minimum R:R<input type="number" min="0.1" max="10" step="0.1" value={draft?.risk?.minimumRewardToRisk ?? 2} onChange={(event) => patch("risk.minimumRewardToRisk", Number(event.target.value))} /></label>
           <label>Max session trades<input type="number" min="1" max="20" value={draft?.risk?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("risk.maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.retest?.enabled !== false} onChange={(event) => patch("retest.enabled", event.target.checked)} /> Retest scenarios</label>
@@ -7905,8 +7904,8 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
         codes: ["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT"]
       },
       {
-        title: "Final Automation Gate",
-        description: "The selected profile, risk engine, and Python brain decide whether the MVP fires now.",
+        title: "Prediction Confidence",
+        description: "Confidence controls the 80%+ upcoming prediction surface and does not replace selected-profile or hard-risk approval.",
         codes: ["SIGNAL_SCORE"]
       }
     ]);
@@ -7991,7 +7990,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["EMA_FILTER_MODE", "EMA filter mode", "OFF, record-only, warning, alignment-required, or countertrend-required mode is respected."],
     ["VOLUME_FILTER_MODE", "Volume filter mode", "OFF, record-only, warning, or expansion-required mode is respected."],
     ["VARIANT_SELECTED", "Signal-approved variant selected", "Variants are independent. One signal-approved confirmation profile can produce BUY/SELL after risk approval."],
-    ["SIGNAL_SCORE", "Minimum signal score", "The selected variant profile must pass the configured confidence score before MVP output fires."]
+    ["SIGNAL_SCORE", "Prediction confidence threshold", "A score of 80 or more publishes an upcoming prediction. Strategy-valid BUY/SELL output is decided independently by the selected variant and risk engine."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
   rows.unshift({
@@ -8066,9 +8065,11 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
     checklistRow(byCode, "RISK_PERMISSION", "Risk engine permits the signal", automaticReady ? "PASS" : "NOT_APPLICABLE", automaticReady ? "Risk checks permitted this automatic BUY/SELL setup." : "Risk permission is required only when the setup reaches automatic signal readiness."),
     {
       rule_code: "FAVORABILITY_SCORE",
-      name: "Favorability threshold",
+      name: "Prediction confidence",
       status: setup?.favorability_score == null ? "WAITING" : Number(setup.favorability_score) >= 70 ? "PASS" : "FAIL",
-      explanation: setup?.favorability_score == null ? "Waiting for favorability scoring." : `Score is ${setup.favorability_score}/100. Required: 70/100 or higher for automatic BUY/SELL signal.`
+      blocking: false,
+      required_for_entry: false,
+      explanation: setup?.favorability_score == null ? "Waiting for confidence scoring." : `Score is ${setup.favorability_score}/100. It ranks predictions and setup quality; valid ORB or horizontal-range strategy and risk rules independently decide BUY/SELL readiness.`
     },
     {
       rule_code: "HORIZONTAL_RANGE_OBSERVATION",
@@ -9217,9 +9218,9 @@ function module2RuleLayer(code?: string) {
     "LIQUIDITY_SWEEP_CONFIRMED",
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
-    "RISK_OK",
-    "SIGNAL_SCORE"
+    "RISK_OK"
   ].includes(code)) return "hard";
+  if (code === "SIGNAL_SCORE") return "final";
   if (code === "VARIANT_SELECTED") return "final";
   return "other";
 }

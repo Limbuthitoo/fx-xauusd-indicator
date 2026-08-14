@@ -573,11 +573,9 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const ready = unmatchedChecklistRules.length === 0;
   const mandatoryReady = orbMandatoryEntryReady(evaluations, direction);
   const score = favorability(context, direction, evaluations);
-  const minimumScore = Math.max(80, configuration.favorability?.minimumScoreForPaperTrade ?? 80);
   const retestInfo = retestDetails(allCandles, openingRange, direction);
   const breakoutAt = breakoutEpisodeAt(allCandles, openingRange, direction);
   const overextended = evaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
-  const lowFavorability = ready && score.score < minimumScore;
   const selection = overextended && baseSelection.scenario !== "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED"
     ? {
         scenario: "OVEREXTENDED_BREAKOUT_NO_TRADE",
@@ -594,14 +592,14 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const entryPrice = tradePlan.entry;
   const stopPrice = tradePlan.stop;
   const targetPrice = tradePlan.target;
-  const autoReady = ready && selection.autoEligible && !lowFavorability;
-  const mandatoryOnlyReady = !autoReady && mandatoryReady && score.score >= minimumScore;
-  const blockedStatus = lowFavorability ? "BLOCKED" : selection.status ?? "WAIT FOR RETEST";
+  const autoReady = ready && selection.autoEligible;
+  const mandatoryOnlyReady = !autoReady && mandatoryReady;
+  const blockedStatus = selection.status ?? "WAIT FOR RETEST";
 
   return {
     scenario: mandatoryOnlyReady
       ? `MANDATORY_ORB_BREAKOUT_${direction === "LONG" ? "BUY" : "SELL"}`
-      : lowFavorability ? `${trendAlignedScenario}_LOW_FAVORABILITY` : trendAlignedScenario,
+      : trendAlignedScenario,
     direction,
     status: autoReady || mandatoryOnlyReady ? (direction === "LONG" ? "LONG SETUP READY" : "SHORT SETUP READY") : blockedStatus,
     entryPrice,
@@ -609,13 +607,9 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
     targetPrice,
     finalReason:
       autoReady
-        ? `${selection.finalReason} Full checklist matched. Favorability ${score.score}/100 (${score.grade}) permits automatic paper entry.`
+        ? `${selection.finalReason} Full strategy profile and risk checks passed. Favorability ${score.score}/100 (${score.grade}) ranks confidence but does not replace the strategy decision.`
         : mandatoryOnlyReady
-          ? `Mandatory ORB entry checklist passed. Small paper setup created while confirmation/quality checks continue. Full checklist waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ") || "higher-quality scenario and favorability alignment"}.`
-          : lowFavorability
-            ? `Breakout passed mandatory rules, but favorability ${score.score}/100 is below the ${minimumScore}/100 paper-trade threshold.`
-          : mandatoryReady && score.score < minimumScore
-            ? `Mandatory ORB structure passed, but favorability ${score.score}/100 is below the high-probability ${minimumScore}/100 BUY/SELL threshold. The setup remains prediction evidence only.`
+          ? `Mandatory ORB entry and risk checks passed. BUY/SELL output is valid while optional confirmation evidence continues. Waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ") || "higher-quality confirmation evidence"}. Favorability ${score.score}/100 ranks confidence only.`
           : unmatchedChecklistRules.length > 0
             ? `Breakout exists, but automatic entry is blocked until every checklist rule passes. Waiting on: ${unmatchedChecklistRules.map((rule) => rule.name).join(", ")}.`
             : selection.finalReason ?? "Breakout exists, but one or more rules prevent automatic setup readiness.",

@@ -645,7 +645,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   });
   const selectedVariant = selectModule2Variant(variants);
   push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one signal-approved variant mandatory profile passes", selectedVariant ? selectedVariant.reason : "No signal-approved confirmation profile has completed. Variants are independent profiles; only one valid signal-approved profile is needed.");
-  push(evaluations, "SIGNAL_SCORE", "Minimum signal score", scoreOk, true, "AUTOMATIC", score, `>= ${config.minimumSignalScore}`, scoreOk ? "Module 2 signal score is high enough for automatic BUY/SELL output." : "Module 2 signal score is below the automatic BUY/SELL threshold.");
+  push(evaluations, "SIGNAL_SCORE", "Prediction confidence threshold", scoreOk, false, "AUTOMATIC", score, `>= ${config.minimumSignalScore} for prediction publication`, scoreOk ? "Module 2 confidence is high enough to publish an upcoming prediction." : "Confidence is below the prediction threshold; an independently valid BUY/SELL profile may still proceed through the risk engine.");
   const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
   const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
   flags.levels = levels;
@@ -700,14 +700,14 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
       riskLimitsOk,
       manualConfirmationOk
     },
-    finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk && scoreOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
+    finalDecision: !mandatoryEntryPassed ? "WAIT" : riskOk ? direction === "LONG" ? "BUY_READY" : "SELL_READY" : "BLOCK",
     selectedProfile: selectedVariant?.code ?? null,
     riskOk
   };
-  flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk && scoreOk;
+  flags.mandatoryChecklistMatched = mandatoryEntryPassed && riskOk;
   flags.fullChecklistMatched = fullChecklistPassed;
   flags.setupTier = fullChecklistPassed && gradeValue !== "B" && gradeValue !== "C" ? "FULL" : mandatoryEntryPassed ? "MANDATORY" : "WATCH";
-  const setupReady = mandatoryEntryPassed && riskOk && scoreOk;
+  const setupReady = mandatoryEntryPassed && riskOk;
   flags.state = setupReady ? "SIGNAL_ACTIVE" : "ENTRY_CONFIRMATION";
   flags.riskReward = plan.rr;
   flags.stateMachine = appendStateTransition(
@@ -715,7 +715,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     setupReady ? "ENTRY_READY" : "ENTRY_CONFIRMATION",
     current.timestampUtc,
     setupReady
-      ? "Selected profile, risk engine, and confidence gate produced a setup-ready decision."
+      ? "Selected profile and risk engine produced a setup-ready decision; confidence remains prediction evidence."
       : mandatoryEntryPassed
         ? "A strategy profile completed; downstream risk or confidence approval is still required."
         : "Strategy evidence is still waiting for an approved profile."
@@ -745,10 +745,6 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   if (!riskOk) {
     return blockedDecision("RISK_ENGINE_BLOCK", `BLOCK: ${selectedVariant?.name ?? "selected profile"} mandatory rules passed, but risk engine blocked entry.`, evaluations, flags, direction, score);
   }
-  if (!scoreOk) {
-    return blockedDecision("LOW_SETUP_QUALITY", `NO TRADE: ${selectedVariant?.name ?? "selected Module 2 profile"} passed, but confidence ${score}% is below ${config.minimumSignalScore}%.`, evaluations, flags, direction, score);
-  }
-
   if (!fullChecklistPassed || gradeValue === "B" || gradeValue === "C") {
     return {
       scenario: direction === "LONG" ? `MANDATORY_${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_BUY` : `MANDATORY_${selectedVariant?.code ?? "LIQUIDITY_SWEEP"}_SELL`,
@@ -797,7 +793,6 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
-    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
   return [...required].every((ruleCode) =>
@@ -818,18 +813,18 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
-    "SIGNAL_SCORE",
     "VARIANT_SELECTED"
   ]);
   const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   const paperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
+  if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
   if (mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (paperTracking.has(ruleCode)) return { ruleLayer: "PAPER_TRACKING", requiredForEntry: false };
   if (["PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(ruleCode)) return { ruleLayer: "EVIDENCE", requiredForEntry: false };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
-  if (ruleCode === "SIGNAL_SCORE" || ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
+  if (ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 
