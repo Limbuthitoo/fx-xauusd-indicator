@@ -4080,10 +4080,20 @@ async function attemptProductionPaperTrade({
   }
 
   await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
-  const alert = entryAlertDetails(moduleCode, setup, null, Number(effectiveRisk?.rewardToRisk ?? 0));
-  const entryGuard = paperEntryPriceGuard(setup, current);
-  if (!entryGuard.ok) return { skipped: true, reason: "ENTRY_PRICE_TOO_FAR_FROM_LIVE_MARKET", guard: entryGuard };
   const signalThesisKey = setupSignalThesisKey(moduleCode, session, setup);
+  const signalPlan = await persistImmutableSignalContract(session, setup, effectiveRisk, signalThesisKey);
+  const canonicalSetup = signalPlan.setup_candidate_id === setup.id;
+  const canonicalSetupRow = canonicalSetup
+    ? setup
+    : (await query("SELECT * FROM setup_candidates WHERE id = $1 LIMIT 1", [signalPlan.setup_candidate_id])).rows[0] ?? setup;
+  const signalSetup = {
+    ...canonicalSetupRow,
+    id: signalPlan.setup_candidate_id,
+    entry_price: signalPlan.planned_entry,
+    stop_price: signalPlan.planned_stop,
+    target_price: signalPlan.planned_target
+  };
+  const alert = entryAlertDetails(moduleCode, signalSetup, null, Number(signalPlan.reward_to_risk ?? effectiveRisk?.rewardToRisk ?? 0));
   const duplicateThesis = await query(
     `SELECT id, created_at
      FROM notifications
@@ -4106,7 +4116,7 @@ async function attemptProductionPaperTrade({
   } else {
     await notifyTenantOnce(
       session.tenant_id,
-      `${moduleCode}-setup-ready-${setup.id}`,
+      `signal-ready-${signalThesisKey}`,
       moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
       `${alert.title} signal ready`,
       `${alert.body} | ${setup.final_reason ?? "Valid signal profile matched."}`,
@@ -4117,7 +4127,7 @@ async function attemptProductionPaperTrade({
   }
   const paperTrackingEligible = effectiveDecision.scenarioFlags?.paperTrackingEligible !== false;
   const paperTrade = settings.paperTradingEnabled && paperTrackingEligible
-    ? await createAutomaticPaperTrade(session, setup, effectiveRisk, current, moduleCode)
+    ? await createAutomaticPaperTrade(session, signalSetup, effectiveRisk, current, moduleCode, signalPlan)
     : settings.paperTradingEnabled
       ? { skipped: true, reason: "PAPER_TRACKING_LIMIT", blockers: effectiveDecision.scenarioFlags?.paperTrackingBlockers ?? [] }
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
@@ -4206,10 +4216,15 @@ function setupSignalThesisKey(moduleCode: string, session: any, setup: any) {
           : scenario.includes("RETEST")
             ? "BREAKOUT_RETEST"
             : "ORB_BREAKOUT";
-    return [moduleCode, session.id, direction, family].join(":");
+    const eventAt = setup.scenario_flags?.breakoutAt
+      ?? setup.scenario_flags?.priorFailedBreakout?.candle?.timestampUtc
+      ?? setup.scenario_flags?.priorFailedBreakout?.timestampUtc
+      ?? family;
+    return [session.tenant_id, moduleCode, session.id, direction, family, eventAt].join(":");
   }
   const sweep = setup.scenario_flags?.sweep ?? {};
   return [
+    session.tenant_id,
     moduleCode,
     session.id,
     direction,
@@ -4217,6 +4232,50 @@ function setupSignalThesisKey(moduleCode: string, session: any, setup: any) {
     sweep.level?.type ?? "UNKNOWN_LEVEL",
     Number(sweep.level?.price ?? 0).toFixed(2)
   ].join(":");
+}
+
+async function persistImmutableSignalContract(session: any, setup: any, risk: any, signalThesisKey: string) {
+  const inserted = await query(
+    `INSERT INTO trade_plans (
+       setup_candidate_id, planned_entry, planned_stop, planned_target,
+       planned_lot, planned_risk_amount, reward_to_risk, status,
+       signal_thesis_key, promoted_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,'READY',$8,now())
+     ON CONFLICT DO NOTHING
+     RETURNING *`,
+    [
+      setup.id,
+      numericParam(setup.entry_price, 5),
+      numericParam(setup.stop_price, 5),
+      numericParam(setup.target_price, 5),
+      numericParam(risk?.suggestedLotSize, 4),
+      numericParam(risk?.plannedRiskAmount, 2),
+      numericParam(risk?.rewardToRisk, 4),
+      signalThesisKey
+    ]
+  );
+  if (inserted.rows[0]) return inserted.rows[0];
+  const existing = await query(
+    `SELECT *
+     FROM trade_plans
+     WHERE signal_thesis_key = $1 OR setup_candidate_id = $2
+     ORDER BY CASE WHEN signal_thesis_key = $1 THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [signalThesisKey, setup.id]
+  );
+  if (!existing.rows[0]) throw new Error(`Signal contract ${signalThesisKey} could not be persisted.`);
+  if (!existing.rows[0].signal_thesis_key) {
+    const promoted = await query(
+      `UPDATE trade_plans
+       SET signal_thesis_key = $2,
+           promoted_at = COALESCE(promoted_at, now())
+       WHERE id = $1
+       RETURNING *`,
+      [existing.rows[0].id, signalThesisKey]
+    );
+    return promoted.rows[0];
+  }
+  return existing.rows[0];
 }
 
 function moduleMandatoryEntryPassed(moduleCode: string, evaluations: any[]) {
@@ -4498,7 +4557,7 @@ async function saveSetupCandleSnapshot(setup: any, session: any, timeframe: numb
   return rows.length;
 }
 
-async function createAutomaticPaperTrade(session: any, setup: any, risk: any, currentRow: any, moduleCode = "orb_max_options") {
+async function createAutomaticPaperTrade(session: any, setup: any, risk: any, currentRow: any, moduleCode = "orb_max_options", persistedSignalPlan?: any) {
   if (setup.entry_price == null || setup.stop_price == null || setup.target_price == null) return null;
   if (risk?.status !== "PERMITTED") {
     return { skipped: true, reason: "RISK_NOT_PERMITTED", riskStatus: risk?.status ?? "MISSING", riskReasons: risk?.reasons ?? [] };
@@ -4531,19 +4590,12 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
   const rewardToRisk = Number(risk?.rewardToRisk ?? 0);
   const plannedLot = risk?.suggestedLotSize ?? null;
   const plannedRiskAmount = risk?.plannedRiskAmount ?? null;
-  const planResult = await query(
+  const plan = persistedSignalPlan ?? (await query(
     `INSERT INTO trade_plans (
       setup_candidate_id, planned_entry, planned_stop, planned_target,
       planned_lot, planned_risk_amount, reward_to_risk, status
     ) VALUES ($1,$2,$3,$4,$5,$6,$7,'EXECUTED')
-    ON CONFLICT (setup_candidate_id) DO UPDATE SET
-      planned_entry = EXCLUDED.planned_entry,
-      planned_stop = EXCLUDED.planned_stop,
-      planned_target = EXCLUDED.planned_target,
-      planned_lot = EXCLUDED.planned_lot,
-      planned_risk_amount = EXCLUDED.planned_risk_amount,
-      reward_to_risk = EXCLUDED.reward_to_risk,
-      status = 'EXECUTED'
+    ON CONFLICT (setup_candidate_id) DO UPDATE SET status = 'EXECUTED'
     RETURNING *`,
     [
       setup.id,
@@ -4554,8 +4606,11 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
       numericParam(plannedRiskAmount, 2),
       numericParam(rewardToRisk, 4)
     ]
-  );
-  const plan = planResult.rows[0] as any;
+  )).rows[0] as any;
+  if (plan.status !== "EXECUTED") {
+    await query("UPDATE trade_plans SET status = 'EXECUTED' WHERE id = $1", [plan.id]);
+    plan.status = "EXECUTED";
+  }
   const tradeResult = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,

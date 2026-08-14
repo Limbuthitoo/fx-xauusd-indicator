@@ -5012,6 +5012,79 @@ aside {
   opacity: 0.62;
 }
 
+.signal-contract-history {
+  border-top: 1px solid #253027;
+  background: #0d120f;
+}
+
+.signal-contract-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+}
+
+.signal-contract-history-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 15px;
+}
+
+.signal-contract-history-head p,
+.signal-contract-empty {
+  margin: 4px 0 0;
+  color: #8e9d93;
+  font-size: 12px;
+}
+
+.signal-contract-history-head > span {
+  color: #8e9d93;
+  white-space: nowrap;
+}
+
+.signal-contract-table-wrap {
+  overflow-x: auto;
+}
+
+.signal-contract-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.signal-contract-table th,
+.signal-contract-table td {
+  padding: 9px 12px;
+  border-top: 1px solid #202a23;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.signal-contract-table th {
+  color: #829087;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.signal-contract-table tr.current td {
+  background: #102319;
+}
+
+.signal-contract-table .buy-text {
+  color: #23c483;
+}
+
+.signal-contract-table .sell-text {
+  color: #ff6666;
+}
+
+.signal-contract-empty {
+  padding: 0 14px 14px;
+}
+
 @media (max-width: 720px) {
   .paper-target-progress {
     grid-template-columns: 1fr;

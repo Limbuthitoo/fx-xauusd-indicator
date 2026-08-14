@@ -39,6 +39,7 @@ type PanelState = {
   cacheStatus?: any;
   newsStatus?: any;
   tradePlan?: any;
+  tradePlanHistory?: any[];
   currentTrade?: any;
   paperTrading?: { summary?: any; trades?: any[] };
   tradeSignals?: { summary?: any; signals?: any[] };
@@ -1181,6 +1182,7 @@ function App() {
                 indicatorDefaults={chartIndicatorDefaults}
                 onMessage={setMessage}
               />
+              <SignalContractHistory rows={state.tradePlanHistory ?? []} moduleCode={selectedModuleCode} />
             </section>
 
             <aside className="auto-sidebar live-support-panels">
@@ -3231,6 +3233,44 @@ function PaperTradePanel({ trade, tradePlan, setup }: { trade?: any; tradePlan?:
       <Metric label="Target" value={trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price ?? "--"} />
       <Metric label="Result R" value={formatR(trade?.result_r)} />
     </Panel>
+  );
+}
+
+function SignalContractHistory({ rows, moduleCode }: { rows: any[]; moduleCode: string }) {
+  const history = rows.filter((row) => row.module_code === moduleCode).slice(0, 8);
+  return (
+    <section className="signal-contract-history" aria-label="Promoted entry history">
+      <div className="signal-contract-history-head">
+        <div>
+          <h3><Clock size={17} />Promoted entry history</h3>
+          <p>Frozen signal contracts for comparison. A new row appears only after a new setup thesis is approved.</p>
+        </div>
+        <span>{history.length} shown</span>
+      </div>
+      {history.length > 0 ? (
+        <div className="signal-contract-table-wrap">
+          <table className="signal-contract-table">
+            <thead>
+              <tr><th>Promoted</th><th>Side</th><th>Profile</th><th>Entry</th><th>SL</th><th>Target</th><th>RR</th><th>Outcome</th></tr>
+            </thead>
+            <tbody>
+              {history.map((row) => (
+                <tr key={row.id} className={row.id === history[0]?.id ? "current" : ""}>
+                  <td>{formatNepalTime(row.promoted_at ?? row.created_at)}</td>
+                  <td><strong className={String(row.direction).toUpperCase() === "SHORT" ? "sell-text" : "buy-text"}>{String(row.direction).toUpperCase() === "SHORT" ? "SELL" : "BUY"}</strong></td>
+                  <td>{formatScenario(row.scenario)}</td>
+                  <td>{formatPriceValue(row.planned_entry)}</td>
+                  <td>{formatPriceValue(row.planned_stop)}</td>
+                  <td>{formatPriceValue(row.planned_target)}</td>
+                  <td>{row.reward_to_risk == null ? "--" : `${Number(row.reward_to_risk).toFixed(2)}R`}</td>
+                  <td>{row.outcome ?? (row.id === history[0]?.id ? "CURRENT" : row.status ?? "READY")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : <p className="signal-contract-empty">No promoted entry exists for this module yet. Mutable predictions are not recorded as confirmed signals.</p>}
+    </section>
   );
 }
 
@@ -9305,14 +9345,14 @@ function artifactBelongsToNewYorkDate(value: unknown, sessionDate: string) {
 }
 
 function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
-  const direction = trade?.direction ?? tradePlan?.direction ?? setup?.direction ?? null;
-  if (trade?.actual_entry != null && trade?.actual_stop != null && trade?.actual_target != null) {
+  const direction = tradePlan?.direction ?? trade?.direction ?? setup?.direction ?? null;
+  if (tradePlan?.active_trade_id && tradePlan?.actual_entry != null && tradePlan?.actual_stop != null && tradePlan?.actual_target != null) {
     return {
       status: "PAPER_TRADE_OPENED",
       direction,
-      entry: trade.actual_entry,
-      stop: trade.actual_stop,
-      target: trade.actual_target
+      entry: tradePlan.actual_entry,
+      stop: tradePlan.actual_stop,
+      target: tradePlan.actual_target
     };
   }
   if (tradePlan?.planned_entry != null && tradePlan?.planned_stop != null && tradePlan?.planned_target != null) {
@@ -9322,6 +9362,15 @@ function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
       entry: tradePlan.planned_entry,
       stop: tradePlan.planned_stop,
       target: tradePlan.planned_target
+    };
+  }
+  if (trade?.actual_entry != null && trade?.actual_stop != null && trade?.actual_target != null) {
+    return {
+      status: "PAPER_TRADE_OPENED",
+      direction,
+      entry: trade.actual_entry,
+      stop: trade.actual_stop,
+      target: trade.actual_target
     };
   }
   const setupReady = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status));

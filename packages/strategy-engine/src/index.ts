@@ -225,6 +225,19 @@ function retestDetails(candles: Candle[], openingRange: OpeningRange, direction:
   };
 }
 
+function breakoutEpisodeAt(candles: Candle[], openingRange: OpeningRange, direction: Direction) {
+  if (openingRange.high == null || openingRange.low == null) return null;
+  const boundary = direction === "LONG" ? openingRange.high : openingRange.low;
+  let episodeAt: string | null = null;
+  let wasOutside = false;
+  for (const candle of candles) {
+    const outside = direction === "LONG" ? candle.close > boundary : candle.close < boundary;
+    if (outside && !wasOutside) episodeAt = candle.timestampUtc;
+    wasOutside = outside;
+  }
+  return episodeAt;
+}
+
 function roundPrice(value: number) {
   return Number(value.toFixed(5));
 }
@@ -562,6 +575,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
   const score = favorability(context, direction, evaluations);
   const minimumScore = Math.max(80, configuration.favorability?.minimumScoreForPaperTrade ?? 80);
   const retestInfo = retestDetails(allCandles, openingRange, direction);
+  const breakoutAt = breakoutEpisodeAt(allCandles, openingRange, direction);
   const overextended = evaluations.some((evaluation) => evaluation.ruleCode === "ENTRY_NOT_OVEREXTENDED" && evaluation.status === "FAIL");
   const lowFavorability = ready && score.score < minimumScore;
   const selection = overextended && baseSelection.scenario !== "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED"
@@ -614,6 +628,7 @@ export function evaluateSetup(context: RuleContext): SetupDecision {
       orbWidth: openingRange.width ?? 0,
       retest,
       retestInfo,
+      breakoutAt,
       tradePlan,
       breakoutProfile: breakoutProfile(context, direction),
       matrix: {

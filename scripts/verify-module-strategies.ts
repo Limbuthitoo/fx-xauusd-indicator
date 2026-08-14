@@ -106,6 +106,7 @@ assert.equal(isModule1ActiveOrbPreset("NEW_YORK_ORB"), true, "Module 1 must acti
 assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), false, "Module 1 must not actively evaluate London ORB");
 assert.equal(module1.status, "LONG SETUP READY", `Module 1 should produce a long setup, got ${module1.scenario}: ${module1.finalReason}`);
 assert.equal((module1.scenarioFlags.matrix as any)?.mandatoryChecklistMatched, true, "Module 1 mandatory checklist must be complete");
+assert.equal(module1.scenarioFlags.breakoutAt, module1Signal.timestampUtc, "Module 1 must persist the first candle timestamp for a breakout episode");
 assertTradePlan(module1, "LONG", "Module 1");
 const orbDetector = new MaxOptionsOrbRangeDetector();
 const orbRangeResult = orbDetector.detect({

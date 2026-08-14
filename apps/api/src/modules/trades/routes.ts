@@ -204,11 +204,35 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND sc.scenario <> 'QA_TEST_SIGNAL'
         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
-        AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.id IS NOT NULL)
-      ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END, tp.created_at DESC
+      ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode, currentSessionDate]);
     return rows[0] ?? null;
+  });
+
+  app.get("/api/trade-plans/history", async (request) => {
+    const search = request.query as { moduleCode?: string; limit?: string };
+    const moduleCode = search.moduleCode ?? "orb_max_options";
+    const limit = Math.min(Math.max(Number(search.limit ?? 50), 1), 200);
+    const auth = await requireTenantModule(request, moduleCode);
+    const { rows } = await query(
+      `SELECT tp.*, sc.symbol, sc.direction, sc.scenario, sc.module_code,
+              sc.detected_at AS setup_detected_at, sc.final_reason,
+              t.id AS trade_id, t.outcome, t.actual_exit, t.result_r, t.closed_at
+       FROM trade_plans tp
+       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+       LEFT JOIN trades t ON t.trade_plan_id = tp.id
+       WHERE sc.tenant_id = $1
+         AND sc.module_code = $2
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
+       ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC
+       LIMIT $3`,
+      [auth.tenantId, moduleCode, limit]
+    );
+    return rows;
   });
 
   app.post("/api/setups/:id/trade-plan", async (request) => {
