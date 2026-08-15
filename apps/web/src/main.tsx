@@ -381,8 +381,9 @@ function App() {
   const currentModuleSetup = artifactBelongsToNewYorkDate(candidateModuleSetup?.detected_at, activeNewYorkDate) ? candidateModuleSetup : null;
   const currentModuleTrade = artifactBelongsToNewYorkDate(candidateModuleTrade?.opened_at, activeNewYorkDate) ? candidateModuleTrade : null;
   const currentModuleTradePlan = state.tradePlan?.module_code === selectedModuleCode ? state.tradePlan : undefined;
-  const currentModuleSignalPlan = immutableModuleSignalPlan(currentModuleSetup, currentModuleTradePlan, currentModuleTrade);
-  const signal = getSignal(currentModuleSetup, currentModuleTrade);
+  const currentModuleChartSetup = setupBoundToActivePlan(currentModuleSetup, currentModuleTradePlan);
+  const currentModuleSignalPlan = immutableModuleSignalPlan(currentModuleChartSetup, currentModuleTradePlan, currentModuleTrade);
+  const signal = getSignal(currentModuleChartSetup, currentModuleTrade);
   const orb = state.session?.opening_range;
   const orbStrategyConfig = (state.orbModuleSettings ?? []).find((item: any) => item.key === "orb.strategy")?.value ?? {};
   const showModule1OrbSessionLevels = orbStrategyConfig?.chart?.showOrbSessionLevels !== false;
@@ -1174,7 +1175,7 @@ function App() {
                 session={state.session}
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 orbRanges={selectedModuleCode === "orb_max_options" ? state.orbRanges ?? [] : []}
-                setup={currentModuleSetup}
+                setup={currentModuleChartSetup}
                 signalPlan={currentModuleSignalPlan}
                 priceLines={moduleChartPriceLines(selectedModuleCode, currentModuleSetup, chartIndicatorDefaults)}
                 showEma={selectedModuleCode !== "orb_max_options"}
@@ -3354,6 +3355,9 @@ function LiveStrategyCenterPanel({
   const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
   const missing = firstMissingRule(rows);
   const module1Path = moduleCode === "orb_max_options" ? module1ActivePath(setup) : null;
+  const signalQuality = setup?.scenario_flags?.signalQualityPolicy ?? null;
+  const signalFrequency = setup?.scenario_flags?.signalFrequencyPolicy ?? null;
+  const strategyProfile = strategyProfileLabel(moduleCode, setup);
   return (
     <Panel icon={<ShieldCheck />} title="Strategy Center">
       <div className={`live-signal-summary ${signal.tone}`}>
@@ -3371,10 +3375,14 @@ function LiveStrategyCenterPanel({
         </div>
       ) : null}
       <div className="live-trade-plan">
+        <Metric label="Profile" value={strategyProfile} />
         <Metric label="Direction" value={trade?.direction ?? setup?.direction ?? "--"} />
         <Metric label="Entry" value={formatPriceValue(entry)} />
         <Metric label="Stop" value={formatPriceValue(stop)} />
         <Metric label="Target" value={formatPriceValue(target)} />
+        <Metric label="TP1 distance" value={signalQuality?.tp1Pips == null ? signalPipDistanceLabel(entry, stop) : `${signalQuality.tp1Pips} pips`} />
+        <Metric label="Quality gate" value={signalQuality ? `${signalQuality.passed ? "PASS" : "BLOCK"} · ${signalQuality.evidenceScore ?? "--"}/100` : "Awaiting promotion"} />
+        <Metric label="Daily signals" value={signalFrequency ? `${signalFrequency.dailySignals ?? 0}/${signalFrequency.dailyMaximum ?? 3}` : "--/3"} />
       </div>
       <LiveModuleEvidence moduleCode={moduleCode} setup={setup} openingRange={openingRange} />
       {moduleCode === "high_probability_strategy_2" ? (
@@ -8204,9 +8212,9 @@ function TradeSignalsWorkspace({
             <SignalPrice label="TP · Module target" value={formatPriceValue(longTargetPrice(selected))} tone="target" />
           ) : (
             <>
-              <SignalPrice label={targetLabel(selected, 0, "TP1 · 1R")} value={formatPriceValue(selected.tp1)} tone="target" />
-              <SignalPrice label={targetLabel(selected, 1, "TP2 · 1.5R")} value={formatPriceValue(selected.tp2)} tone="target" />
-              <SignalPrice label={targetLabel(selected, 2, "TP3 · strategy target")} value={formatPriceValue(selected.tp3)} tone="target" />
+              <SignalPrice label={`${targetLabel(selected, 0, "TP1 · 1R")} · ${signalTargetPipsLabel(selected, 0)}`} value={formatPriceValue(selected.tp1)} tone="target" />
+              <SignalPrice label={`${targetLabel(selected, 1, "TP2 · 1.5R")} · ${signalTargetPipsLabel(selected, 1)}`} value={formatPriceValue(selected.tp2)} tone="target" />
+              <SignalPrice label={`${targetLabel(selected, 2, "TP3 · strategy target")} · ${signalTargetPipsLabel(selected, 2)}`} value={formatPriceValue(selected.tp3)} tone="target" />
             </>
           )}
           <SignalPrice label="Setup score" value={chanceLabel(selected)} tone={chanceTone(selected)} />
@@ -8239,11 +8247,15 @@ function TradeSignalsWorkspace({
           <aside className="signal-trade-facts">
             <h3><Target size={18} />Trade details</h3>
             <Metric label="Direction" value={selected.direction} />
+            <Metric label="Strategy profile" value={formatScenario(selected.strategyProfile ?? "--")} />
             <Metric label="Variant" value={selected.variantName ?? selected.variantCode ?? "--"} />
             <Metric label="Current price" value={formatPriceValue(selected.currentPrice)} />
             <Metric label="Live status" value={signalFreshnessLabel(selected)} />
             <Metric label="Entry distance" value={signalEntryDistanceLabel(selected)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
+            <Metric label="TP1 distance" value={signalTargetPipsLabel(selected, 0)} />
+            <Metric label="Quality policy" value={selected.signalQuality?.passed ? "PASSED" : "--"} />
+            <Metric label="Profile usage" value={selected.signalFrequency ? `${selected.signalFrequency.profileSignals ?? 0}/${selected.signalFrequency.profileMaximum ?? 2}` : "--/2"} />
             <Metric label="Evidence score" value={selected.confidence == null ? "--" : `${Number(selected.confidence).toFixed(0)}/100`} />
             <Metric label="Setup score" value={`${chanceLabel(selected)} · ${selected.chanceSource ?? "Module scoring"}`} />
             <Metric label="Mandatory" value={signalChecklistSummaryLabel(selected, "mandatory")} />
@@ -8350,6 +8362,10 @@ function TradeSignalsWorkspace({
                 <strong>{signal.variantName ?? formatScenario(signal.variantCode)}</strong>
               </div>
             ) : null}
+            <div className="trade-signal-entry compact">
+              <span>Strategy profile</span>
+              <strong>{formatScenario(signal.strategyProfile ?? signal.scenario)}</strong>
+            </div>
             <div className="trade-signal-checks">
               <span>M {signalChecklistSummaryLabel(signal, "mandatory")}</span>
               <span>C {signalChecklistSummaryLabel(signal, "confirmations")}</span>
@@ -8366,9 +8382,9 @@ function TradeSignalsWorkspace({
                 <SignalPrice label="TP" value={formatPriceValue(longTargetPrice(signal))} tone="target" />
               ) : (
                 <>
-                  <SignalPrice label={targetLabel(signal, 0, "TP1 1R")} value={formatPriceValue(signal.tp1)} tone="target" />
-                  <SignalPrice label={targetLabel(signal, 1, "TP2 1.5R")} value={formatPriceValue(signal.tp2)} tone="target" />
-                  <SignalPrice label={targetLabel(signal, 2, "TP3 strategy target")} value={formatPriceValue(signal.tp3)} tone="target" />
+                  <SignalPrice label={`${targetLabel(signal, 0, "TP1 1R")} · ${signalTargetPipsLabel(signal, 0)}`} value={formatPriceValue(signal.tp1)} tone="target" />
+                  <SignalPrice label={`${targetLabel(signal, 1, "TP2 1.5R")} · ${signalTargetPipsLabel(signal, 1)}`} value={formatPriceValue(signal.tp2)} tone="target" />
+                  <SignalPrice label={`${targetLabel(signal, 2, "TP3 strategy target")} · ${signalTargetPipsLabel(signal, 2)}`} value={formatPriceValue(signal.tp3)} tone="target" />
                 </>
               )}
             </div>
@@ -8441,6 +8457,29 @@ function signalEntryDistanceLabel(signal: any) {
   if (!Number.isFinite(distance)) return "Distance --";
   if (!Number.isFinite(limit)) return `${formatPriceValue(distance)} from entry`;
   return `${formatPriceValue(distance)} / ${formatPriceValue(limit)} max`;
+}
+
+function signalTargetPipsLabel(signal: any, targetIndex: number) {
+  const entry = Number(signal?.entry ?? signal?.entryRange?.midpoint);
+  const target = Number([signal?.tp1, signal?.tp2, signal?.tp3][targetIndex]);
+  const pipSize = Number(signal?.pipSize ?? 0.01);
+  if (![entry, target, pipSize].every(Number.isFinite) || pipSize <= 0) return "--";
+  return `${Math.round(Math.abs(target - entry) / pipSize)} pips`;
+}
+
+function signalPipDistanceLabel(entryValue: unknown, stopValue: unknown) {
+  const entry = Number(entryValue);
+  const stop = Number(stopValue);
+  if (![entry, stop].every(Number.isFinite)) return "--";
+  return `${Math.round(Math.abs(entry - stop) / 0.01)} pips`;
+}
+
+function strategyProfileLabel(moduleCode: string, setup?: any) {
+  const flags = setup?.scenario_flags ?? {};
+  if (moduleCode === "high_probability_strategy_2") {
+    return formatScenario(flags.module2Variant?.code ?? flags.variantCode ?? "Awaiting sweep profile");
+  }
+  return module1ActivePath(setup);
 }
 
 function SignalPrice({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
@@ -9346,8 +9385,11 @@ function artifactBelongsToNewYorkDate(value: unknown, sessionDate: string) {
 }
 
 function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
-  const direction = tradePlan?.direction ?? trade?.direction ?? setup?.direction ?? null;
+  const planBelongsToSetup = !tradePlan?.setup_candidate_id || !setup?.id || tradePlan.setup_candidate_id === setup.id;
+  const activePlan = Boolean(tradePlan?.active_trade_id);
   if (tradePlan?.active_trade_id && tradePlan?.actual_entry != null && tradePlan?.actual_stop != null && tradePlan?.actual_target != null) {
+    const direction = tradePlan.direction;
+    if (!validDirectionalSignalGeometry(direction, tradePlan.actual_entry, tradePlan.actual_stop, tradePlan.actual_target)) return null;
     return {
       status: "PAPER_TRADE_OPENED",
       direction,
@@ -9356,7 +9398,9 @@ function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
       target: tradePlan.actual_target
     };
   }
-  if (tradePlan?.planned_entry != null && tradePlan?.planned_stop != null && tradePlan?.planned_target != null) {
+  if ((activePlan || planBelongsToSetup) && ["DRAFT", "READY", "EXECUTED"].includes(String(tradePlan?.status)) && tradePlan?.planned_entry != null && tradePlan?.planned_stop != null && tradePlan?.planned_target != null) {
+    const direction = tradePlan.direction;
+    if (!validDirectionalSignalGeometry(direction, tradePlan.planned_entry, tradePlan.planned_stop, tradePlan.planned_target)) return null;
     return {
       status: "TRADE_PLANNED",
       direction,
@@ -9366,6 +9410,8 @@ function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
     };
   }
   if (trade?.actual_entry != null && trade?.actual_stop != null && trade?.actual_target != null) {
+    const direction = trade.direction;
+    if (!validDirectionalSignalGeometry(direction, trade.actual_entry, trade.actual_stop, trade.actual_target)) return null;
     return {
       status: "PAPER_TRADE_OPENED",
       direction,
@@ -9376,6 +9422,8 @@ function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
   }
   const setupReady = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status));
   if (setupReady && setup?.entry_price != null && setup?.stop_price != null && setup?.target_price != null) {
+    const direction = setup.direction;
+    if (!validDirectionalSignalGeometry(direction, setup.entry_price, setup.stop_price, setup.target_price)) return null;
     return {
       status: setup.status,
       direction,
@@ -9385,6 +9433,36 @@ function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
     };
   }
   return null;
+}
+
+function setupBoundToActivePlan(setup?: any, tradePlan?: any) {
+  if (!tradePlan?.active_trade_id || !tradePlan?.setup_candidate_id || setup?.id === tradePlan.setup_candidate_id) return setup;
+  return {
+    id: tradePlan.setup_candidate_id,
+    module_code: tradePlan.module_code,
+    status: "PAPER_TRADE_OPENED",
+    direction: tradePlan.direction,
+    detected_at: tradePlan.setup_detected_at ?? tradePlan.trade_opened_at,
+    scenario: tradePlan.scenario,
+    entry_price: tradePlan.actual_entry ?? tradePlan.planned_entry,
+    stop_price: tradePlan.actual_stop ?? tradePlan.planned_stop,
+    target_price: tradePlan.actual_target ?? tradePlan.planned_target,
+    favorability_score: tradePlan.favorability_score,
+    favorability_grade: tradePlan.favorability_grade,
+    scenario_flags: tradePlan.scenario_flags,
+    final_reason: tradePlan.final_reason
+  };
+}
+
+function validDirectionalSignalGeometry(directionValue: unknown, entryValue: unknown, stopValue: unknown, targetValue: unknown) {
+  const direction = String(directionValue ?? "").toUpperCase();
+  const entry = Number(entryValue);
+  const stop = Number(stopValue);
+  const target = Number(targetValue);
+  if (![entry, stop, target].every(Number.isFinite)) return false;
+  if (["LONG", "BUY"].includes(direction)) return stop < entry && entry < target;
+  if (["SHORT", "SELL"].includes(direction)) return target < entry && entry < stop;
+  return false;
 }
 
 function dateInputValue(value?: string | null) {

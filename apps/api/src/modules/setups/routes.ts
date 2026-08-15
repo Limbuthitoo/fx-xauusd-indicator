@@ -1,4 +1,4 @@
-import { calculateRisk } from "@orb-guide/risk-engine";
+import { calculateRisk, evaluateSignalGeometryQuality, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
 import {
   DEFAULT_HORIZONTAL_RANGE_CONFIG,
   HorizontalRangeDetector,
@@ -190,6 +190,8 @@ export async function setupRoutes(app: FastifyInstance) {
          tp.planned_target,
          tp.status AS trade_plan_status,
          tp.created_at AS trade_plan_created_at,
+         tp.signal_thesis_key,
+         tp.promoted_at,
          t.id AS trade_id,
          t.outcome AS trade_outcome,
          t.actual_entry,
@@ -203,7 +205,7 @@ export async function setupRoutes(app: FastifyInstance) {
        JOIN tenant_modules tm ON tm.module_id = sm.id
          AND tm.tenant_id = sc.tenant_id
          AND tm.status = 'ENABLED'
-       LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
+       JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
        LEFT JOIN trades t ON t.trade_plan_id = tp.id
        LEFT JOIN LATERAL (
          SELECT c.close, c.timestamp_utc
@@ -218,6 +220,7 @@ export async function setupRoutes(app: FastifyInstance) {
          AND sc.module_code IN ('orb_max_options', 'high_probability_strategy_2')
          AND sc.status <> 'TEST_CLEARED'
          AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND (tp.signal_thesis_key IS NOT NULL OR COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true')
          ${proofFilter}
          AND (sc.expires_at IS NULL OR sc.expires_at >= now() OR t.outcome = 'ACTIVE' OR sc.detected_at >= now() - interval '24 hours')
          ${moduleFilter}
@@ -1588,6 +1591,17 @@ function signalSetupView(row: any, evaluations: any[]) {
   const hasPersistedContract = row.actual_entry != null || row.planned_entry != null;
   const hasZone = !hasPersistedContract && Number.isFinite(zoneLow) && Number.isFinite(zoneHigh);
   const riskDistance = Math.abs(entry - stopLoss);
+  const evidenceScore = row.favorability_score == null ? Number(flags.confidence) : Number(row.favorability_score);
+  const evidenceScorePassed = Number.isFinite(evidenceScore) && evidenceScore >= XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore;
+  const signalQuality = evaluateSignalGeometryQuality({
+    direction,
+    entry,
+    stop: stopLoss,
+    target: paperTarget,
+    pipSize: XAUUSD_PRODUCTION_SIGNAL_POLICY.pipSize,
+    minimumTp1Pips: XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumTp1Pips,
+    minimumFinalRewardToRisk: XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumFinalRewardToRisk
+  });
   const targetPlan = riskBasedTargetPlan(entry, stopLoss, paperTarget, direction);
   const lifecycleTargets = Array.isArray(row.paper_targets) && row.paper_targets.length > 0
     ? row.paper_targets.map((target: any) => ({
@@ -1621,9 +1635,10 @@ function signalSetupView(row: any, evaluations: any[]) {
     }));
   const fullChecklistValid = checklistTotal > 0 && checklistPassed === checklistTotal;
   const profileApproved = Boolean(flags.mandatoryChecklistMatched) || ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED", "TRADE_PLANNED"].includes(String(row.status));
-  const confidence = row.favorability_score == null ? flags.confidence ?? null : Number(row.favorability_score);
+  const confidence = Number.isFinite(evidenceScore) ? evidenceScore : null;
   const chance = signalChanceScore(confidence, checklistPassed, checklistTotal, Boolean(flags.fullChecklistMatched), direction, profileApproved);
   const variant = flags.module2Variant ?? null;
+  const strategyProfile = signalStrategyProfile(row.module_code, row.scenario, flags);
   return {
     id: row.id,
     moduleCode: row.module_code,
@@ -1642,6 +1657,23 @@ function signalSetupView(row: any, evaluations: any[]) {
     variantCode: variant?.code ?? flags.variantCode ?? null,
     variantName: variant?.name ?? null,
     variantVersion: variant?.version ?? flags.variantVersion ?? null,
+    strategyProfile,
+    signalThesisKey: row.signal_thesis_key ?? null,
+    promotedAt: row.promoted_at ?? row.trade_plan_created_at ?? null,
+    signalQuality: flags.signalQualityPolicy ?? {
+      passed: signalQuality.passed && evidenceScorePassed,
+      evidenceScore: confidence,
+      minimumEvidenceScore: XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore,
+      tp1Pips: signalQuality.tp1Pips,
+      minimumTp1Pips: XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumTp1Pips,
+      finalRewardToRisk: signalQuality.finalRewardToRisk,
+      minimumFinalRewardToRisk: XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumFinalRewardToRisk,
+      reasons: [
+        ...signalQuality.reasons,
+        ...(evidenceScorePassed ? [] : [`Evidence score ${confidence ?? "missing"}/100 is below ${XAUUSD_PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore}/100.`])
+      ]
+    },
+    signalFrequency: flags.signalFrequencyPolicy ?? null,
     checklistSummary: {
       mandatory: signalRuleSummary(mandatoryRules),
       variant: signalRuleSummary(variantRules),
@@ -1710,6 +1742,18 @@ function signalSetupView(row: any, evaluations: any[]) {
     },
     reason: row.final_reason
   };
+}
+
+function signalStrategyProfile(moduleCode: string, scenarioValue: unknown, flags: any) {
+  if (moduleCode === "high_probability_strategy_2") {
+    return flags?.module2Variant?.code ?? flags?.variantCode ?? "LIQUIDITY_SWEEP_PROFILE";
+  }
+  const scenario = String(scenarioValue ?? "ORB_BREAKOUT").toUpperCase();
+  if (scenario.includes("HORIZONTAL")) return "HORIZONTAL_RANGE_BREAKOUT";
+  if (scenario.includes("OPENING_DRIVE")) return "OPENING_DRIVE";
+  if (scenario.includes("LIQUIDITY_SWEEP")) return "LIQUIDITY_SWEEP_REVERSAL";
+  if (scenario.includes("RETEST")) return "BREAKOUT_RETEST";
+  return "ORB_BREAKOUT";
 }
 
 function isSignalHardBlocker(moduleCode: string, evaluation: any) {

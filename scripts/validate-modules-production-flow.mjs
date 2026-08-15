@@ -159,9 +159,12 @@ async function checkModuleSurface(label, moduleCode, setupId) {
     const payload = await json(`/api/setups/signals?moduleCode=${encodeURIComponent(moduleCode)}&includeProof=true&limit=20`, { headers });
     const rows = Array.isArray(payload?.signals) ? payload.signals : [];
     const match = rows.find((row) => !setupId || row.id === setupId);
+    const qualityPassed = match?.signalQuality?.passed === true;
     return {
-      ok: Boolean(match?.entry && match?.stopLoss && match?.tp1 && match?.tp2 && match?.tp3),
-      detail: match ? `${label} BUY & SELL card visible with entry, SL, TP1, TP2, TP3.` : `${label} BUY & SELL proof card missing.`,
+      ok: Boolean(match?.entry && match?.stopLoss && match?.tp1 && match?.tp2 && match?.tp3 && match?.signalThesisKey && match?.strategyProfile && qualityPassed),
+      detail: match
+        ? `${label} BUY & SELL contract has immutable thesis, profile, entry geometry, and quality policy ${qualityPassed ? "PASS" : "FAIL"}.`
+        : `${label} BUY & SELL proof card missing.`,
       evidence: match ? pickTradeFields(match) : payload?.summary
     };
   });
@@ -284,6 +287,10 @@ function pickTradeFields(row) {
     trade: row.trade,
     status: row.status ?? row.outcome,
     brainPrediction: row.brainPrediction,
+    strategyProfile: row.strategyProfile,
+    signalThesisKey: row.signalThesisKey,
+    signalQuality: row.signalQuality,
+    signalFrequency: row.signalFrequency,
     currentPrice: row.currentPrice,
     detectedAgeMinutes: row.detectedAgeMinutes,
     entryDistanceFromCurrent: row.entryDistanceFromCurrent,

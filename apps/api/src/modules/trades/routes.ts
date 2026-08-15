@@ -192,6 +192,7 @@ export async function tradeRoutes(app: FastifyInstance) {
     const { rows } = await query(`
       SELECT tp.*, sc.symbol, sc.direction, sc.scenario, sc.module_code, sc.status AS setup_status,
         sc.detected_at AS setup_detected_at, sc.expires_at AS setup_expires_at,
+        sc.favorability_score, sc.favorability_grade, sc.final_reason, sc.scenario_flags,
         t.id AS active_trade_id, t.actual_entry, t.actual_stop, t.actual_target, t.opened_at AS trade_opened_at
       FROM trade_plans tp
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -205,7 +206,14 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
-      ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC
+        AND tp.status IN ('DRAFT', 'READY', 'EXECUTED')
+        AND (
+          (sc.direction = 'LONG' AND tp.planned_stop < tp.planned_entry AND tp.planned_entry < tp.planned_target)
+          OR
+          (sc.direction = 'SHORT' AND tp.planned_target < tp.planned_entry AND tp.planned_entry < tp.planned_stop)
+        )
+      ORDER BY CASE WHEN t.id IS NOT NULL THEN 0 ELSE 1 END,
+               COALESCE(tp.promoted_at, tp.created_at) DESC
       LIMIT 1
     `, [auth.tenantId, moduleCode, currentSessionDate]);
     return rows[0] ?? null;

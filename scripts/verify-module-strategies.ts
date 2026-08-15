@@ -14,6 +14,7 @@ import type { Candle } from "../packages/shared-types/src/index.js";
 import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { evaluateSignalGeometryQuality } from "../packages/risk-engine/src/index.js";
 
 const module1OpeningCandles: Candle[] = [
   candle("2026-08-10T13:30:00Z", 100.0, 100.8, 99.4, 100.5),
@@ -339,6 +340,12 @@ assert.deepEqual(longTargets.map((target) => target.price), [105, 107.5, 110], "
 const shortTargets = buildPaperTargetPlan(100, 105, 90, "SHORT");
 assert.deepEqual(shortTargets.map((target) => target.price), [95, 92.5, 90], "SHORT paper milestones must be 1R, 1.5R, and the strategy target");
 assert.deepEqual(buildPaperTargetPlan(100, 101, 110, "LONG"), [], "Invalid LONG stop geometry must not produce target milestones");
+const buyQuality = evaluateSignalGeometryQuality({ direction: "LONG", entry: 4385, stop: 4384, target: 4387, pipSize: 0.01, minimumTp1Pips: 100, minimumFinalRewardToRisk: 2 });
+assert.equal(buyQuality.passed, true, "A BUY with a 100-pip TP1 and 2R final target must pass signal geometry quality");
+const sellQuality = evaluateSignalGeometryQuality({ direction: "SHORT", entry: 4385, stop: 4397, target: 4361, pipSize: 0.01, minimumTp1Pips: 100, minimumFinalRewardToRisk: 2 });
+assert.equal(sellQuality.passed, true, "A structurally valid SELL with TP1 beyond 100 pips and a 2R final target must pass");
+const undersizedQuality = evaluateSignalGeometryQuality({ direction: "SHORT", entry: 4386.6, stop: 4387.42, target: 4384.96, pipSize: 0.01, minimumTp1Pips: 100, minimumFinalRewardToRisk: 2 });
+assert.equal(undersizedQuality.passed, false, "A signal with TP1 below 100 XAUUSD pips must be rejected even when its final target is 2R");
 const pendingLongTargets: PaperTarget[] = longTargets.map((target) => ({
   target_number: target.targetNumber,
   price: target.price,

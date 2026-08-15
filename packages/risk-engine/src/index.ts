@@ -1,5 +1,51 @@
 import type { RiskInput, RiskResult } from "@orb-guide/shared-types";
 
+export const XAUUSD_PRODUCTION_SIGNAL_POLICY = {
+  pipSize: 0.01,
+  minimumEvidenceScore: 80,
+  minimumTp1Pips: 100,
+  minimumFinalRewardToRisk: 2,
+  maximumSignalsPerNewYorkDate: 3,
+  maximumSignalsPerStrategyProfile: 2,
+  sameProfileCooldownMinutes: 45
+} as const;
+
+export type SignalGeometryQualityInput = {
+  direction: string;
+  entry: number;
+  stop: number;
+  target: number;
+  pipSize: number;
+  minimumTp1Pips: number;
+  minimumFinalRewardToRisk: number;
+};
+
+export function evaluateSignalGeometryQuality(input: SignalGeometryQualityInput) {
+  const direction = input.direction.toUpperCase();
+  const values = [input.entry, input.stop, input.target, input.pipSize, input.minimumTp1Pips, input.minimumFinalRewardToRisk];
+  const finite = values.every(Number.isFinite);
+  const directional = finite && (direction === "LONG" || direction === "BUY"
+    ? input.stop < input.entry && input.entry < input.target
+    : direction === "SHORT" || direction === "SELL"
+      ? input.target < input.entry && input.entry < input.stop
+      : false);
+  const riskDistance = finite ? Math.abs(input.entry - input.stop) : 0;
+  const finalRewardToRisk = directional && riskDistance > 0 ? Math.abs(input.target - input.entry) / riskDistance : 0;
+  const tp1Pips = input.pipSize > 0 ? riskDistance / input.pipSize : 0;
+  const reasons: string[] = [];
+  if (!directional) reasons.push("Entry, structural stop, and target are not ordered correctly for the signal direction.");
+  if (tp1Pips + 0.0001 < input.minimumTp1Pips) reasons.push(`TP1 would be ${Math.floor(tp1Pips)} pips; at least ${input.minimumTp1Pips} pips is required.`);
+  if (finalRewardToRisk + 0.0001 < input.minimumFinalRewardToRisk) reasons.push(`Final target is ${finalRewardToRisk.toFixed(2)}R; at least ${input.minimumFinalRewardToRisk.toFixed(2)}R is required.`);
+  return {
+    passed: reasons.length === 0,
+    directional,
+    riskDistance,
+    tp1Pips: Math.floor(tp1Pips),
+    finalRewardToRisk,
+    reasons
+  };
+}
+
 const roundDownToStep = (value: number, step: number) => {
   if (step <= 0) return value;
   return Math.floor(value / step) * step;

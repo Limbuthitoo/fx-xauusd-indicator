@@ -5,6 +5,10 @@ from typing import Any
 
 MODULE_CODE = "high_probability_strategy_2"
 MODULE_NAME = "Module 2 Ultimate Liquidity Sweep"
+XAUUSD_PIP_SIZE = 0.01
+MINIMUM_SIGNAL_SCORE = 80
+MINIMUM_TP1_PIPS = 100
+MINIMUM_FINAL_RR = 2.0
 
 MANDATORY_RULES = [
     "DATA_HEALTHY",
@@ -90,11 +94,15 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     full = checklist["fullPassed"]
     has_trade_plan = all(setup.get(key) is not None for key in ("entry_price", "stop_price", "target_price"))
     geometry_valid = valid_trade_geometry(direction, setup) if has_trade_plan else False
+    quality = signal_quality(setup) if has_trade_plan else {"passed": False, "reason": "Trade geometry is incomplete."}
 
     if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and has_trade_plan and not geometry_valid:
         return payload("LIQUIDITY_SWEEP_TRADE_GEOMETRY_MISMATCH", "WAIT", direction, setup, trade, checklist, candle_health, "ERROR", "Module 2 selected an entry plan whose stop or target is on the wrong side of entry.", False)
 
-    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan and geometry_valid:
+    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and has_trade_plan and not quality["passed"]:
+        return payload("LIQUIDITY_SWEEP_SIGNAL_QUALITY_BLOCK", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", str(quality["reason"]), False)
+
+    if status in ("LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED") and mandatory and has_trade_plan and geometry_valid and quality["passed"]:
         paper_tracking_eligible = flags.get("paperTrackingEligible") is not False
         should_track = paper_tracking_eligible and not setup.get("trade_id") and status != "PAPER_TRADE_OPENED"
         setup_tier = "FULL" if full else "MANDATORY"
@@ -119,6 +127,30 @@ def decide(setup: dict[str, Any] | None, trade: dict[str, Any] | None, candle_he
     if blocker:
         reason = f"{reason} Current blocker: {blocker['ruleCode']}."
     return payload("LIQUIDITY_SWEEP_WAITING_FOR_RULES", "WAIT", direction, setup, trade, checklist, candle_health, "INFO", reason, False)
+
+
+def signal_quality(setup: dict[str, Any]) -> dict[str, Any]:
+    entry = number(setup.get("entry_price"))
+    stop = number(setup.get("stop_price"))
+    target = number(setup.get("target_price"))
+    score = number(setup.get("favorability_score"))
+    direction = str(setup.get("direction") or "")
+    if entry is None or stop is None or target is None:
+        return {"passed": False, "reason": "Entry, structural SL, and final target are required."}
+    geometry_valid = stop < entry < target if direction == "LONG" else target < entry < stop if direction == "SHORT" else False
+    risk = abs(entry - stop)
+    tp1_pips = risk / XAUUSD_PIP_SIZE
+    final_rr = abs(target - entry) / risk if geometry_valid and risk > 0 else 0
+    reasons = []
+    if not geometry_valid:
+        reasons.append("Directional trade geometry is invalid.")
+    if score is None or score < MINIMUM_SIGNAL_SCORE:
+        reasons.append(f"Evidence score must be at least {MINIMUM_SIGNAL_SCORE}/100.")
+    if tp1_pips + 0.0001 < MINIMUM_TP1_PIPS:
+        reasons.append(f"TP1 must be at least {MINIMUM_TP1_PIPS} XAUUSD pips from entry.")
+    if final_rr + 0.0001 < MINIMUM_FINAL_RR:
+        reasons.append(f"Final target must be at least {MINIMUM_FINAL_RR:.2f}R.")
+    return {"passed": len(reasons) == 0, "reason": " ".join(reasons) if reasons else "Signal quality policy passed."}
 
 
 def checklist_summary(evaluations: list[dict[str, Any]], flags: dict[str, Any] | None = None) -> dict[str, Any]:

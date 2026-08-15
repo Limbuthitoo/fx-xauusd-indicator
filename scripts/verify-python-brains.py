@@ -174,6 +174,25 @@ module1_incomplete = decide_module1(
     None,
     HEALTH,
 )
+module1_undersized = setup("orb_max_options", "LONG", module1_rules, {"mandatoryChecklistMatched": True, "setupTier": "FULL"})
+module1_undersized.update({"entry_price": 4050.0, "stop_price": 4049.5, "target_price": 4051.0})
+module1_undersized_result = decide_module1(module1_undersized, None, HEALTH)
+module2_undersized = setup(
+    "high_probability_strategy_2",
+    "SHORT",
+    module2_rules,
+    {
+        "mandatoryChecklistMatched": True,
+        "fullChecklistMatched": True,
+        "module2Variant": {
+            "code": "SWEEP_MSS_RETEST",
+            "name": "F. Sweep + MSS + Retest",
+            "paperEligible": True,
+        },
+    },
+)
+module2_undersized.update({"entry_price": 4050.0, "stop_price": 4050.5, "target_price": 4049.0})
+module2_undersized_result = decide_module2(module2_undersized, None, HEALTH)
 legacy_active = decide_module1(
     setup("orb_max_options", "LONG", module1_rules[:-1], {"mandatoryChecklistMatched": True}),
     {"id": "legacy-trade", "outcome": "ACTIVE", "direction": "LONG"},
@@ -215,6 +234,8 @@ assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_VARIANT_SIGN
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert not module1_incomplete["shouldEmitSignal"] and not module1_incomplete["shouldTrackPaperTrade"]
 assert not module2_incomplete["shouldEmitSignal"] and not module2_incomplete["shouldTrackPaperTrade"]
+assert module1_undersized_result["decisionType"] == "ORB_SIGNAL_QUALITY_BLOCK" and not module1_undersized_result["shouldEmitSignal"]
+assert module2_undersized_result["decisionType"] == "LIQUIDITY_SWEEP_SIGNAL_QUALITY_BLOCK" and not module2_undersized_result["shouldEmitSignal"]
 assert legacy_active["decisionType"] == "ACTIVE_TRADE_NEW_SETUP_WAIT"
 assert module1_new_signal_during_active_trade["shouldEmitSignal"] and module1_new_signal_during_active_trade["action"] == "SELL"
 assert module2_new_signal_during_active_trade["shouldEmitSignal"] and module2_new_signal_during_active_trade["action"] == "SELL"
@@ -230,7 +251,13 @@ print(
             "module2SignalWithoutPaperSlot": module2_signal_without_paper_slot["decisionType"],
             "signalsDuringPaperTracking": [module1_new_signal_during_active_trade["decisionType"], module2_new_signal_during_active_trade["decisionType"]],
             "mvpPriority": module2["mvpPriority"],
-            "negativeChecks": [module1_incomplete["decisionType"], module2_incomplete["decisionType"], legacy_active["decisionType"]],
+            "negativeChecks": [
+                module1_incomplete["decisionType"],
+                module2_incomplete["decisionType"],
+                module1_undersized_result["decisionType"],
+                module2_undersized_result["decisionType"],
+                legacy_active["decisionType"],
+            ],
         },
         indent=2,
     )

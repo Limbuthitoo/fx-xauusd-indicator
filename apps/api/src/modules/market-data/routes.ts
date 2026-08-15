@@ -11,7 +11,7 @@ import {
   RetestEngine,
   evaluateRangeBreakout
 } from "@orb-guide/range-engine";
-import { calculateRisk } from "@orb-guide/risk-engine";
+import { calculateRisk, evaluateSignalGeometryQuality, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
 import type { Candle, RuleContext } from "@orb-guide/shared-types";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
@@ -132,6 +132,7 @@ const XAUUSD_PAPER_SPEC = {
   maximumLot: 50,
   commissionPerLot: 0
 };
+const PRODUCTION_SIGNAL_POLICY = XAUUSD_PRODUCTION_SIGNAL_POLICY;
 let runtimeSettings: RuntimeSettings | null = null;
 const tenantAutomationStates = new Map<string, TenantAutoRunState>();
 
@@ -3952,6 +3953,150 @@ function checkReadinessValue(readiness: any, code: string) {
   return readiness.checks?.find((check: any) => check.code === code)?.value ?? null;
 }
 
+async function enforceProductionSignalQuality(setup: any) {
+  const geometry = evaluateSignalGeometryQuality({
+    direction: String(setup?.direction ?? ""),
+    entry: Number(setup?.entry_price),
+    stop: Number(setup?.stop_price),
+    target: Number(setup?.target_price),
+    pipSize: XAUUSD_PAPER_SPEC.tickSize,
+    minimumTp1Pips: PRODUCTION_SIGNAL_POLICY.minimumTp1Pips,
+    minimumFinalRewardToRisk: PRODUCTION_SIGNAL_POLICY.minimumFinalRewardToRisk
+  });
+  const evidenceScore = Number(setup?.favorability_score);
+  const scorePassed = Number.isFinite(evidenceScore) && evidenceScore >= PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore;
+  const reasons = [
+    ...geometry.reasons,
+    ...(scorePassed ? [] : [`Evidence score ${Number.isFinite(evidenceScore) ? evidenceScore : "missing"}/100 is below ${PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore}/100.`])
+  ];
+  const result = {
+    passed: geometry.passed && scorePassed,
+    evidenceScore: Number.isFinite(evidenceScore) ? evidenceScore : null,
+    minimumEvidenceScore: PRODUCTION_SIGNAL_POLICY.minimumEvidenceScore,
+    tp1Pips: geometry.tp1Pips,
+    minimumTp1Pips: PRODUCTION_SIGNAL_POLICY.minimumTp1Pips,
+    finalRewardToRisk: Number(geometry.finalRewardToRisk.toFixed(4)),
+    minimumFinalRewardToRisk: PRODUCTION_SIGNAL_POLICY.minimumFinalRewardToRisk,
+    riskDistance: Number(geometry.riskDistance.toFixed(5)),
+    reasons
+  };
+  setup.scenario_flags = { ...(setup.scenario_flags ?? {}), signalQualityPolicy: result };
+  if (result.passed) {
+    await query(
+      `UPDATE setup_candidates
+       SET scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalQualityPolicy', $2::jsonb)
+       WHERE id = $1`,
+      [setup.id, JSON.stringify(result)]
+    );
+    return result;
+  }
+  const reason = `Signal quality policy blocked this setup: ${reasons.join(" ")}`;
+  await query(
+    `UPDATE setup_candidates
+     SET status = 'BLOCKED',
+         final_reason = $2,
+         scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalQualityPolicy', $3::jsonb)
+     WHERE id = $1`,
+    [setup.id, reason, JSON.stringify(result)]
+  );
+  await recordOperationalEvent({
+    severity: "INFO",
+    category: "WORKER",
+    eventType: "SIGNAL_QUALITY_POLICY_BLOCKED",
+    source: "market-data-worker",
+    tenantId: setup.tenant_id,
+    message: reason,
+    metadata: { moduleCode: setup.module_code, setupId: setup.id, signalQuality: result }
+  });
+  return result;
+}
+
+async function productionSignalFrequencyGate(session: any, moduleCode: string, setup: any, signalThesisKey: string) {
+  const existing = await query(
+    `SELECT id
+     FROM trade_plans
+     WHERE signal_thesis_key = $1
+     LIMIT 1`,
+    [signalThesisKey]
+  );
+  if (existing.rows[0]) return { passed: true, resumed: true, reasons: [] as string[] };
+
+  const plans = await query(
+    `SELECT sc.module_code, sc.scenario, sc.scenario_flags,
+            COALESCE(tp.promoted_at, tp.created_at) AS signal_at
+     FROM trade_plans tp
+     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     JOIN trading_sessions ts ON ts.id = sc.session_id
+     WHERE sc.tenant_id = $1
+       AND ts.session_date = $2::date
+       AND tp.signal_thesis_key IS NOT NULL
+       AND sc.scenario <> 'QA_TEST_SIGNAL'
+       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+       AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
+     ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC`,
+    [session.tenant_id, session.session_date ?? newYorkDate()]
+  );
+  const strategyProfile = releaseGateProfileCode(moduleCode, setup) ?? String(setup.scenario ?? "UNCLASSIFIED");
+  const profilePlans = plans.rows.filter((row: any) =>
+    row.module_code === moduleCode
+    && (releaseGateProfileCode(row.module_code, row) ?? String(row.scenario ?? "UNCLASSIFIED")) === strategyProfile
+  );
+  const reasons: string[] = [];
+  if (plans.rows.length >= PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate) {
+    reasons.push(`Daily quality-signal limit of ${PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate} has been reached.`);
+  }
+  if (profilePlans.length >= PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile) {
+    reasons.push(`${strategyProfile} has reached its daily limit of ${PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile} quality signals.`);
+  }
+  const signalAt = new Date(setup.detected_at ?? Date.now()).getTime();
+  const previousSignalAt = profilePlans[0]?.signal_at ? new Date(profilePlans[0].signal_at).getTime() : Number.NaN;
+  const elapsedMinutes = Number.isFinite(previousSignalAt) ? (signalAt - previousSignalAt) / 60_000 : Number.POSITIVE_INFINITY;
+  if (elapsedMinutes >= 0 && elapsedMinutes < PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes) {
+    reasons.push(`The previous ${strategyProfile} signal is only ${Math.floor(elapsedMinutes)} minutes old; ${PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes} minutes is required between distinct signals from that profile.`);
+  }
+  const result = {
+    passed: reasons.length === 0,
+    dailySignals: plans.rows.length,
+    dailyMaximum: PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate,
+    strategyProfile,
+    profileSignals: profilePlans.length,
+    profileMaximum: PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile,
+    cooldownMinutes: PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes,
+    elapsedMinutes: Number.isFinite(elapsedMinutes) ? Number(elapsedMinutes.toFixed(1)) : null,
+    reasons
+  };
+  setup.scenario_flags = { ...(setup.scenario_flags ?? {}), signalFrequencyPolicy: result };
+  if (result.passed) {
+    await query(
+      `UPDATE setup_candidates
+       SET scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalFrequencyPolicy', $2::jsonb)
+       WHERE id = $1`,
+      [setup.id, JSON.stringify(result)]
+    );
+    return result;
+  }
+  const reason = `Signal frequency policy blocked this setup: ${reasons.join(" ")}`;
+  await query(
+    `UPDATE setup_candidates
+     SET status = 'BLOCKED',
+         final_reason = $2,
+         scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalFrequencyPolicy', $3::jsonb)
+     WHERE id = $1`,
+    [setup.id, reason, JSON.stringify(result)]
+  );
+  await recordOperationalEvent({
+    severity: "INFO",
+    category: "WORKER",
+    eventType: "SIGNAL_FREQUENCY_POLICY_BLOCKED",
+    source: "market-data-worker",
+    tenantId: session.tenant_id,
+    message: reason,
+    metadata: { moduleCode, setupId: setup.id, signalThesisKey, signalFrequency: result }
+  });
+  return result;
+}
+
 function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (!setup || !["orb_max_options", "high_probability_strategy_2"].includes(setup.module_code)) return false;
   if (!["LONG SETUP READY", "SHORT SETUP READY"].includes(String(setup.status))) return false;
@@ -4045,6 +4190,10 @@ async function attemptProductionPaperTrade({
     targetPrice: decision?.targetPrice ?? setup.target_price
   };
   const effectiveRisk = risk ?? await calculateDecisionRisk(session, effectiveDecision, current);
+  const signalQuality = await enforceProductionSignalQuality(setup);
+  if (!signalQuality.passed) {
+    return { skipped: true, reason: "SIGNAL_QUALITY_POLICY_BLOCKED", signalQuality };
+  }
   const productionReady = isProductionReadySetup(setup, effectiveDecision, effectiveRisk);
   const releaseGate = await liveStrategyReleaseGate(moduleCode, setup);
   if (releaseGate.blocked) {
@@ -4086,8 +4235,12 @@ async function attemptProductionPaperTrade({
     });
   }
 
-  await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
   const signalThesisKey = setupSignalThesisKey(moduleCode, session, setup);
+  const frequencyGate = await productionSignalFrequencyGate(session, moduleCode, setup, signalThesisKey);
+  if (!frequencyGate.passed) {
+    return { skipped: true, reason: "SIGNAL_FREQUENCY_POLICY_BLOCKED", frequencyGate };
+  }
+  await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
   const signalPlan = await persistImmutableSignalContract(session, setup, effectiveRisk, signalThesisKey);
   const canonicalSetup = signalPlan.setup_candidate_id === setup.id;
   const canonicalSetupRow = canonicalSetup

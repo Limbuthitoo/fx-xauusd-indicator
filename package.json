@@ -54,9 +54,10 @@
     "validate:mvp-runtime": "node --import tsx scripts/validate-mvp-runtime.ts",
     "validate:paper-lifecycle": "node --import tsx scripts/validate-paper-target-lifecycle.ts",
     "validate:production-observation": "node --import tsx scripts/validate-production-observation.ts",
+    "validate:signal-policy": "node --import tsx scripts/validate-signal-policy.ts",
     "validation:history": "node --import tsx scripts/historical-strategy-validation.ts",
     "validate:modules-flow": "node scripts/validate-modules-production-flow.mjs",
-    "validate:mvp-predeploy": "npm run verify:modules && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web && npm run typecheck -w @orb-guide/mobile && npm run build:api && npm run build:web && npm run validate:mvp-runtime && npm run validate:paper-lifecycle && npm run validate:production-observation",
+    "validate:mvp-predeploy": "npm run verify:modules && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web && npm run typecheck -w @orb-guide/mobile && npm run build:api && npm run build:web && npm run validate:mvp-runtime && npm run validate:paper-lifecycle && npm run validate:signal-policy && npm run validate:production-observation",
     "verify:orb": "node --import tsx scripts/verify-orb-scenarios.ts",
     "verify:modules": "node --import tsx scripts/verify-module-strategies.ts && python3 scripts/verify-python-brains.py",
     "typecheck": "npm run typecheck -w @orb-guide/shared-types && npm run typecheck -w @orb-guide/rule-engine && npm run typecheck -w @orb-guide/risk-engine && npm run typecheck -w @orb-guide/strategy-engine && npm run typecheck -w @orb-guide/range-engine && npm run typecheck -w @orb-guide/liquidity-sweep-engine && npm run typecheck -w @orb-guide/api && npm run typecheck -w @orb-guide/web"

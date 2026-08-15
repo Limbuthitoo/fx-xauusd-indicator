@@ -55,6 +55,7 @@ run_validation() {
 
 run_validation validate:paper-lifecycle
 run_validation validate:mvp-runtime
+run_validation validate:signal-policy
 run_validation validate:production-observation
 
 echo "[9/9] Verifying public API, WebSocket, and optional authenticated tenant flow"
