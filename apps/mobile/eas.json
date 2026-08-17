@@ -26,7 +26,8 @@
     },
     "production": {
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://fx.bijaysubbalimbu.com.np"
+        "EXPO_PUBLIC_API_BASE_URL": "https://fx.bijaysubbalimbu.com.np",
+        "NODE_ENV": "production"
       },
       "android": {
         "buildType": "app-bundle"
@@ -35,7 +36,8 @@
     "production-apk": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://fx.bijaysubbalimbu.com.np"
+        "EXPO_PUBLIC_API_BASE_URL": "https://fx.bijaysubbalimbu.com.np",
+        "NODE_ENV": "production"
       },
       "android": {
         "buildType": "apk"

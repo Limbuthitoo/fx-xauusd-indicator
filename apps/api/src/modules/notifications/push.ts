@@ -131,6 +131,8 @@ export async function sendTenantPush(input: PushInput) {
   const messages = expoRows.map((row: any) => ({
     to: row.expo_push_token,
     sound: "default",
+    channelId: "trading-alerts",
+    priority: "high",
     title: input.title,
     body: input.body,
     data: input.data ?? {}
@@ -244,7 +246,8 @@ async function sendFirebasePushes(input: PushInput & { tenantId: string; eventKe
           providerResponse: { messageId: response }
         });
       } catch (error) {
-        const message = (error as Error).message;
+        const firebaseError = error as Error & { code?: string };
+        const message = firebaseError.message;
         await logPushDeliveries({
           tenantId: input.tenantId,
           rows: [row],
@@ -254,7 +257,7 @@ async function sendFirebasePushes(input: PushInput & { tenantId: string; eventKe
           status: "FIREBASE_ERROR",
           error: message
         });
-        if (/registration-token-not-registered|not registered/i.test(message)) {
+        if (isUnregisteredFirebaseError(firebaseError)) {
           await disableMobilePushToken(input.tenantId, row.expo_push_token);
         }
       }
@@ -272,6 +275,15 @@ async function sendFirebasePushes(input: PushInput & { tenantId: string; eventKe
     });
     return { sent: 0, error: (error as Error).message };
   }
+}
+
+function isUnregisteredFirebaseError(error: Error & { code?: string }) {
+  const code = String(error.code ?? "").toLowerCase();
+  const message = String(error.message ?? "").toLowerCase();
+  return code.includes("registration-token-not-registered")
+    || code.includes("invalid-registration-token")
+    || message.includes("registration token is not registered")
+    || message.includes("requested entity was not found");
 }
 
 function firebaseEnabled() {

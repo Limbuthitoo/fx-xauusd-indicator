@@ -6,13 +6,13 @@ React Native + Expo tenant companion app for the trading dashboard.
 
 - Tenant login with the existing API credentials.
 - Assigned strategy modules only.
-- Cached XAUUSD candlestick chart from `/api/mobile/chart`.
-- Current module signal status.
-- Entry, stop loss, and take profit details.
+- Signal Desk with separate BUY and SELL views, confidence, grade, and setup evidence.
+- Professional XAUUSD candlestick chart with 30/60/90-candle ranges, OHLC inspection, crosshair, and strategy levels.
+- Current module signal status with entry range, stop loss, targets, reward-to-risk, and invalidation context.
 - Active/latest paper trade status.
 - Weekly and monthly win-rate summary.
 - Recent notification inbox.
-- Firebase/Expo push-token registration for mobile alerts.
+- High-priority Firebase/Expo push alerts on the dedicated Android `trading-alerts` channel.
 
 The mobile chart does not call Twelve Data. It uses the backend API for initial load and `/api/live/ws` websocket events for live candle updates. Strategy levels, paper entries, SL, and TP still come from the backend, which uses the shared PostgreSQL/cache feed already maintained by the server.
 
@@ -112,6 +112,14 @@ After installing the APK:
 4. Confirm Permission, Backend Devices, Last Sync, and Expo token.
 5. Tap Send Test Push.
 6. Confirm the Android notification arrives and the latest alert appears in Alerts.
+
+For complete BUY/SELL notification, deep-link, chart, reconnect, and background checks, use the [mobile device validation runbook](../../docs/mobile-device-validation.md).
+
+Before distributing a release, verify its source configuration:
+
+```bash
+npm run verify:mobile-release
+```
 
 Production Play Store builds should use the `production` profile, which creates an `.aab` app bundle:
 

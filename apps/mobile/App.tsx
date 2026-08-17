@@ -6,7 +6,26 @@ import * as LocalAuthentication from "expo-local-authentication";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
-import React, { Component, ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  BarChart3,
+  Bell,
+  BookOpen,
+  CandlestickChart,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Crosshair,
+  Home,
+  MoreHorizontal,
+  Radio,
+  ShieldCheck,
+  TrendingDown,
+  TrendingUp,
+  UserRound,
+  Zap
+} from "lucide-react-native";
+import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -21,8 +40,10 @@ import {
   Text,
   TextInput,
   Switch,
-  View
+  View,
+  useWindowDimensions
 } from "react-native";
+import Svg, { Line, Rect, Text as SvgText } from "react-native-svg";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -162,6 +183,16 @@ type NotificationDetail = {
   provider?: string | null;
   cacheStatus?: string | null;
   schedulerStatus?: string | null;
+  reportStatus?: string | null;
+  tradeCount?: string | number | null;
+  totalR?: string | number | null;
+  wins?: string | number | null;
+  losses?: string | number | null;
+  winRate?: string | number | null;
+  blockedSetups?: string | number | null;
+  sampleSize?: string | number | null;
+  recommendationCount?: string | number | null;
+  nextStep?: string | null;
   source: "push" | "history";
 };
 
@@ -347,6 +378,7 @@ function AppContent() {
   const [moreView, setMoreView] = useState<MoreView>("menu");
   const [socketStatus, setSocketStatus] = useState("Socket offline");
   const [activeTab, setActiveTab] = useState<MobileTab>("home");
+  const appScrollRef = useRef<ScrollView | null>(null);
   const [selectedNotificationDetail, setSelectedNotificationDetail] = useState<NotificationDetail | null>(null);
   const [learningByModule, setLearningByModule] = useState<Record<string, ModuleLearningSnapshot>>({});
   const [learningLoadingModule, setLearningLoadingModule] = useState<string | null>(null);
@@ -364,6 +396,17 @@ function AppContent() {
   );
 
   useEffect(() => {
+    if (Platform.OS === "android") {
+      Notifications.setNotificationChannelAsync("trading-alerts", {
+        name: "Trading signals",
+        description: "Validated XAUUSD entries, target updates, and stop-loss alerts.",
+        importance: Notifications.AndroidImportance.MAX,
+        sound: "default",
+        enableVibrate: true,
+        vibrationPattern: [0, 250, 120, 250],
+        lightColor: "#26D89B"
+      }).catch(() => undefined);
+    }
     restoreSession();
   }, []);
 
@@ -406,6 +449,10 @@ function AppContent() {
     if (!token || authUser?.passwordChangeRequired || activeTab !== "more") return;
     checkAppUpdate(false).catch(() => undefined);
   }, [token, apiBaseUrl, activeTab, authUser?.passwordChangeRequired]);
+
+  useEffect(() => {
+    appScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [activeTab, moreView]);
 
   useEffect(() => {
     if (!token || authUser?.passwordChangeRequired) return;
@@ -504,6 +551,12 @@ function AppContent() {
       if (restoredUser) {
         setAuthUser(restoredUser);
         setToken(savedToken);
+        if (!restoredUser.passwordChangeRequired) {
+          registerPush(savedToken).catch((error) => {
+            setPushStatus("Push registration needs attention");
+            setPushDiagnostics((previous) => ({ ...previous, lastTestStatus: (error as Error).message }));
+          });
+        }
       } else {
         await clearSecureToken();
       }
@@ -944,6 +997,10 @@ function AppContent() {
 
   async function acknowledgeNotification(id?: string | number | null) {
     if (!token || id == null) return;
+    setDashboard((previous) => previous ? {
+      ...previous,
+      notifications: previous.notifications.map((item: any) => String(item.id) === String(id) ? { ...item, acknowledged_at: item.acknowledged_at ?? new Date().toISOString() } : item)
+    } : previous);
     fetch(`${apiBaseUrl}/api/notifications/${encodeURIComponent(String(id))}/ack`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` }
@@ -970,8 +1027,10 @@ function AppContent() {
     return <RequiredPasswordChangeScreen user={authUser} onChangePassword={changeOwnPassword} onLogout={logout} />;
   }
 
-  const activeSignals = dashboard?.modules.filter((module) => signalLabel(module).label !== "WAIT").length ?? 0;
-  const latestAlert = dashboard?.notifications?.[0];
+  const entryReadyCount = dashboard?.modules.filter(hasActionableSignal).length ?? 0;
+  const trackingCount = dashboard?.modules.filter(hasTrackedSignal).length ?? 0;
+  const unreadAlerts = dashboard?.notifications?.filter((item: any) => !item.acknowledged_at).length ?? 0;
+  const latestAlert = homeLatestAlert(dashboard?.notifications ?? []);
   if (selectedNotificationDetail) {
     return (
       <NotificationDetailScreen
@@ -992,24 +1051,42 @@ function AppContent() {
     <SafeAreaView style={styles.screen}>
       <StatusBar style="light" />
       <ScrollView
+        ref={appScrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         refreshControl={<RefreshControl tintColor="#21d6a2" refreshing={refreshing} onRefresh={refresh} />}
       >
         <View style={styles.topBar}>
-          <View style={styles.searchBox}>
+          <View style={styles.brandLockup}>
             <Image source={BRAND_MARK} style={styles.headerMark} resizeMode="contain" />
-            <Text style={styles.searchText}>XAUUSD New York strategies</Text>
+            <View style={styles.brandCopy}>
+              <Text style={styles.brandTitle}>XAUUSD SIGNAL</Text>
+              <Text style={styles.brandSubtitle}>New York desk</Text>
+            </View>
           </View>
-          <Pressable style={styles.roundIconButton} onPress={() => registerPush().catch((error) => Alert.alert("Push failed", error.message))}>
-            <Text style={styles.roundIconText}>{activeSignals > 0 ? String(activeSignals) : "!"}</Text>
+          <Pressable
+            accessibilityLabel={`Open notifications${unreadAlerts > 0 ? `, ${unreadAlerts} unread` : ""}`}
+            style={styles.roundIconButton}
+            onPress={() => {
+              setActiveTab("more");
+              setMoreView("notification-history");
+            }}
+          >
+            <Bell color="#e7ece9" size={21} strokeWidth={2} />
+            {unreadAlerts > 0 ? (
+              <View style={styles.alertBadge}>
+                <Text style={styles.alertBadgeText}>{unreadAlerts > 99 ? "99+" : unreadAlerts}</Text>
+              </View>
+            ) : null}
           </Pressable>
         </View>
 
         {activeTab === "home" ? (
           <HomeScreen
             dashboard={dashboard}
-            activeSignals={activeSignals}
+            entryReadyCount={entryReadyCount}
+            trackingCount={trackingCount}
+            unreadAlerts={unreadAlerts}
             latestAlert={latestAlert}
             pushStatus={pushStatus}
             socketStatus={socketStatus}
@@ -1036,6 +1113,11 @@ function AppContent() {
             onRunLearning={(moduleCode) => runModuleLearning(moduleCode).catch((error) => Alert.alert("Learning failed", error.message))}
             onSelectModule={(moduleCode) => {
               setSelectedModuleCode(moduleCode);
+              loadChart(moduleCode).catch((error) => Alert.alert("Chart failed", error.message));
+            }}
+            onOpenChart={(moduleCode) => {
+              setSelectedModuleCode(moduleCode);
+              setActiveTab("chart");
               loadChart(moduleCode).catch((error) => Alert.alert("Chart failed", error.message));
             }}
           />
@@ -1252,7 +1334,9 @@ function RequiredPasswordChangeScreen({
 
 function HomeScreen({
   dashboard,
-  activeSignals,
+  entryReadyCount,
+  trackingCount,
+  unreadAlerts,
   latestAlert,
   pushStatus,
   socketStatus,
@@ -1263,7 +1347,9 @@ function HomeScreen({
   onOpenUpdates
 }: {
   dashboard: Dashboard | null;
-  activeSignals: number;
+  entryReadyCount: number;
+  trackingCount: number;
+  unreadAlerts: number;
   latestAlert: any;
   pushStatus: string;
   socketStatus: string;
@@ -1274,36 +1360,54 @@ function HomeScreen({
   onOpenUpdates: () => void;
 }) {
   const modules = dashboard?.modules ?? [];
-  const bestModule = modules.find((module) => signalLabel(module).label !== "WAIT") ?? modules[0];
+  const entryModule = modules.find(hasActionableSignal);
+  const trackingModule = modules.find(hasTrackedSignal);
+  const blockedModule = modules.find((module) => setupIsBlocked(module.currentSetup));
+  const bestModule = entryModule ?? trackingModule ?? blockedModule ?? modules[0];
+  const bestSignal = bestModule ? signalLabel(bestModule) : null;
+  const bestSetup = bestModule?.currentSetup ?? {};
+  const bestTrade = bestModule?.currentTrade ?? {};
+  const direction = bestTrade.direction ?? bestSetup.direction;
+  const primaryMode = entryModule ? "ENTRY" : trackingModule ? "TRACKING" : blockedModule ? "BLOCKED" : "WAITING";
+  const action = primaryMode === "ENTRY" || primaryMode === "TRACKING" ? tradeAction(direction, bestSignal?.label) : "WAIT";
+  const statusLabel = primaryMode === "TRACKING" ? "TRACKING" : primaryMode === "BLOCKED" ? "NO TRADE" : action;
+  const entry = bestTrade.actual_entry ?? bestSetup.entry_price;
+  const stop = bestTrade.actual_stop ?? bestSetup.stop_price;
+  const target = bestTrade.actual_target ?? bestSetup.target_price ?? bestSetup.take_profit;
+  const live = socketStatus.toLowerCase().includes("live");
+  const pushReady = /active|registered|ready/i.test(pushStatus);
+  const showTradeGeometry = primaryMode === "ENTRY" || primaryMode === "TRACKING";
   const latestUpdate = appUpdate.latest;
   return (
     <>
       <View style={styles.portfolioCard}>
-        <View style={styles.cardGlow} />
         <View style={styles.heroTopRow}>
-          <View>
-            <Text style={styles.heroLabel}>Today's NY posture</Text>
-            <Text style={styles.heroValue}>{activeSignals > 0 ? `${activeSignals} ALERT` : "WAITING"}</Text>
-            <Text style={[styles.heroSub, activeSignals > 0 && styles.positiveText]}>{pushStatus}</Text>
+          <View style={styles.heroCopy}>
+            <Text style={styles.heroLabel}>NEW YORK MARKET POSTURE</Text>
+            <Text style={styles.heroValue}>{entryReadyCount > 0 ? `${entryReadyCount} ENTRY READY` : trackingCount > 0 ? `${trackingCount} PAPER TRACKING` : "STANDBY"}</Text>
+            <Text style={styles.heroSub}>{entryReadyCount > 0 ? "A strategy has passed every required entry and risk gate." : trackingCount > 0 ? "A validated signal is already being tracked as a paper trade." : "Monitoring enabled strategies for a new validated entry."}</Text>
           </View>
-          <View style={styles.sessionBadge}>
-            <Text style={styles.sessionBadgeText}>{socketStatus.replace("Socket ", "")}</Text>
+          <View style={[styles.sessionBadge, live && styles.sessionBadgeLive]}>
+            <Radio color={live ? "#25d695" : "#f1b84b"} size={14} />
+            <Text style={styles.sessionBadgeText}>{live ? "LIVE" : "SYNCING"}</Text>
           </View>
         </View>
 
-        <View style={styles.quickActions}>
-          {[
-            ["Modules", String(modules.length), "signals"],
-            ["NY Time", dashboard?.clocks.newYork ?? "--", "time"],
-            ["Nepal", dashboard?.clocks.nepal ?? "--", "time"],
-            ["Plan", dashboard?.tenant?.plan_name ?? "Active", "account"]
-          ].map(([label, value, icon]) => (
-            <View key={label} style={styles.quickAction}>
-              <View style={styles.quickActionIcon}><MiniIcon name={icon} /></View>
-              <Text style={styles.quickActionLabel}>{label}</Text>
-              <Text style={styles.quickActionValue} numberOfLines={1}>{value}</Text>
-            </View>
-          ))}
+        <View style={styles.deskStatusRow}>
+          <View style={styles.deskStatusItem}>
+            <Text style={styles.deskStatusLabel}>NEW YORK</Text>
+            <Text style={styles.deskStatusValue}>{dashboard?.clocks.newYork ?? "--"}</Text>
+          </View>
+          <View style={styles.deskStatusDivider} />
+          <View style={styles.deskStatusItem}>
+            <Text style={styles.deskStatusLabel}>STRATEGIES</Text>
+            <Text style={styles.deskStatusValue}>{modules.length} ENABLED</Text>
+          </View>
+          <View style={styles.deskStatusDivider} />
+          <View style={styles.deskStatusItem}>
+            <Text style={styles.deskStatusLabel}>ALERTS</Text>
+            <Text style={styles.deskStatusValue}>{unreadAlerts > 0 ? `${unreadAlerts} NEW` : pushReady ? "READY" : "CHECK"}</Text>
+          </View>
         </View>
       </View>
 
@@ -1322,30 +1426,62 @@ function HomeScreen({
         </Pressable>
       ) : null}
 
-      <View style={styles.homeActionGrid}>
-        <Pressable style={styles.homeActionCard} onPress={onOpenSignals}>
-          <View style={styles.homeActionIcon}><MiniIcon name="signals" /></View>
-          <Text style={styles.homeActionTitle}>BUY & SELL</Text>
-          <Text style={styles.homeActionCopy}>Validated module entries with SL and TP.</Text>
-        </Pressable>
-        <Pressable style={styles.homeActionCard} onPress={onOpenChart}>
-          <View style={styles.homeActionIcon}><MiniIcon name="chart" /></View>
-          <Text style={styles.homeActionTitle}>Live Chart</Text>
-          <Text style={styles.homeActionCopy}>Shared candle feed with module levels.</Text>
-        </Pressable>
+      <View style={[styles.primarySignalCard, action === "SELL" && styles.primarySignalCardSell, primaryMode === "BLOCKED" && styles.primarySignalCardBlocked]}>
+        <View style={styles.signalTicketHeader}>
+          <View style={styles.signalTicketIdentity}>
+            <View style={[styles.signalDirectionIcon, action === "SELL" && styles.signalDirectionIconSell, primaryMode === "BLOCKED" && styles.signalDirectionIconBlocked]}>
+              {primaryMode === "BLOCKED" ? <ShieldCheck color="#ff8f98" size={22} /> : action === "SELL" ? <TrendingDown color="#ff7d86" size={22} /> : action === "BUY" ? <TrendingUp color="#26d89b" size={22} /> : <Crosshair color="#f1b84b" size={22} />}
+            </View>
+            <View>
+              <Text style={styles.signalTicketEyebrow}>{primaryMode === "ENTRY" ? "ACTIONABLE ENTRY" : primaryMode === "TRACKING" ? "VALIDATED SIGNAL" : primaryMode === "BLOCKED" ? "RISK GATE" : "NEXT OPPORTUNITY"}</Text>
+              <Text style={styles.signalTicketTitle}>{primaryMode === "TRACKING" ? `${action} paper trade active` : primaryMode === "BLOCKED" ? "No valid entry" : action === "WAIT" ? "Wait for validation" : `${action} XAUUSD`}</Text>
+              <Text style={styles.signalTicketModule}>{bestModule?.shortName ?? "No strategy assigned"}</Text>
+            </View>
+          </View>
+          <Text style={[styles.signalTicketStatus, action === "SELL" && styles.signalTicketStatusSell, primaryMode === "BLOCKED" && styles.signalTicketStatusBlocked, primaryMode === "TRACKING" && styles.signalTicketStatusTracking]}>{statusLabel}</Text>
+        </View>
+        <Text style={styles.signalTicketReason} numberOfLines={4}>{primaryMode === "TRACKING" ? `${bestSignal?.reason ?? "Paper tracking is active."} Confirm signal age before considering any manual entry.` : bestSetup.final_reason ?? bestSignal?.reason ?? "The desk will notify you when every mandatory entry rule passes."}</Text>
+        {showTradeGeometry ? (
+          <View style={styles.signalPriceGrid}>
+            <SignalPrice label="ENTRY" value={formatPrice(entry)} />
+            <SignalPrice label="STOP" value={formatPrice(stop)} tone="risk" />
+            <SignalPrice label="TARGET" value={formatPrice(target)} tone="reward" />
+          </View>
+        ) : (
+          <View style={styles.signalContextGrid}>
+            <SignalContext label="STATE" value={formatScenarioName(String(bestSetup.status ?? "WAITING"))} />
+            <SignalContext label="SCORE" value={setupScoreLabel(bestSetup)} />
+            <SignalContext label="SESSION" value={formatScenarioName(String(bestModule?.session?.state ?? "WAITING"))} />
+          </View>
+        )}
+        <View style={styles.signalTicketActions}>
+          <Pressable style={styles.signalPrimaryAction} onPress={onOpenSignals}>
+            <Zap color="#04110c" size={17} fill="#04110c" />
+            <Text style={styles.signalPrimaryActionText}>{primaryMode === "ENTRY" ? "Review Entry" : primaryMode === "TRACKING" ? "Review Tracked Signal" : "Open Signal Desk"}</Text>
+          </Pressable>
+          <Pressable accessibilityLabel="Open live chart" style={styles.signalChartAction} onPress={onOpenChart}>
+            <CandlestickChart color="#e7ece9" size={19} />
+          </Pressable>
+        </View>
       </View>
 
-      <SectionTitle title="Module Watch" />
-      <View style={styles.card}>
+      <View style={styles.sectionHeadingRow}>
+        <SectionTitle title="Strategy Watch" />
+        <Text style={styles.sectionMeta}>NY session</Text>
+      </View>
+      <View style={styles.strategyList}>
         {modules.slice(0, 3).map((module) => {
           const signal = signalLabel(module);
           return (
             <View key={module.code} style={styles.homeModuleRow}>
-              <View>
+              <View style={styles.strategyIcon}><BarChart3 color="#8e9b94" size={18} /></View>
+              <View style={styles.strategyCopy}>
                 <Text style={styles.ruleTitle}>{module.shortName}</Text>
                 <Text style={styles.muted}>{moduleTimingLabel(module)}</Text>
               </View>
-              <Text style={[styles.homeModuleSignal, signal.tone === "good" ? styles.goodText : signal.tone === "bad" ? styles.badText : styles.warnText]}>{signal.label}</Text>
+              <View style={[styles.strategyStatus, signal.tone === "good" ? styles.strategyStatusBuy : signal.tone === "bad" ? styles.strategyStatusSell : styles.strategyStatusWait]}>
+                <Text style={[styles.homeModuleSignal, signal.tone === "good" ? styles.goodText : signal.tone === "bad" ? styles.badText : styles.warnText]}>{signal.label}</Text>
+              </View>
             </View>
           );
         })}
@@ -1355,12 +1491,12 @@ function HomeScreen({
       <SectionTitle title="Latest Alert" />
       {latestAlert ? (
         <Pressable style={styles.statementCard} onPress={onOpenAlerts}>
-          <View style={styles.statementIcon}><MiniIcon name="alerts" /></View>
+          <View style={styles.statementIcon}><Bell color="#f1b84b" size={19} /></View>
           <View style={styles.statementContent}>
             <Text style={styles.statementTitle} numberOfLines={1}>{latestAlert.title}</Text>
             <Text style={styles.statementSub} numberOfLines={1}>{latestAlert.body}</Text>
           </View>
-          <Text style={styles.statementArrow}>{">"}</Text>
+          <ChevronRight color="#77827c" size={19} />
         </Pressable>
       ) : (
         <EmptyCard text={bestModule ? "No new alerts. Assigned modules are waiting for valid session setups." : "No alerts yet."} />
@@ -1375,7 +1511,8 @@ function BuySellScreen({
   learningByModule,
   learningLoadingModule,
   onRunLearning,
-  onSelectModule
+  onSelectModule,
+  onOpenChart
 }: {
   dashboard: Dashboard | null;
   selectedModuleCode: string | null;
@@ -1383,16 +1520,20 @@ function BuySellScreen({
   learningLoadingModule: string | null;
   onRunLearning: (moduleCode: string) => void;
   onSelectModule: (moduleCode: string) => void;
+  onOpenChart: (moduleCode: string) => void;
 }) {
   const modules = dashboard?.modules ?? [];
   const selectedModule = modules.find((module) => module.code === selectedModuleCode) ?? modules[0];
   const [horizon, setHorizon] = useState<"short" | "long">("short");
   const [detailModuleCode, setDetailModuleCode] = useState<string | null>(null);
-  const actionableModules = modules.filter(isActionableModule);
-  const longModules = actionableModules.filter(isFullChecklistModule);
+  const entryReadyModules = modules.filter(hasActionableSignal);
+  const trackingModules = modules.filter(hasTrackedSignal);
+  const signalModules = modules.filter(isActionableModule);
+  const blockedModules = modules.filter((module) => setupIsBlocked(module.currentSetup));
+  const longModules = signalModules.filter(isFullChecklistModule);
   const visibleModules = horizon === "long"
     ? longModules.slice(0, 1)
-    : actionableModules;
+    : signalModules;
   const selectedDetailModule = visibleModules.find((module) => module.code === detailModuleCode) ?? null;
   if (selectedDetailModule) {
     return (
@@ -1400,26 +1541,38 @@ function BuySellScreen({
         module={selectedDetailModule}
         horizon={horizon}
         onBack={() => setDetailModuleCode(null)}
-        onOpenChart={() => onSelectModule(selectedDetailModule.code)}
+        onOpenChart={() => onOpenChart(selectedDetailModule.code)}
       />
     );
   }
   return (
     <>
-      <View style={styles.clockGrid}>
-        <Metric label="New York" value={dashboard?.clocks.newYork ?? "--"} />
-        <Metric label="Nepal" value={dashboard?.clocks.nepal ?? "--"} />
+      <View style={styles.screenIntro}>
+        <View>
+          <Text style={styles.screenEyebrow}>LIVE ENTRY CONTRACTS</Text>
+          <Text style={styles.screenTitle}>Signal Desk</Text>
+        </View>
+        <View style={styles.marketClock}>
+          <Clock3 color="#8f9a94" size={14} />
+          <Text style={styles.marketClockText}>{dashboard?.clocks.newYork ?? "--"} NY</Text>
+        </View>
       </View>
 
-      <SectionTitle title="BUY & SELL" />
+      <View style={styles.signalDeskSummary}>
+        <SignalDeskMetric label="ENTRY READY" value={entryReadyModules.length} tone={entryReadyModules.length > 0 ? "good" : "neutral"} />
+        <SignalDeskMetric label="TRACKING" value={trackingModules.length} tone={trackingModules.length > 0 ? "info" : "neutral"} />
+        <SignalDeskMetric label="BLOCKED" value={blockedModules.length} tone={blockedModules.length > 0 ? "bad" : "neutral"} />
+        <SignalDeskMetric label="ENABLED" value={modules.length} tone="neutral" />
+      </View>
+
       <View style={styles.horizonTabs}>
         <Pressable style={[styles.horizonTab, horizon === "short" && styles.horizonTabActive]} onPress={() => setHorizon("short")}>
-          <Text style={[styles.horizonTabText, horizon === "short" && styles.horizonTabTextActive]}>Short</Text>
-          <Text style={styles.horizonTabMeta}>Intraday TP1/TP2/TP3</Text>
+          <Text style={[styles.horizonTabText, horizon === "short" && styles.horizonTabTextActive]}>Intraday</Text>
+          <Text style={styles.horizonTabMeta}>TP1 / TP2 / TP3</Text>
         </Pressable>
         <Pressable style={[styles.horizonTab, horizon === "long" && styles.horizonTabActive]} onPress={() => setHorizon("long")}>
-          <Text style={[styles.horizonTabText, horizon === "long" && styles.horizonTabTextActive]}>Long</Text>
-          <Text style={styles.horizonTabMeta}>Full checklist setup</Text>
+          <Text style={[styles.horizonTabText, horizon === "long" && styles.horizonTabTextActive]}>Checklist</Text>
+          <Text style={styles.horizonTabMeta}>Highest-conviction plan</Text>
         </Pressable>
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.compactModuleTabs}>
@@ -1443,7 +1596,13 @@ function BuySellScreen({
         </Pressable>
       ))}
       {visibleModules.length === 0 ? (
-        <EmptyCard text={horizon === "long" ? "No full-checklist BUY or SELL setup is validated right now." : "No validated BUY or SELL setup right now."} />
+        <View style={styles.noEntryCard}>
+          <ShieldCheck color="#f1b84b" size={22} />
+          <View style={styles.noEntryCopy}>
+            <Text style={styles.noEntryTitle}>No new entry is validated</Text>
+            <Text style={styles.noEntryText}>{horizon === "long" ? "No full-checklist signal currently passes every required gate." : "Stay flat until a module issues a fresh BUY or SELL entry contract."}</Text>
+          </View>
+        </View>
       ) : null}
       {selectedModule ? (
         <ModuleDetail
@@ -1462,6 +1621,7 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
   const setup = module.currentSetup ?? {};
   const trade = module.currentTrade ?? {};
   const signal = signalLabel(module);
+  const tracking = hasTrackedSignal(module) && !hasActionableSignal(module);
   const direction = trade.direction ?? setup.direction ?? "--";
   const action = tradeAction(direction, signal.label);
   const entry = trade.actual_entry ?? setup.entry_price;
@@ -1471,14 +1631,25 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
   return (
     <View style={[styles.tradeSetupCard, action === "SELL" && styles.tradeSetupCardSell]}>
       <View style={styles.tradeSetupTop}>
-        <View>
+        <View style={styles.tradeSetupIdentity}>
+          <View style={[styles.tradeSetupIcon, action === "SELL" && styles.tradeSetupIconSell]}>
+            {action === "SELL" ? <TrendingDown color="#ff7d86" size={20} /> : <TrendingUp color="#26d89b" size={20} />}
+          </View>
+          <View style={styles.tradeSetupCopy}>
           <Text style={styles.tradeSetupModule}>{module.shortName}</Text>
-          <Text style={styles.tradeSetupTitle}>{action} {horizon === "long" ? "full checklist" : "intraday setup"}</Text>
+          <Text style={styles.tradeSetupTitle}>{action} XAUUSD</Text>
           <Text style={styles.ruleExplanation}>{setup.scenario ? formatScenarioName(String(setup.scenario)) : moduleTimingLabel(module)}</Text>
+          </View>
         </View>
-        <View style={[styles.signalPill, action === "SELL" ? styles.badPill : styles.goodPill]}>
-          <Text style={styles.signalText}>{action}</Text>
+        <View style={[styles.signalPill, action === "SELL" ? styles.badPill : styles.goodPill, tracking && styles.trackingPill]}>
+          <Text style={styles.signalText}>{tracking ? "TRACKING" : action}</Text>
         </View>
+      </View>
+      <View style={styles.tradeQualityRow}>
+        <Text style={styles.tradeQualityText}>{tracking ? "PAPER ACTIVE" : horizon === "long" ? "FULL CHECKLIST" : "ENTRY READY"}</Text>
+        <Text style={styles.tradeQualityText}>CONFIDENCE {setupScoreLabel(setup)}</Text>
+        <Text style={styles.tradeQualityText}>RR {formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)}</Text>
+        <Text style={styles.tradeQualityText}>AGE {formatSignalAge(trade.opened_at ?? setup.detected_at)}</Text>
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
@@ -1492,10 +1663,11 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
             <Metric label={`TP3 ${targetLadder.finalRLabel}${targetLadder.statuses[2] === "HIT" ? " · HIT" : ""}`} value={formatPrice(targetLadder.tp3)} />
           </>
         )}
-        <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
-        <Metric label="Setup Score" value={setupScoreLabel(setup)} />
       </View>
-      <Text style={styles.noticeTime}>Tap for checklist evidence and trade plan.</Text>
+      <View style={styles.tapHint}>
+        <Text style={styles.noticeTime}>{tracking ? "Review paper position and target progress" : "Review entry contract and evidence"}</Text>
+        <ChevronRight color="#76817b" size={16} />
+      </View>
     </View>
   );
 }
@@ -1514,6 +1686,7 @@ function BuySellSetupDetail({
   const setup = module.currentSetup ?? {};
   const trade = module.currentTrade ?? {};
   const signal = signalLabel(module);
+  const tracking = hasTrackedSignal(module) && !hasActionableSignal(module);
   const direction = trade.direction ?? setup.direction ?? "--";
   const action = tradeAction(direction, signal.label);
   const entry = trade.actual_entry ?? setup.entry_price;
@@ -1525,14 +1698,15 @@ function BuySellSetupDetail({
     <>
       <View style={styles.detailTopBar}>
         <Pressable style={styles.backButton} onPress={onBack}>
-          <Text style={styles.backButtonText}>‹ Back</Text>
+          <ChevronLeft color="#e7ece9" size={20} />
+          <Text style={styles.backButtonText}>Signals</Text>
         </Pressable>
-        <Text style={styles.detailPill}>{horizon === "long" ? "FULL CHECKLIST" : "INTRADAY"}</Text>
+        <Text style={styles.detailPill}>{tracking ? "PAPER TRACKING" : horizon === "long" ? "FULL CHECKLIST" : "ENTRY READY"}</Text>
       </View>
       <View style={[styles.tradeSetupCard, action === "SELL" && styles.tradeSetupCardSell]}>
         <Text style={styles.eyebrow}>{module.shortName}</Text>
-        <Text style={styles.detailTitle}>{action} XAUUSD</Text>
-        <Text style={styles.detailBody}>{setup.final_reason ?? signal.reason}</Text>
+        <Text style={styles.detailTitle}>{tracking ? `${action} paper trade active` : `${action} XAUUSD`}</Text>
+        <Text style={styles.detailBody}>{tracking ? `${signal.reason} Review target progress below; do not treat this as a second entry notification.` : setup.final_reason ?? signal.reason}</Text>
         <View style={styles.metricsGrid}>
           <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
           <Metric label="Entry" value={formatPrice(entry)} />
@@ -1550,6 +1724,21 @@ function BuySellSetupDetail({
           <Metric label="Setup Score" value={setupScoreLabel(setup)} />
           <Metric label="Grade" value={formatDetailValue(setup.trade_grade ?? setup.favorability_grade)} />
           <Metric label="Paper" value={trade.outcome ?? "READY"} />
+        </View>
+        <View style={styles.executionChecklist}>
+          {tracking ? (
+            <>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>1</Text><Text style={styles.executionStepText}>Paper tracking is already active for this signal</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>Monitor TP milestones and stop-loss state</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>3</Text><Text style={styles.executionStepText}>Wait for a new entry-ready alert before another trade</Text></View>
+            </>
+          ) : (
+            <>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>1</Text><Text style={styles.executionStepText}>Confirm price is still inside the entry range</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>Set stop before submitting any order</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>3</Text><Text style={styles.executionStepText}>Use your approved risk profile and targets</Text></View>
+            </>
+          )}
         </View>
       </View>
 
@@ -1574,8 +1763,13 @@ function BuySellSetupDetail({
         ))}
         {groupedRules.length === 0 ? <Text style={styles.muted}>No checklist evidence is attached to this setup yet.</Text> : null}
         <Pressable style={styles.fullButton} onPress={onOpenChart}>
+          <CandlestickChart color="#04110c" size={18} />
           <Text style={styles.fullButtonText}>Open Live Chart</Text>
         </Pressable>
+      </View>
+      <View style={styles.riskNotice}>
+        <ShieldCheck color="#8d9892" size={17} />
+        <Text style={styles.riskNoticeText}>{tracking ? "This signal is already in paper tracking. Confirm freshness and avoid duplicate entry." : "Signals are decision support, not guaranteed outcomes. Confirm price, spread, and personal risk before entry."}</Text>
       </View>
     </>
   );
@@ -1606,7 +1800,16 @@ function ChartScreen({
 }) {
   return (
     <>
-      <SectionTitle title="Live Chart" />
+      <View style={styles.screenIntro}>
+        <View>
+          <Text style={styles.screenEyebrow}>REAL-TIME XAUUSD</Text>
+          <Text style={styles.screenTitle}>Live Chart</Text>
+        </View>
+        <View style={styles.liveIndicator}>
+          <View style={styles.liveIndicatorDot} />
+          <Text style={styles.liveIndicatorText}>LIVE</Text>
+        </View>
+      </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.compactModuleTabs}>
         {(dashboard?.modules ?? []).map((module) => (
           <Pressable
@@ -1787,6 +1990,7 @@ function NotificationDetailScreen({
   const symbol = detail.symbol ?? trade.symbol ?? "XAUUSD";
   const setupReason = detail.finalReason ?? module?.currentSetup?.final_reason ?? null;
   const category = notificationCategory(detail);
+  const presentation = notificationPresentation(category, detail);
   const moduleLabel = detail.moduleName ?? module?.shortName ?? moduleDisplayName(moduleCode);
   const resolvedDetail = { ...detail, moduleCode, moduleName: moduleLabel, symbol, direction, action, entry, stopLoss, takeProfit, rewardToRisk: rr, finalReason: setupReason ?? detail.finalReason };
 
@@ -1798,14 +2002,14 @@ function NotificationDetailScreen({
           <Pressable style={styles.backButton} onPress={onBack}>
             <Text style={styles.backButtonText}>‹ Back</Text>
           </Pressable>
-          <Text style={styles.detailPill}>{String(detail.priority ?? "ALERT").toUpperCase()}</Text>
+          <Text style={[styles.detailPill, presentation.pillStyle]}>{presentation.badge}</Text>
         </View>
 
-        <View style={styles.detailHero}>
-          <Text style={styles.eyebrow}>{String(detail.eventType ?? "SIGNAL ALERT").replaceAll("_", " ")}</Text>
+        <View style={[styles.detailHero, presentation.heroStyle]}>
+          <Text style={[styles.eyebrow, presentation.eyebrowStyle]}>{presentation.eyebrow}</Text>
           <Text style={styles.detailTitle}>{detail.title}</Text>
           <Text style={styles.detailBody}>{detail.body}</Text>
-          <Text style={styles.noticeTime}>{detail.createdAt ? formatTime(detail.createdAt) : detail.source === "push" ? "Opened from push notification" : "--"}</Text>
+          <Text style={styles.noticeTime}>{notificationMetaLine(detail)}</Text>
         </View>
 
         <NotificationTemplate detail={resolvedDetail} category={category} module={module} />
@@ -1814,11 +2018,11 @@ function NotificationDetailScreen({
           <Text style={styles.sectionMini}>Open Workspace</Text>
           <Metric label="Module" value={formatDetailValue(moduleLabel)} />
           <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
-          {moduleCode ? (
+          {moduleCode && notificationHasModuleWorkspace(category) ? (
             <Pressable style={styles.fullButton} onPress={() => onOpenChart(moduleCode)}>
-              <Text style={styles.fullButtonText}>Open Module Chart</Text>
+              <Text style={styles.fullButtonText}>{notificationWorkspaceLabel(category)}</Text>
             </Pressable>
-          ) : <Text style={styles.reason}>This alert is not tied to a specific strategy module.</Text>}
+          ) : <Text style={styles.reason}>{notificationWorkspaceHint(category)}</Text>}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -1837,6 +2041,11 @@ function NotificationTemplate({
   if (category === "TRADE_SETUP") return <TradeSetupNotification detail={detail} module={module} />;
   if (category === "TRADE_CLOSEOUT") return <TradeCloseoutNotification detail={detail} module={module} />;
   if (category === "TRADE_LIFECYCLE") return <PaperTradeNotification detail={detail} module={module} />;
+  if (category === "SETUP_PROGRESS") return <SetupProgressNotification detail={detail} module={module} />;
+  if (category === "RISK") return <RiskNotification detail={detail} module={module} />;
+  if (category === "REPORT") return <ReportNotification detail={detail} />;
+  if (category === "LEARNING") return <LearningNotification detail={detail} />;
+  if (category === "SECURITY") return <SecurityNotification detail={detail} />;
   if (category === "FEED" || category === "SESSION" || category === "HEALTH") return <OperationalNotification detail={detail} category={category} />;
   return <SystemNotification detail={detail} category={category} />;
 }
@@ -1943,10 +2152,141 @@ function TradeCloseoutNotification({ detail, module }: { detail: NotificationDet
   );
 }
 
+function SetupProgressNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const stage = setupProgressStage(detail);
+  return (
+    <View style={[styles.moreDiagnosticsCard, styles.notificationProgressCard]}>
+      <Text style={styles.sectionMini}>Setup Progress</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, styles.notificationProgressBadge]}>{stage.shortLabel}</Text>
+        <Text style={styles.tradeSymbol}>{detail.symbol ?? "XAUUSD"}</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? "--"}</Text>
+      </View>
+      <View style={styles.setupProgressTrack}>
+        {stage.steps.map((step, index) => (
+          <View key={step} style={[styles.setupProgressStep, index <= stage.activeIndex && styles.setupProgressStepActive]}>
+            <Text style={[styles.setupProgressNumber, index <= stage.activeIndex && styles.setupProgressNumberActive]}>{index + 1}</Text>
+            <Text style={[styles.setupProgressLabel, index <= stage.activeIndex && styles.setupProgressLabelActive]}>{step}</Text>
+          </View>
+        ))}
+      </View>
+      <Text style={styles.reason}>{detail.nextStep ?? stage.nextStep}</Text>
+      <Text style={styles.safetyNote}>Observation only. Wait for a separate validated BUY or SELL entry notification.</Text>
+    </View>
+  );
+}
+
+function RiskNotification({ detail, module }: { detail: NotificationDetail; module: ModuleRow | null }) {
+  const missing = detail.missingRules ?? [];
+  return (
+    <View style={[styles.moreDiagnosticsCard, styles.notificationRiskCard]}>
+      <Text style={styles.sectionMini}>Trade Blocked</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, styles.notificationRiskBadge]}>NO TRADE</Text>
+        <Text style={styles.tradeSymbol}>{detail.symbol ?? "XAUUSD"}</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? module?.shortName ?? "Risk control"}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Status" value={formatDetailValue(detail.status ?? riskStatusLabel(detail))} />
+        <Metric label="Scenario" value={formatDetailValue(detail.scenario)} />
+        <Metric label="Issue" value={formatDetailValue(detail.issueCode ?? detail.eventType)} />
+        <Metric label="Setup ID" value={formatDetailValue(detail.setupCandidateId)} />
+      </View>
+      {missing.length > 0 ? (
+        <View style={styles.notificationRuleList}>
+          <Text style={styles.noticeTime}>Blocking checks</Text>
+          {missing.map((rule) => <Text key={rule} style={styles.notificationRuleItem}>• {formatScenarioName(rule)}</Text>)}
+        </View>
+      ) : null}
+      <Text style={styles.reason}>{detail.finalReason ?? detail.recommendedAction ?? "The setup did not pass every required safety and strategy condition."}</Text>
+      <Text style={styles.safetyNote}>Do not enter this trade. Wait for a new validated signal.</Text>
+    </View>
+  );
+}
+
+function ReportNotification({ detail }: { detail: NotificationDetail }) {
+  return (
+    <View style={[styles.moreDiagnosticsCard, styles.notificationReportCard]}>
+      <Text style={styles.sectionMini}>Performance Report</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, styles.notificationReportBadge]}>{String(detail.reportStatus ?? detail.status ?? "READY").toUpperCase()}</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? "Trading summary"}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Trades" value={formatCount(detail.tradeCount)} />
+        <Metric label="Total R" value={formatR(detail.totalR)} />
+        <Metric label="Wins" value={formatCount(detail.wins)} />
+        <Metric label="Losses" value={formatCount(detail.losses)} />
+        <Metric label="Win Rate" value={formatMetricPercent(detail.winRate)} />
+        <Metric label="Blocked" value={formatCount(detail.blockedSetups)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? "Review performance and process quality before changing strategy settings."}</Text>
+    </View>
+  );
+}
+
+function LearningNotification({ detail }: { detail: NotificationDetail }) {
+  return (
+    <View style={[styles.moreDiagnosticsCard, styles.notificationLearningCard]}>
+      <Text style={styles.sectionMini}>Learning Review</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, styles.notificationLearningBadge]}>REVIEW</Text>
+        <Text style={styles.tradeModule}>{detail.moduleName ?? "Strategy learning"}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Samples" value={formatCount(detail.sampleSize)} />
+        <Metric label="Recommendations" value={formatCount(detail.recommendationCount)} />
+        <Metric label="Status" value={formatDetailValue(detail.status ?? "READY")} />
+        <Metric label="Variant" value={formatDetailValue(detail.variantName ?? detail.variantCode)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? "Review evidence before approving any tuning recommendation. Learning alerts never authorize a live entry."}</Text>
+    </View>
+  );
+}
+
+function SecurityNotification({ detail }: { detail: NotificationDetail }) {
+  const warning = /FAILED|LOCKED|RESET|DISABLED|REVOKED|SUSPICIOUS/.test(`${detail.eventType ?? ""} ${detail.status ?? ""}`.toUpperCase());
+  return (
+    <View style={[styles.moreDiagnosticsCard, warning ? styles.notificationRiskCard : styles.notificationSecurityCard]}>
+      <Text style={styles.sectionMini}>Account Security</Text>
+      <View style={styles.tradeBadgeRow}>
+        <Text style={[styles.tradeDirectionBadge, warning ? styles.notificationRiskBadge : styles.notificationSecurityBadge]}>{warning ? "REVIEW" : "SECURE"}</Text>
+        <Text style={styles.tradeModule}>{formatScenarioName(String(detail.eventType ?? "ACCOUNT EVENT"))}</Text>
+      </View>
+      <View style={styles.metricsGrid}>
+        <Metric label="Status" value={formatDetailValue(detail.status ?? (warning ? "Attention" : "Completed"))} />
+        <Metric label="Source" value={detail.source === "push" ? "Push" : "History"} />
+        <Metric label="Priority" value={formatDetailValue(detail.priority)} />
+        <Metric label="Event Key" value={formatDetailValue(detail.eventKey)} />
+      </View>
+      <Text style={styles.reason}>{detail.recommendedAction ?? (warning ? "Review account security and active sessions immediately." : "No trading action is required for this account event.")}</Text>
+    </View>
+  );
+}
+
 function OperationalNotification({ detail, category }: { detail: NotificationDetail; category: string }) {
+  if (category === "SESSION") {
+    return (
+      <View style={[styles.moreDiagnosticsCard, styles.notificationSessionCard]}>
+        <Text style={styles.sectionMini}>New York Session</Text>
+        <View style={styles.tradeBadgeRow}>
+          <Text style={[styles.tradeDirectionBadge, styles.notificationSessionBadge]}>{sessionAlertBadge(detail)}</Text>
+          <Text style={styles.tradeModule}>{detail.moduleName ?? "Session monitor"}</Text>
+        </View>
+        <View style={styles.metricsGrid}>
+          <Metric label="State" value={formatDetailValue(detail.status ?? sessionAlertBadge(detail))} />
+          <Metric label="Module" value={formatDetailValue(detail.moduleName)} />
+          <Metric label="Priority" value={formatDetailValue(detail.priority)} />
+          <Metric label="Event" value={formatDetailValue(detail.eventType)} />
+        </View>
+        <Text style={styles.reason}>{detail.recommendedAction ?? notificationRecommendedAction(category, detail)}</Text>
+        <Text style={styles.safetyNote}>Session notices provide timing context. They are not trade-entry instructions.</Text>
+      </View>
+    );
+  }
   return (
     <View style={styles.moreDiagnosticsCard}>
-      <Text style={styles.sectionMini}>{category === "HEALTH" ? "System Health" : category === "SESSION" ? "Session Notice" : "Market Feed Notice"}</Text>
+      <Text style={styles.sectionMini}>{category === "HEALTH" ? "System Health" : "Market Feed Notice"}</Text>
       <View style={styles.metricsGrid}>
         <Metric label="Provider" value={formatDetailValue(detail.provider ?? "Twelve Data")} />
         <Metric label="Cache" value={formatDetailValue(detail.cacheStatus)} />
@@ -2122,7 +2462,7 @@ function MoreScreen({
         </View>
         <View style={styles.moreMenuGroup}>
           <PushToggleRow
-            title={`${biometric.label} unlock`}
+            title={biometric.label}
             subtitle="Require phone biometric check before opening the saved mobile session."
             value={biometric.enabled}
             onValueChange={onToggleBiometric}
@@ -2509,92 +2849,149 @@ function MobileCandlestickChart({
   selectedCandle: ChartCandle | null;
   onSelectCandle: (candle: ChartCandle) => void;
 }) {
+  const { width: screenWidth } = useWindowDimensions();
+  const [rangeCount, setRangeCount] = useState<30 | 60 | 90>(60);
+  const chartScrollRef = useRef<ScrollView | null>(null);
   if (!chart) return <EmptyCard text={loading ? "Loading XAUUSD chart from server cache..." : "Select a module to load its XAUUSD chart."} />;
   if (chart.candles.length === 0) return <EmptyCard text="No cached XAUUSD candles are available yet." />;
 
-  const visibleCandles = chart.candles.slice(-90);
-  const plotHeight = 236;
-  const topPad = 14;
-  const bottomPad = 18;
-  const candleStep = 8;
-  const candleWidth = 5;
-  const plotWidth = Math.max(340, visibleCandles.length * candleStep + 96);
-  const prices = [
+  const visibleCandles = chart.candles.slice(-rangeCount);
+  const plotHeight = 300;
+  const topPad = 18;
+  const bottomPad = 28;
+  const leftPad = 12;
+  const axisWidth = 58;
+  const candleStep = rangeCount === 30 ? 14 : rangeCount === 60 ? 10 : 8;
+  const candleWidth = Math.max(4, candleStep - 4);
+  const plotWidth = Math.max(screenWidth - 32, visibleCandles.length * candleStep + axisWidth + leftPad + 18);
+  const dataWidth = plotWidth - axisWidth;
+  const rawPrices = [
     ...visibleCandles.flatMap((candle) => [candle.high, candle.low]),
     ...chart.levels.map((level) => level.price)
   ].filter(Number.isFinite);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
+  const rawMin = Math.min(...rawPrices);
+  const rawMax = Math.max(...rawPrices);
+  const pricePadding = Math.max((rawMax - rawMin) * 0.08, 0.5);
+  const minPrice = rawMin - pricePadding;
+  const maxPrice = rawMax + pricePadding;
   const range = Math.max(maxPrice - minPrice, 0.01);
   const priceToY = (price: number) => topPad + ((maxPrice - price) / range) * plotHeight;
   const latest = visibleCandles[visibleCandles.length - 1];
+  const first = visibleCandles[0];
+  const change = latest.close - first.open;
+  const changePercent = first.open ? (change / first.open) * 100 : 0;
   const selectedInChart = selectedCandle && visibleCandles.some((candle) => candle.timestampUtc === selectedCandle.timestampUtc)
     ? selectedCandle
     : null;
   const info = selectedInChart ?? latest;
-  const legend = chartLegend(chart);
+  const selectedIndex = visibleCandles.findIndex((candle) => candle.timestampUtc === info.timestampUtc);
+  const selectedX = selectedIndex >= 0 ? leftPad + selectedIndex * candleStep + candleStep / 2 : null;
+  const selectedY = priceToY(info.close);
+  const gridRatios = [0, 0.25, 0.5, 0.75, 1];
+  const toneColor = (tone: string) => tone === "good" ? "#26d89b" : tone === "bad" ? "#ff7d86" : tone === "warn" ? "#f1b84b" : tone === "entry" ? "#55a9ff" : "#93a09a";
 
   return (
     <View style={styles.chartCard}>
       <View style={styles.chartHeader}>
-        <View>
-          <Text style={styles.cardTitle}>{chart.symbol}</Text>
-          <Text style={styles.muted}>{chart.timeframeMinutes}m live chart · latest {visibleCandles.length}/{chart.candles.length} candles · {chart.status ?? "CACHE"}</Text>
+        <View style={styles.chartInstrumentRow}>
+          <View style={styles.goldMark}><Text style={styles.goldMarkText}>Au</Text></View>
+          <View>
+            <Text style={styles.cardTitle}>{chart.symbol}</Text>
+            <Text style={styles.chartInstrumentMeta}>Gold / U.S. Dollar · {chart.provider ?? "live feed"}</Text>
+          </View>
         </View>
         <View style={styles.priceBox}>
-          <Text style={styles.priceLabel}>Last</Text>
           <Text style={styles.priceValue}>{formatPrice(latest.close)}</Text>
+          <Text style={[styles.priceChange, change >= 0 ? styles.goodText : styles.badText]}>{change >= 0 ? "+" : ""}{change.toFixed(2)}  {changePercent.toFixed(2)}%</Text>
         </View>
       </View>
-      <View style={styles.chartLegend}>
-        {legend.map((item) => (
-          <View key={item.label} style={styles.chartLegendItem}>
-            <View style={[styles.chartLegendDot, levelLineStyle(item.tone)]} />
-            <Text style={styles.chartLegendText}>{item.label}</Text>
-          </View>
-        ))}
-      </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartScroll}>
-        <View style={[styles.chartPlot, { width: plotWidth, height: plotHeight + topPad + bottomPad }]}>
-          {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-            <View key={ratio} style={[styles.chartGridLine, { top: topPad + ratio * plotHeight }]} />
+      <View style={styles.chartToolbar}>
+        <View style={styles.timeframeBadge}><Text style={styles.timeframeBadgeText}>{chart.timeframeMinutes}m</Text></View>
+        <View style={styles.rangeControl}>
+          {([30, 60, 90] as const).map((count) => (
+            <Pressable key={count} style={[styles.rangeButton, rangeCount === count && styles.rangeButtonActive]} onPress={() => setRangeCount(count)}>
+              <Text style={[styles.rangeButtonText, rangeCount === count && styles.rangeButtonTextActive]}>{count}</Text>
+            </Pressable>
           ))}
-          {chart.levels.slice(0, 14).map((level) => {
-            const y = priceToY(level.price);
+        </View>
+        <View style={styles.chartLiveBadge}><View style={styles.chartLiveDot} /><Text style={styles.chartLiveText}>STREAMING</Text></View>
+      </View>
+      <ScrollView
+        ref={chartScrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chartScroll}
+        onContentSizeChange={() => chartScrollRef.current?.scrollToEnd({ animated: false })}
+      >
+        <Svg width={plotWidth} height={plotHeight + topPad + bottomPad} style={styles.chartPlot}>
+          <Rect x={0} y={0} width={plotWidth} height={plotHeight + topPad + bottomPad} fill="#0a0e0c" />
+          {gridRatios.map((ratio) => {
+            const y = topPad + ratio * plotHeight;
+            const price = maxPrice - ratio * range;
             return (
-              <View key={`${level.label}-${level.price}`} style={[styles.chartLevelWrap, { top: y }]}>
-                <View style={[styles.chartLevelLine, levelLineStyle(level.tone)]} />
-                <Text style={[styles.chartLevelLabel, levelTextStyle(level.tone)]} numberOfLines={1}>{shortChartLevelLabel(level.label)} {formatPrice(level.price)}</Text>
-              </View>
+              <React.Fragment key={ratio}>
+                <Line x1={0} x2={dataWidth} y1={y} y2={y} stroke="#202722" strokeWidth={1} />
+                <SvgText x={dataWidth + 7} y={y + 4} fill="#728078" fontSize={10}>{price.toFixed(2)}</SvgText>
+              </React.Fragment>
+            );
+          })}
+          {chart.levels.slice(0, 12).map((level) => {
+            const y = priceToY(level.price);
+            const color = toneColor(level.tone);
+            return (
+              <React.Fragment key={`${level.label}-${level.price}`}>
+                <Line x1={0} x2={dataWidth} y1={y} y2={y} stroke={color} strokeWidth={1} strokeDasharray="5 4" opacity={0.72} />
+                <Rect x={Math.max(4, dataWidth - 114)} y={y - 10} width={110} height={18} rx={3} fill="#111713" stroke={color} strokeWidth={0.5} />
+                <SvgText x={Math.max(8, dataWidth - 109)} y={y + 3} fill={color} fontSize={9} fontWeight="700">{shortChartLevelLabel(level.label)} {formatPrice(level.price)}</SvgText>
+              </React.Fragment>
             );
           })}
           {visibleCandles.map((candle, index) => {
             const rising = candle.close >= candle.open;
-            const x = 24 + index * candleStep;
+            const color = rising ? "#26d89b" : "#ff6470";
+            const x = leftPad + index * candleStep + candleStep / 2;
             const wickTop = priceToY(candle.high);
             const wickBottom = priceToY(candle.low);
             const bodyTop = priceToY(Math.max(candle.open, candle.close));
             const bodyBottom = priceToY(Math.min(candle.open, candle.close));
             const bodyHeight = Math.max(bodyBottom - bodyTop, 2);
-            const isSelected = selectedInChart?.timestampUtc === candle.timestampUtc;
             return (
-              <Pressable
-                key={candle.timestampUtc}
-                onPress={() => onSelectCandle(candle)}
-                style={[styles.candleHitArea, { left: x - 2, height: plotHeight + topPad + bottomPad }]}
-              >
-                <View style={[styles.candleWick, rising ? styles.candleUp : styles.candleDown, { top: wickTop, height: Math.max(wickBottom - wickTop, 1) }]} />
-                <View style={[styles.candleBody, rising ? styles.candleUp : styles.candleDown, isSelected && styles.candleSelected, { top: bodyTop, height: bodyHeight, width: candleWidth }]} />
-              </Pressable>
+              <React.Fragment key={candle.timestampUtc}>
+                <Line x1={x} x2={x} y1={wickTop} y2={wickBottom} stroke={color} strokeWidth={1} />
+                <Rect x={x - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} fill={color} rx={1} />
+                <Rect x={x - candleStep / 2} y={topPad} width={candleStep} height={plotHeight} fill="transparent" onPress={() => onSelectCandle(candle)} />
+              </React.Fragment>
             );
           })}
-        </View>
+          {selectedX != null ? (
+            <>
+              <Line x1={selectedX} x2={selectedX} y1={topPad} y2={topPad + plotHeight} stroke="#88958e" strokeWidth={1} strokeDasharray="3 4" />
+              <Line x1={0} x2={dataWidth} y1={selectedY} y2={selectedY} stroke="#88958e" strokeWidth={1} strokeDasharray="3 4" />
+              <Rect x={dataWidth + 2} y={selectedY - 9} width={axisWidth - 4} height={18} rx={3} fill="#e7ece9" />
+              <SvgText x={dataWidth + 7} y={selectedY + 4} fill="#08100c" fontSize={10} fontWeight="700">{info.close.toFixed(2)}</SvgText>
+            </>
+          ) : null}
+          {[0, Math.floor((visibleCandles.length - 1) / 2), visibleCandles.length - 1].map((index) => {
+            const candle = visibleCandles[index];
+            if (!candle) return null;
+            return <SvgText key={candle.timestampUtc} x={leftPad + index * candleStep} y={plotHeight + topPad + 20} fill="#68756e" fontSize={9}>{formatChartTime(candle.timestampUtc)}</SvgText>;
+          })}
+        </Svg>
       </ScrollView>
-      <View style={styles.candleReadout}>
-        <Metric label="Candle" value={formatTime(info.timestampUtc)} />
-        <Metric label="O / H" value={`${formatPrice(info.open)} / ${formatPrice(info.high)}`} />
-        <Metric label="L / C" value={`${formatPrice(info.low)} / ${formatPrice(info.close)}`} />
-        <Metric label="Spread" value={info.spread == null ? "--" : formatPrice(info.spread)} />
+      <View style={styles.ohlcBar}>
+        <Text style={styles.ohlcTime}>{formatChartTime(info.timestampUtc)}</Text>
+        <OhlcValue label="O" value={info.open} />
+        <OhlcValue label="H" value={info.high} tone="good" />
+        <OhlcValue label="L" value={info.low} tone="bad" />
+        <OhlcValue label="C" value={info.close} />
+      </View>
+      <View style={styles.chartLegend}>
+        {chartLegend(chart).map((item) => (
+          <View key={item.label} style={styles.chartLegendItem}>
+            <View style={[styles.chartLegendDot, { backgroundColor: toneColor(item.tone) }]} />
+            <Text style={styles.chartLegendText}>{item.label}</Text>
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -2614,6 +3011,7 @@ function ModuleDetail({
   const signal = signalLabel(module);
   const setup = module.currentSetup ?? {};
   const trade = module.currentTrade ?? {};
+  const showExecution = hasActionableSignal(module) || hasTrackedSignal(module);
   const evaluations = setup.evaluations ?? [];
   const learningSummary = learning?.summary ?? {};
   const recommendations = learning?.recommendations ?? [];
@@ -2637,15 +3035,17 @@ function ModuleDetail({
       </View>
       <Text style={styles.reason}>{setup.final_reason ?? signal.reason}</Text>
       <View style={styles.metricsGrid}>
-        <Metric label="Direction" value={trade.direction ?? setup.direction ?? "--"} />
-        <Metric label="Entry" value={formatPrice(entry)} />
-        <Metric label="Stop Loss" value={formatPrice(stopLoss)} />
-        <Metric label="TP1 1R" value={formatPrice(targetLadder.tp1)} />
-        <Metric label="TP2 1.5R" value={formatPrice(targetLadder.tp2)} />
-        <Metric label={`TP3 ${targetLadder.finalRLabel}`} value={formatPrice(targetLadder.tp3)} />
-        <Metric label="Trade Horizon" value="Intraday max 12h" />
-        <Metric label="Score" value={setup.favorability_score == null ? "--" : `${setup.favorability_score}/100`} />
-        <Metric label="Trade" value={trade.outcome ?? "NONE"} />
+        <Metric label="State" value={signal.label} />
+        <Metric label="Confidence" value={setupScoreLabel(setup)} />
+        <Metric label="Session" value={formatScenarioName(String(module.session?.state ?? "WAITING"))} />
+        <Metric label="Evaluated" value={setup.detected_at ? formatTime(setup.detected_at) : "--"} />
+        {showExecution ? <Metric label="Direction" value={trade.direction ?? setup.direction ?? "--"} /> : null}
+        {showExecution ? <Metric label="Entry" value={formatPrice(entry)} /> : null}
+        {showExecution ? <Metric label="Stop Loss" value={formatPrice(stopLoss)} /> : null}
+        {showExecution ? <Metric label="TP1 1R" value={formatPrice(targetLadder.tp1)} /> : null}
+        {showExecution ? <Metric label="TP2 1.5R" value={formatPrice(targetLadder.tp2)} /> : null}
+        {showExecution ? <Metric label={`TP3 ${targetLadder.finalRLabel}`} value={formatPrice(targetLadder.tp3)} /> : null}
+        {showExecution ? <Metric label="Trade" value={trade.outcome ?? "READY"} /> : null}
         <Metric label="Week WR" value={formatPercent(module.weekly?.winRate)} />
         <Metric label="Month WR" value={formatPercent(module.monthly?.winRate)} />
       </View>
@@ -2755,6 +3155,42 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+function SignalPrice({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "risk" | "reward" }) {
+  return (
+    <View style={styles.signalPriceItem}>
+      <Text style={styles.signalPriceLabel}>{label}</Text>
+      <Text style={[styles.signalPriceValue, tone === "risk" && styles.badText, tone === "reward" && styles.goodText]}>{value}</Text>
+    </View>
+  );
+}
+
+function SignalContext({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.signalContextItem}>
+      <Text style={styles.signalPriceLabel}>{label}</Text>
+      <Text style={styles.signalContextValue} numberOfLines={2}>{value}</Text>
+    </View>
+  );
+}
+
+function SignalDeskMetric({ label, value, tone }: { label: string; value: number; tone: "good" | "bad" | "info" | "neutral" }) {
+  return (
+    <View style={styles.signalDeskMetric}>
+      <Text style={[styles.signalDeskMetricValue, tone === "good" && styles.goodText, tone === "bad" && styles.badText, tone === "info" && styles.infoText]}>{value}</Text>
+      <Text style={styles.signalDeskMetricLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function OhlcValue({ label, value, tone = "neutral" }: { label: string; value: number; tone?: "neutral" | "good" | "bad" }) {
+  return (
+    <Text style={styles.ohlcValue}>
+      <Text style={styles.ohlcLabel}>{label} </Text>
+      <Text style={tone === "good" ? styles.goodText : tone === "bad" ? styles.badText : undefined}>{value.toFixed(2)}</Text>
+    </Text>
+  );
+}
+
 function SectionTitle({ title }: { title: string }) {
   return <Text style={styles.sectionTitle}>{title}</Text>;
 }
@@ -2764,113 +3200,23 @@ function EmptyCard({ text }: { text: string }) {
 }
 
 function BottomNavIcon({ tab, active }: { tab: MobileTab; active: boolean }) {
-  const tone = active ? styles.iconLineActive : styles.iconLine;
-  if (tab === "home") {
-    return (
-      <View style={styles.navIconCanvas}>
-        <View style={[styles.iconRoofLeft, tone]} />
-        <View style={[styles.iconRoofRight, tone]} />
-        <View style={[styles.iconHomeBase, tone]} />
-      </View>
-    );
-  }
-  if (tab === "buySell") {
-    return (
-      <View style={styles.navIconCanvas}>
-        <View style={[styles.iconSignalStem, tone]} />
-        <View style={[styles.iconSignalDot, active ? styles.iconDotActive : styles.iconDot]} />
-        <View style={[styles.iconSignalWaveOne, tone]} />
-        <View style={[styles.iconSignalWaveTwo, tone]} />
-      </View>
-    );
-  }
-  if (tab === "chart") {
-    return (
-      <View style={styles.navIconCanvas}>
-        <View style={[styles.iconAxisLeft, tone]} />
-        <View style={[styles.iconAxisBottom, tone]} />
-        <View style={[styles.iconChartBarOne, tone]} />
-        <View style={[styles.iconChartBarTwo, tone]} />
-        <View style={[styles.iconChartBarThree, tone]} />
-      </View>
-    );
-  }
-  if (tab === "paper") {
-    return (
-      <View style={styles.navIconCanvas}>
-        <View style={[styles.iconBookCover, tone]} />
-        <View style={[styles.iconBookLineOne, tone]} />
-        <View style={[styles.iconBookLineTwo, tone]} />
-      </View>
-    );
-  }
-  return (
-    <View style={styles.navIconCanvas}>
-      <View style={[styles.iconMoreDotOne, active ? styles.iconDotActive : styles.iconDot]} />
-      <View style={[styles.iconMoreDotTwo, active ? styles.iconDotActive : styles.iconDot]} />
-      <View style={[styles.iconMoreDotThree, active ? styles.iconDotActive : styles.iconDot]} />
-    </View>
-  );
+  const color = active ? "#26d89b" : "#78847d";
+  const props = { color, size: 22, strokeWidth: active ? 2.4 : 2 };
+  if (tab === "home") return <Home {...props} />;
+  if (tab === "buySell") return <Zap {...props} fill={active ? "#26d89b" : "transparent"} />;
+  if (tab === "chart") return <CandlestickChart {...props} />;
+  if (tab === "paper") return <BookOpen {...props} />;
+  return <MoreHorizontal {...props} />;
 }
 
 function MiniIcon({ name }: { name: string }) {
-  if (name === "chart") {
-    return (
-      <View style={styles.miniIconCanvas}>
-        <View style={styles.miniAxis} />
-        <View style={styles.miniBarOne} />
-        <View style={styles.miniBarTwo} />
-        <View style={styles.miniBarThree} />
-      </View>
-    );
-  }
-  if (name === "alerts") {
-    return (
-      <View style={styles.miniIconCanvas}>
-        <View style={styles.miniBell} />
-        <View style={styles.miniBellDot} />
-      </View>
-    );
-  }
-  if (name === "time") {
-    return (
-      <View style={styles.miniClock}>
-        <View style={styles.miniClockHandOne} />
-        <View style={styles.miniClockHandTwo} />
-      </View>
-    );
-  }
-  if (name === "account") {
-    return (
-      <View style={styles.miniIconCanvas}>
-        <View style={styles.miniUserHead} />
-        <View style={styles.miniUserBody} />
-      </View>
-    );
-  }
-  return (
-    <View style={styles.miniIconCanvas}>
-      <View style={styles.miniSignalStem} />
-      <View style={styles.miniSignalDot} />
-      <View style={styles.miniSignalWave} />
-    </View>
-  );
-}
-
-function levelLineStyle(tone: string) {
-  if (tone === "good") return styles.levelGoodLine;
-  if (tone === "bad") return styles.levelBadLine;
-  if (tone === "warn") return styles.levelWarnLine;
-  if (tone === "entry") return styles.levelEntryLine;
-  return styles.levelNeutralLine;
-}
-
-function levelTextStyle(tone: string) {
-  if (tone === "good") return styles.levelGoodText;
-  if (tone === "bad") return styles.levelBadText;
-  if (tone === "warn") return styles.levelWarnText;
-  if (tone === "entry") return styles.levelEntryText;
-  return styles.levelNeutralText;
+  const props = { color: "#26d89b", size: 20, strokeWidth: 2 };
+  if (name === "chart") return <CandlestickChart {...props} />;
+  if (name === "alerts") return <Bell {...props} />;
+  if (name === "time") return <Clock3 {...props} />;
+  if (name === "account") return <UserRound {...props} />;
+  if (name === "signals") return <Zap {...props} />;
+  return <Activity {...props} />;
 }
 
 function chartLegend(chart: ChartPayload) {
@@ -2904,11 +3250,22 @@ function shortChartLevelLabel(label: string) {
 }
 
 function isActionableModule(module: ModuleRow) {
-  const label = signalLabel(module).label;
-  if (label === "WAIT" || label === "NO TRADE") return false;
+  return hasActionableSignal(module) || hasTrackedSignal(module);
+}
+
+function hasActionableSignal(module?: ModuleRow | null) {
+  if (!module) return false;
   const setup = module.currentSetup ?? {};
-  const trade = module.currentTrade ?? {};
-  return Boolean(trade.outcome === "ACTIVE" || (setupProbability(setup) >= 80 && (setup.entry_price || setup.status?.includes("SETUP") || setup.status === "PAPER_TRADE_OPENED")));
+  if (setupIsBlocked(setup)) return false;
+  return ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED"].includes(String(setup.status ?? "").toUpperCase());
+}
+
+function hasTrackedSignal(module?: ModuleRow | null) {
+  if (!module) return false;
+  const setupStatus = String(module.currentSetup?.status ?? "").toUpperCase();
+  const tradeOutcome = String(module.currentTrade?.outcome ?? "").toUpperCase();
+  if (tradeOutcome === "ACTIVE") return true;
+  return setupStatus === "PAPER_TRADE_OPENED" && !tradeOutcome;
 }
 
 function isFullChecklistModule(module: ModuleRow) {
@@ -2950,11 +3307,32 @@ function setupProbability(setup: any) {
 function signalLabel(module: ModuleRow) {
   const trade = module.currentTrade;
   const setup = module.currentSetup;
-  if (trade?.outcome === "ACTIVE") return { label: trade.direction === "SHORT" ? "SELL ACTIVE" : "BUY ACTIVE", tone: trade.direction === "SHORT" ? "bad" : "good", reason: "Signal is active; paper tracking is recording win-rate and TP/SL outcome." };
-  if (setup?.status === "LONG SETUP READY" || setup?.status === "PAPER_TRADE_OPENED") return { label: "BUY", tone: "good", reason: setup.final_reason ?? "Valid long setup." };
-  if (setup?.status === "SHORT SETUP READY") return { label: "SELL", tone: "bad", reason: setup.final_reason ?? "Valid short setup." };
+  if (hasActionableSignal(module)) {
+    const action = tradeAction(setup?.direction, setup?.status);
+    return { label: action, tone: action === "SELL" ? "bad" : "good", reason: setup?.final_reason ?? `Valid ${action.toLowerCase()} entry contract.` };
+  }
+  if (hasTrackedSignal(module)) {
+    const action = tradeAction(trade?.direction ?? setup?.direction, setup?.status);
+    return { label: `${action} TRACKING`, tone: action === "SELL" ? "bad" : "good", reason: "A validated signal is already active in paper tracking. This is not a new entry alert." };
+  }
+  if (setupIsBlocked(setup)) return { label: "NO TRADE", tone: "bad", reason: setup?.final_reason ?? "Risk or strategy conditions blocked entry." };
   if (setup?.status === "NO TRADE" || setup?.status === "BLOCKED") return { label: "NO TRADE", tone: "bad", reason: setup.final_reason ?? "Conditions blocked." };
   return { label: "WAIT", tone: "warn", reason: "Waiting for a valid session setup." };
+}
+
+function homeLatestAlert(notifications: any[]) {
+  return notifications.find((item) => !/MOBILE_TEST_PUSH|PLATFORM_TEST_PUSH|PLATFORM_PUSH_TEST/.test(String(item?.event_type ?? "").toUpperCase())) ?? notifications[0] ?? null;
+}
+
+function setupIsBlocked(setup: any) {
+  if (!setup) return false;
+  const status = String(setup.status ?? "").toUpperCase();
+  if (["NO TRADE", "BLOCKED", "REJECTED", "INVALID", "INVALIDATED", "CANCELLED", "TEST_CLEARED"].includes(status)) return true;
+  if (setup.blocked === true || setup.risk_blocked === true || setup.riskBlocked === true) return true;
+  const flags = setup.scenario_flags ?? {};
+  if (flags.blocked === true || flags.riskBlocked === true || flags.risk_blocked === true) return true;
+  const reason = String(setup.final_reason ?? setup.reason ?? "").toUpperCase();
+  return /(?:^|[\s:])BLOCK(?:ED)?\b|RISK ENGINE (?:BLOCKED|REJECTED|DENIED)|\bNO TRADE\b|\bINVALIDATED\b/.test(reason);
 }
 
 function moduleIconLabel(moduleCode: string) {
@@ -3028,6 +3406,16 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     provider: stringOrNull(payload.provider),
     cacheStatus: stringOrNull(payload.cacheStatus ?? payload.cache_status),
     schedulerStatus: stringOrNull(payload.schedulerStatus ?? payload.scheduler_status),
+    reportStatus: stringOrNull(payload.reportStatus ?? payload.report_status),
+    tradeCount: payload.tradeCount ?? payload.trade_count ?? payload.trades ?? null,
+    totalR: payload.totalR ?? payload.total_r ?? null,
+    wins: payload.wins ?? null,
+    losses: payload.losses ?? null,
+    winRate: payload.winRate ?? payload.win_rate ?? null,
+    blockedSetups: payload.blockedSetups ?? payload.blocked_setups ?? null,
+    sampleSize: payload.sampleSize ?? payload.sample_size ?? null,
+    recommendationCount: payload.recommendationCount ?? payload.recommendation_count ?? payload.recommendations ?? null,
+    nextStep: stringOrNull(payload.nextStep ?? payload.next_step),
     source: "push"
   };
 }
@@ -3119,6 +3507,16 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     provider: stringOrNull(payload.provider),
     cacheStatus: stringOrNull(payload.cacheStatus ?? payload.cache_status),
     schedulerStatus: stringOrNull(payload.schedulerStatus ?? payload.scheduler_status),
+    reportStatus: stringOrNull(payload.reportStatus ?? payload.report_status) ?? extractLooseText(body, "status"),
+    tradeCount: payload.tradeCount ?? payload.trade_count ?? payload.trades ?? extractLooseNumber(body, "trades"),
+    totalR: payload.totalR ?? payload.total_r ?? extractLooseNumber(body, "total R"),
+    wins: payload.wins ?? extractLooseNumber(body, "wins"),
+    losses: payload.losses ?? extractLooseNumber(body, "losses"),
+    winRate: payload.winRate ?? payload.win_rate ?? extractLooseNumber(body, "win rate"),
+    blockedSetups: payload.blockedSetups ?? payload.blocked_setups ?? extractLooseNumber(body, "blocked setups"),
+    sampleSize: payload.sampleSize ?? payload.sample_size ?? extractLooseNumber(body, "reviewed"),
+    recommendationCount: payload.recommendationCount ?? payload.recommendation_count ?? payload.recommendations ?? extractLooseNumber(body, "produced"),
+    nextStep: stringOrNull(payload.nextStep ?? payload.next_step),
     source: "history"
   };
 }
@@ -3153,6 +3551,16 @@ function moduleDisplayName(moduleCode?: string | null) {
 function extractBodyField(body: string, label: string) {
   const pattern = new RegExp(`${label}\\s*[:=]\\s*([A-Z+\\-]?\\d+(?:\\.\\d+)?%?|[A-Z][A-Z0-9+\\-]*)`, "i");
   return stringOrNull(body.match(pattern)?.[1]);
+}
+
+function extractLooseNumber(body: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return stringOrNull(body.match(new RegExp(`${escaped}\\s*(?:[:=]|is)?\\s*(-?\\d+(?:\\.\\d+)?%?)`, "i"))?.[1]);
+}
+
+function extractLooseText(body: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return stringOrNull(body.match(new RegExp(`${escaped}\\s*(?:[:=]|is)?\\s*([A-Z][A-Z0-9_ -]*?)(?:[.,|]|$)`, "i"))?.[1]);
 }
 
 function extractScenario(body: string) {
@@ -3209,16 +3617,99 @@ function hasTradeDetails(detail: NotificationDetail) {
 function notificationCategory(detail: NotificationDetail) {
   const explicit = stringOrNull(detail.category)?.toUpperCase();
   if (explicit) return explicit;
+  const eventType = String(detail.eventType ?? "").toUpperCase();
+  if (["MOBILE_TEST_PUSH", "PLATFORM_TEST_PUSH", "PLATFORM_PUSH_TEST"].includes(eventType)) return "GENERAL";
   const haystack = `${detail.eventType ?? ""} ${detail.title} ${detail.body}`.toUpperCase();
+  if (/AUTH_|PASSWORD|MFA|LOGIN|LOGOUT|ACCOUNT_LOCK|SECURITY/.test(haystack)) return "SECURITY";
+  if (/DAILY_REPORT|WEEKLY_REPORT|MONTHLY_REPORT|CLOSEOUT_READY|REPORT_READY|PERFORMANCE_SUMMARY/.test(haystack)) return "REPORT";
+  if (/LEARNING|RECOMMENDATION|TUNING_REVIEW|OPTIMIZATION_REVIEW/.test(haystack)) return "LEARNING";
+  if (/SESSION|WINDOW|PRESSESSION|PRE_SESSION|NY_START/.test(haystack)) return "SESSION";
+  if (/PAPER_TRADE_CLOSED|TP3_HIT|SL_HIT|STOP LOSS|STOPPED|CLOSEOUT|CLOSED|TRADE WIN|TRADE LOSS/.test(haystack)) return "TRADE_CLOSEOUT";
   if (/TP[12]_HIT/.test(haystack)) return "TRADE_LIFECYCLE";
-  if (hasTradeDetails(detail) || /ENTRY|SETUP_READY|VALID_ENTRY|BUY|SELL|SIGNAL/.test(haystack)) return "TRADE_SETUP";
-  if (/TP[123]?_HIT|SL_HIT|TARGET|STOP LOSS|STOPPED|CLOSEOUT|CLOSED|WIN|LOSS/.test(haystack)) return "TRADE_CLOSEOUT";
-  if (/TP[123]?_HIT|SL_HIT|CLOSE|CLOSED|OPEN_TOO_LONG|ACTIVE_TRADE|PAPER_TRADE|TRADE/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/PAPER_TRADE_OPENED|PAPER_ENTRY|ACTIVE_TRADE|OPEN_TOO_LONG/.test(haystack)) return "TRADE_LIFECYCLE";
+  if (/NO_TRADE|BLOCKED|REJECTED|DENIED|INVALIDATED|SETUP_EXPIRED|ENTRY_MISSED|RANGE_INVALID|FAILED_CHECK|NOT_PERMITTED/.test(haystack)) return "RISK";
+  if (/SWEEP_DETECTED|DISPLACEMENT_CONFIRMED|BOS_CONFIRMED|CHOCH_CONFIRMED|ENTRY_ZONE_READY|WAITING_FOR_RETRACE|ENTRY_CONFIRMATION/.test(haystack)) return "SETUP_PROGRESS";
+  if (hasTradeDetails(detail) || /SETUP_READY|VALID_ENTRY|BUY SIGNAL|SELL SIGNAL|ENTRY SIGNAL/.test(haystack)) return "TRADE_SETUP";
+  if (/TP[123]?_HIT|TRADE|PAPER/.test(haystack)) return "TRADE_LIFECYCLE";
   if (/HEALTH|AUDIT|DISABLED|STALE|ERROR|FAILED|TOO_LONG|STUCK/.test(haystack)) return "HEALTH";
-  if (/SESSION|WINDOW|PRESSESSION|PRE_SESSION|NY_START|EXPIRED/.test(haystack)) return "SESSION";
   if (/FEED|TWELVE|CANDLE|CACHE|MARKET_DATA/.test(haystack)) return "FEED";
-  if (/REPORT|LEARNING|BACKTEST/.test(haystack)) return "SYSTEM";
+  if (/BACKTEST|REHEARSAL|DIAGNOSTIC|TEST/.test(haystack)) return "SYSTEM";
   return "GENERAL";
+}
+
+function notificationPresentation(category: string, detail: NotificationDetail) {
+  const priority = String(detail.priority ?? "ALERT").toUpperCase();
+  const action = tradeAction(detail.direction, detail.action ?? undefined);
+  const eventLabel = formatScenarioName(String(detail.eventType ?? "Notification"));
+  if (category === "TRADE_SETUP") return {
+    badge: `${action} SIGNAL`,
+    eyebrow: `${priority} PRIORITY · VALIDATED ENTRY`,
+    pillStyle: action === "SELL" ? styles.detailPillDanger : styles.detailPillTrade,
+    heroStyle: action === "SELL" ? styles.detailHeroDanger : styles.detailHeroTrade,
+    eyebrowStyle: action === "SELL" ? styles.detailEyebrowDanger : styles.detailEyebrowTrade
+  };
+  if (category === "RISK") return { badge: "NO TRADE", eyebrow: `${priority} PRIORITY · RISK CONTROL`, pillStyle: styles.detailPillDanger, heroStyle: styles.detailHeroDanger, eyebrowStyle: styles.detailEyebrowDanger };
+  if (category === "TRADE_CLOSEOUT") return { badge: "TRADE RESULT", eyebrow: `${priority} PRIORITY · PAPER CLOSEOUT`, pillStyle: styles.detailPillResult, heroStyle: styles.detailHeroResult, eyebrowStyle: styles.detailEyebrowResult };
+  if (category === "TRADE_LIFECYCLE") return { badge: "PAPER TRADE", eyebrow: `${priority} PRIORITY · POSITION UPDATE`, pillStyle: styles.detailPillTrade, heroStyle: styles.detailHeroTrade, eyebrowStyle: styles.detailEyebrowTrade };
+  if (category === "SETUP_PROGRESS") return { badge: "SETUP WATCH", eyebrow: `${priority} PRIORITY · NOT AN ENTRY`, pillStyle: styles.detailPillProgress, heroStyle: styles.detailHeroProgress, eyebrowStyle: styles.detailEyebrowProgress };
+  if (category === "REPORT") return { badge: "REPORT", eyebrow: `${priority} PRIORITY · PERFORMANCE`, pillStyle: styles.detailPillResult, heroStyle: styles.detailHeroResult, eyebrowStyle: styles.detailEyebrowResult };
+  if (category === "LEARNING") return { badge: "LEARNING", eyebrow: `${priority} PRIORITY · STRATEGY REVIEW`, pillStyle: styles.detailPillProgress, heroStyle: styles.detailHeroProgress, eyebrowStyle: styles.detailEyebrowProgress };
+  if (category === "SESSION") return { badge: "SESSION", eyebrow: `${priority} PRIORITY · NEW YORK DESK`, pillStyle: styles.detailPillSession, heroStyle: styles.detailHeroSession, eyebrowStyle: styles.detailEyebrowSession };
+  if (category === "FEED") return { badge: "MARKET DATA", eyebrow: `${priority} PRIORITY · DATA FEED`, pillStyle: styles.detailPillSession, heroStyle: styles.detailHeroSession, eyebrowStyle: styles.detailEyebrowSession };
+  if (category === "HEALTH") return { badge: "SYSTEM", eyebrow: `${priority} PRIORITY · PLATFORM HEALTH`, pillStyle: styles.detailPillDanger, heroStyle: styles.detailHeroDanger, eyebrowStyle: styles.detailEyebrowDanger };
+  if (category === "SECURITY") return { badge: "SECURITY", eyebrow: `${priority} PRIORITY · ACCOUNT`, pillStyle: styles.detailPillSecurity, heroStyle: styles.detailHeroSecurity, eyebrowStyle: styles.detailEyebrowSecurity };
+  return { badge: "ALERT", eyebrow: `${priority} PRIORITY · ${eventLabel.toUpperCase()}`, pillStyle: null, heroStyle: null, eyebrowStyle: null };
+}
+
+function notificationMetaLine(detail: NotificationDetail) {
+  const source = detail.source === "push" ? "Opened from push" : "Notification history";
+  const time = detail.createdAt ? formatTime(detail.createdAt) : source;
+  const event = detail.eventType ? formatScenarioName(detail.eventType) : "General alert";
+  return `${time} · ${event}`;
+}
+
+function notificationHasModuleWorkspace(category: string) {
+  return ["TRADE_SETUP", "TRADE_CLOSEOUT", "TRADE_LIFECYCLE", "SETUP_PROGRESS", "RISK", "SESSION", "FEED", "HEALTH"].includes(category);
+}
+
+function notificationWorkspaceLabel(category: string) {
+  if (category === "TRADE_SETUP") return "Open Entry Chart";
+  if (category === "TRADE_CLOSEOUT" || category === "TRADE_LIFECYCLE") return "Open Paper Trade Chart";
+  if (category === "RISK") return "Review Blocked Setup";
+  if (category === "SETUP_PROGRESS") return "Watch Setup Chart";
+  return "Open Module Chart";
+}
+
+function notificationWorkspaceHint(category: string) {
+  if (category === "REPORT") return "Open Paper Trading from the bottom navigation to review complete performance history.";
+  if (category === "LEARNING") return "Open the related strategy module to review learning evidence and recommendations.";
+  if (category === "SECURITY") return "Open More and Security to review authentication and saved-session controls.";
+  return "This alert is informational and is not tied to a strategy chart.";
+}
+
+function setupProgressStage(detail: NotificationDetail) {
+  const event = `${detail.eventType ?? ""} ${detail.title}`.toUpperCase();
+  const steps = ["Sweep", "Impulse", "Structure", "Entry zone", "Confirm"];
+  if (/ENTRY_CONFIRMATION/.test(event)) return { steps, activeIndex: 4, shortLabel: "CONFIRM", nextStep: "Confirmation is forming. Wait for the strategy and risk engines to issue a separate validated entry." };
+  if (/ENTRY_ZONE|WAITING_FOR_RETRACE/.test(event)) return { steps, activeIndex: 3, shortLabel: "RETRACE", nextStep: "The zone is prepared. Wait for price retrace and confirmation candle close." };
+  if (/BOS|CHOCH/.test(event)) return { steps, activeIndex: 2, shortLabel: "STRUCTURE", nextStep: "Structure is confirmed. Wait for a fresh entry zone and retrace." };
+  if (/DISPLACEMENT/.test(event)) return { steps, activeIndex: 1, shortLabel: "IMPULSE", nextStep: "Displacement is confirmed. Wait for BOS or CHoCH confirmation." };
+  return { steps, activeIndex: 0, shortLabel: "SWEEP", nextStep: "Liquidity was swept. Wait for displacement and market-structure confirmation." };
+}
+
+function riskStatusLabel(detail: NotificationDetail) {
+  const event = `${detail.eventType ?? ""} ${detail.title}`.toUpperCase();
+  if (/INVALID/.test(event)) return "INVALIDATED";
+  if (/EXPIRED/.test(event)) return "EXPIRED";
+  if (/MISSED/.test(event)) return "MISSED";
+  return "BLOCKED";
+}
+
+function sessionAlertBadge(detail: NotificationDetail) {
+  const event = `${detail.eventType ?? ""} ${detail.title}`.toUpperCase();
+  if (/EXPIRED|CLOSED|END/.test(event)) return "CLOSED";
+  if (/PRE|BEFORE/.test(event)) return "UPCOMING";
+  return "ACTIVE";
 }
 
 function notificationRecommendedAction(category: string, detail: NotificationDetail) {
@@ -3241,11 +3732,36 @@ function formatDuration(value: unknown) {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
+function formatSignalAge(value: unknown) {
+  if (!value) return "--";
+  const timestamp = new Date(String(value)).getTime();
+  if (!Number.isFinite(timestamp)) return "--";
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return "NOW";
+  if (minutes < 60) return `${minutes}M`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}H`;
+  return `${Math.floor(hours / 24)}D`;
+}
+
 function formatDetailValue(value: unknown) {
   if (value == null || value === "") return "--";
   const numeric = Number(value);
   if (Number.isFinite(numeric) && String(value).length < 16) return numeric.toFixed(2);
   return String(value);
+}
+
+function formatCount(value: unknown) {
+  if (value == null || value === "") return "--";
+  const number = Number(String(value).replace("%", ""));
+  return Number.isFinite(number) ? String(Math.round(number)) : String(value);
+}
+
+function formatMetricPercent(value: unknown) {
+  if (value == null || value === "") return "--";
+  const text = String(value);
+  const number = Number(text.replace("%", ""));
+  return Number.isFinite(number) ? `${number.toFixed(number % 1 === 0 ? 0 : 1)}%` : text;
 }
 
 function cleanErrorMessage(message: string) {
@@ -3290,6 +3806,13 @@ function formatTime(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "--";
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatChartTime(value: string) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "--";
+  return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
 function apiWebSocketUrl(apiBaseUrl: string, path: string) {
@@ -3344,11 +3867,15 @@ function normalizePushPreferences(input: Partial<PushPreferences> | null | undef
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#050706" },
+  screen: { flex: 1, backgroundColor: "#070a08" },
   scroll: { flex: 1, paddingHorizontal: 16 },
-  scrollContent: { paddingTop: 12, paddingBottom: 112 },
+  scrollContent: { paddingTop: 8, paddingBottom: 104 },
   loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
-  topBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 8, paddingBottom: 14 },
+  topBar: { minHeight: 60, flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 4, paddingBottom: 8 },
+  brandLockup: { flex: 1, flexDirection: "row", alignItems: "center" },
+  brandCopy: { flex: 1 },
+  brandTitle: { color: "#eef2ef", fontSize: 14, fontWeight: "900" },
+  brandSubtitle: { color: "#7f8a84", fontSize: 11, fontWeight: "700", marginTop: 2 },
   searchBox: {
     flex: 1,
     height: 48,
@@ -3360,27 +3887,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 16
   },
-  headerMark: { width: 30, height: 30, marginRight: 10 },
+  headerMark: { width: 34, height: 34, marginRight: 10 },
   searchText: { color: "#b2bbb5", fontWeight: "700", fontSize: 14 },
   roundIconButton: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: "#1d201e",
+    borderRadius: 8,
+    backgroundColor: "#141916",
     borderWidth: 1,
     borderColor: "#2c3430",
     alignItems: "center",
     justifyContent: "center"
   },
   roundIconText: { color: "#f4f7f4", fontWeight: "900" },
+  alertBadge: { position: "absolute", right: 5, top: 5, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: "#ff6470", alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
+  alertBadgeText: { color: "#ffffff", fontSize: 9, fontWeight: "900" },
   eyebrow: { color: "#2fe6a8", fontSize: 11, fontWeight: "800", letterSpacing: 0 },
   portfolioCard: {
-    minHeight: 242,
-    borderRadius: 24,
-    backgroundColor: "#141816",
+    minHeight: 192,
+    borderRadius: 8,
+    backgroundColor: "#111612",
     borderWidth: 1,
     borderColor: "#2a302d",
-    padding: 22,
+    padding: 18,
     overflow: "hidden",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 18 },
@@ -3399,13 +3928,20 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 120,
     borderBottomRightRadius: 120
   },
-  heroTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" },
-  heroLabel: { color: "#9ca59f", fontSize: 13, fontWeight: "700" },
-  heroValue: { color: "#f4f7f4", fontSize: 40, fontWeight: "900", marginTop: 10 },
-  heroSub: { color: "#a4aea8", fontSize: 13, marginTop: 8, fontWeight: "700" },
+  heroTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  heroCopy: { flex: 1 },
+  heroLabel: { color: "#839088", fontSize: 10, fontWeight: "900" },
+  heroValue: { color: "#f4f7f4", fontSize: 29, lineHeight: 35, fontWeight: "900", marginTop: 10 },
+  heroSub: { color: "#9da8a1", fontSize: 12, lineHeight: 18, marginTop: 7, fontWeight: "600" },
   positiveText: { color: "#2fe6a8" },
-  sessionBadge: { borderRadius: 18, backgroundColor: "#202522", paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: "#303832" },
-  sessionBadgeText: { color: "#d8dfda", fontSize: 11, fontWeight: "900" },
+  sessionBadge: { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 4, backgroundColor: "#1d1b12", paddingHorizontal: 8, paddingVertical: 7, borderWidth: 1, borderColor: "#4f4529" },
+  sessionBadgeLive: { backgroundColor: "#102119", borderColor: "#22543f" },
+  sessionBadgeText: { color: "#d8dfda", fontSize: 9, fontWeight: "900" },
+  deskStatusRow: { minHeight: 58, flexDirection: "row", alignItems: "center", marginTop: 22, borderTopWidth: 1, borderTopColor: "#273029", paddingTop: 14 },
+  deskStatusItem: { flex: 1, minWidth: 0 },
+  deskStatusDivider: { width: 1, height: 30, backgroundColor: "#29312b", marginHorizontal: 10 },
+  deskStatusLabel: { color: "#6f7b74", fontSize: 8, fontWeight: "900" },
+  deskStatusValue: { color: "#e8edea", fontSize: 12, fontWeight: "900", marginTop: 5 },
   quickActions: { flexDirection: "row", justifyContent: "space-between", gap: 10, marginTop: 30 },
   quickAction: { flex: 1, alignItems: "center" },
   quickActionIcon: {
@@ -3425,7 +3961,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     marginBottom: 2,
     minHeight: 86,
-    borderRadius: 22,
+    borderRadius: 8,
     backgroundColor: "#13211b",
     borderWidth: 1,
     borderColor: "#2fe6a8",
@@ -3446,6 +3982,42 @@ const styles = StyleSheet.create({
   updateBannerTitle: { color: "#f4f7f4", fontSize: 16, fontWeight: "900" },
   updateBannerCopy: { color: "#aeb8b2", fontSize: 12, fontWeight: "700", lineHeight: 17, marginTop: 5 },
   updateBannerAction: { color: "#2fe6a8", fontSize: 12, fontWeight: "900" },
+  primarySignalCard: { marginTop: 14, borderRadius: 8, backgroundColor: "#0f1813", borderWidth: 1, borderColor: "#23503d", padding: 16 },
+  primarySignalCardSell: { backgroundColor: "#1a1112", borderColor: "#5b3036" },
+  primarySignalCardBlocked: { backgroundColor: "#191213", borderColor: "#573036" },
+  signalTicketHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+  signalTicketIdentity: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 11 },
+  signalDirectionIcon: { width: 42, height: 42, borderRadius: 6, backgroundColor: "#142d22", alignItems: "center", justifyContent: "center" },
+  signalDirectionIconSell: { backgroundColor: "#321a1d" },
+  signalDirectionIconBlocked: { backgroundColor: "#321a1d" },
+  signalTicketEyebrow: { color: "#77847d", fontSize: 9, fontWeight: "900" },
+  signalTicketTitle: { color: "#f1f5f2", fontSize: 20, fontWeight: "900", marginTop: 3 },
+  signalTicketModule: { color: "#8f9a94", fontSize: 11, fontWeight: "700", marginTop: 3 },
+  signalTicketStatus: { overflow: "hidden", color: "#06100b", backgroundColor: "#26d89b", borderRadius: 4, paddingHorizontal: 10, paddingVertical: 7, fontSize: 10, fontWeight: "900" },
+  signalTicketStatusSell: { backgroundColor: "#ff7d86" },
+  signalTicketStatusBlocked: { color: "#fff0f1", backgroundColor: "#a63f4a" },
+  signalTicketStatusTracking: { color: "#06131a", backgroundColor: "#7ed7ff" },
+  signalTicketReason: { color: "#b9c2bc", fontSize: 12, lineHeight: 18, marginTop: 14 },
+  signalPriceGrid: { flexDirection: "row", marginTop: 16, borderWidth: 1, borderColor: "#29322c", borderRadius: 6, overflow: "hidden" },
+  signalPriceItem: { flex: 1, minWidth: 0, paddingHorizontal: 10, paddingVertical: 11, borderLeftWidth: 1, borderLeftColor: "#29322c" },
+  signalPriceLabel: { color: "#718078", fontSize: 8, fontWeight: "900" },
+  signalPriceValue: { color: "#e8edea", fontSize: 13, fontWeight: "900", marginTop: 5 },
+  signalContextGrid: { flexDirection: "row", marginTop: 16, borderWidth: 1, borderColor: "#29322c", borderRadius: 6, overflow: "hidden" },
+  signalContextItem: { flex: 1, minWidth: 0, minHeight: 60, paddingHorizontal: 9, paddingVertical: 11, borderLeftWidth: 1, borderLeftColor: "#29322c" },
+  signalContextValue: { color: "#e8edea", fontSize: 11, lineHeight: 15, fontWeight: "900", marginTop: 5 },
+  signalTicketActions: { flexDirection: "row", gap: 8, marginTop: 14 },
+  signalPrimaryAction: { flex: 1, minHeight: 44, borderRadius: 6, backgroundColor: "#26d89b", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  signalPrimaryActionText: { color: "#04110c", fontSize: 13, fontWeight: "900" },
+  signalChartAction: { width: 46, height: 44, borderRadius: 6, borderWidth: 1, borderColor: "#39443e", backgroundColor: "#171d19", alignItems: "center", justifyContent: "center" },
+  sectionHeadingRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between" },
+  sectionMeta: { color: "#6e7973", fontSize: 10, fontWeight: "800", marginBottom: 13 },
+  strategyList: { borderTopWidth: 1, borderTopColor: "#252d28", marginBottom: 4 },
+  strategyIcon: { width: 34, height: 34, borderRadius: 6, backgroundColor: "#151a17", alignItems: "center", justifyContent: "center" },
+  strategyCopy: { flex: 1, minWidth: 0 },
+  strategyStatus: { minWidth: 54, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 6, alignItems: "center" },
+  strategyStatusBuy: { backgroundColor: "#11291f" },
+  strategyStatusSell: { backgroundColor: "#321a1d" },
+  strategyStatusWait: { backgroundColor: "#2b2516" },
   homeActionGrid: { flexDirection: "row", gap: 12, marginTop: 14 },
   homeActionCard: {
     flex: 1,
@@ -3472,14 +4044,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#252c28",
-    paddingVertical: 13
+    borderBottomWidth: 1,
+    borderBottomColor: "#252c28",
+    paddingVertical: 12
   },
   homeModuleSignal: { fontSize: 12, fontWeight: "900" },
   statementCard: {
     marginTop: 14,
-    borderRadius: 16,
+    borderRadius: 8,
     backgroundColor: "#111412",
     borderWidth: 1,
     borderColor: "#242a27",
@@ -3488,7 +4060,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12
   },
-  statementIcon: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#2b312d", alignItems: "center", justifyContent: "center" },
+  statementIcon: { width: 42, height: 42, borderRadius: 6, backgroundColor: "#2b312d", alignItems: "center", justifyContent: "center" },
   statementIconText: { color: "#2fe6a8", fontWeight: "900", fontSize: 17 },
   statementContent: { flex: 1 },
   statementTitle: { color: "#f3f6f4", fontWeight: "900", fontSize: 15 },
@@ -3496,13 +4068,13 @@ const styles = StyleSheet.create({
   statementArrow: { color: "#f3f6f4", fontSize: 22, fontWeight: "900" },
   bottomNav: {
     position: "absolute",
-    left: 14,
-    right: 14,
-    bottom: 22,
+    left: 0,
+    right: 0,
+    bottom: 0,
     zIndex: 50,
-    height: 72,
-    borderRadius: 28,
-    backgroundColor: "#191d1a",
+    height: 78,
+    borderRadius: 0,
+    backgroundColor: "#101411",
     borderWidth: 1,
     borderColor: "#2b302d",
     flexDirection: "row",
@@ -3514,10 +4086,10 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     elevation: 24
   },
-  bottomNavItem: { flex: 1, height: 72, alignItems: "center", justifyContent: "center" },
+  bottomNavItem: { flex: 1, height: 78, alignItems: "center", justifyContent: "center" },
   bottomNavIcon: { width: 34, height: 30, alignItems: "center", justifyContent: "center" },
-  bottomNavText: { color: "#7f8983", fontWeight: "800", fontSize: 9, marginTop: 3 },
-  bottomNavTextActive: { color: "#2fe6a8" },
+  bottomNavText: { color: "#78847d", fontWeight: "800", fontSize: 9, marginTop: 4 },
+  bottomNavTextActive: { color: "#26d89b" },
   navIconCanvas: { width: 24, height: 24, position: "relative" },
   iconLine: { backgroundColor: "#7e8781", borderColor: "#7e8781" },
   iconLineActive: { backgroundColor: "#2fe6a8", borderColor: "#2fe6a8" },
@@ -3561,7 +4133,15 @@ const styles = StyleSheet.create({
   miniSignalWave: { position: "absolute", right: 2, top: 6, width: 3, height: 10, borderRadius: 2, backgroundColor: "#f5f8f6" },
   loginLogo: { width: 236, height: 72, marginBottom: 18, alignSelf: "center" },
   clockGrid: { flexDirection: "row", gap: 10, marginTop: 12 },
-  sectionTitle: { color: "#f4f7f4", fontSize: 22, fontWeight: "900", marginTop: 22, marginBottom: 12 },
+  screenIntro: { minHeight: 84, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  screenEyebrow: { color: "#76827b", fontSize: 9, fontWeight: "900" },
+  screenTitle: { color: "#f2f5f3", fontSize: 28, lineHeight: 34, fontWeight: "900", marginTop: 4 },
+  marketClock: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderColor: "#29312c", borderRadius: 5, paddingHorizontal: 9, paddingVertical: 7 },
+  marketClockText: { color: "#aab3ad", fontSize: 10, fontWeight: "900" },
+  liveIndicator: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 4, backgroundColor: "#11291f", paddingHorizontal: 9, paddingVertical: 7 },
+  liveIndicatorDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#26d89b" },
+  liveIndicatorText: { color: "#26d89b", fontSize: 9, fontWeight: "900" },
+  sectionTitle: { color: "#f4f7f4", fontSize: 18, fontWeight: "900", marginTop: 22, marginBottom: 12 },
   moduleTabs: { gap: 12, paddingRight: 16 },
   moduleTab: {
     width: 178,
@@ -3586,7 +4166,7 @@ const styles = StyleSheet.create({
   compactModuleTabs: { gap: 8, paddingRight: 16, marginBottom: 2 },
   compactModuleTab: {
     minWidth: 116,
-    borderRadius: 18,
+    borderRadius: 6,
     backgroundColor: "#111412",
     borderWidth: 1,
     borderColor: "#252c28",
@@ -3601,7 +4181,7 @@ const styles = StyleSheet.create({
   horizonTab: {
     flex: 1,
     minHeight: 68,
-    borderRadius: 18,
+    borderRadius: 6,
     backgroundColor: "#111412",
     borderWidth: 1,
     borderColor: "#252c28",
@@ -3613,41 +4193,84 @@ const styles = StyleSheet.create({
   horizonTabText: { color: "#8d9690", fontWeight: "900", fontSize: 15 },
   horizonTabTextActive: { color: "#f4f7f4" },
   horizonTabMeta: { color: "#89938d", fontWeight: "700", fontSize: 11, marginTop: 5 },
-  card: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 18, padding: 16, marginBottom: 14 },
+  signalDeskSummary: { flexDirection: "row", borderWidth: 1, borderColor: "#29312c", borderRadius: 6, backgroundColor: "#101411", marginBottom: 12, overflow: "hidden" },
+  signalDeskMetric: { flex: 1, minWidth: 0, minHeight: 64, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: "#29312c", paddingHorizontal: 4 },
+  signalDeskMetricValue: { color: "#e7ece9", fontSize: 19, fontWeight: "900" },
+  signalDeskMetricLabel: { color: "#758078", fontSize: 7, fontWeight: "900", marginTop: 5, textAlign: "center" },
+  infoText: { color: "#7ed7ff" },
+  noEntryCard: { minHeight: 94, flexDirection: "row", alignItems: "flex-start", gap: 12, borderWidth: 1, borderColor: "#51451f", borderRadius: 8, backgroundColor: "#1c1910", padding: 16, marginTop: 12, marginBottom: 14 },
+  noEntryCopy: { flex: 1, minWidth: 0 },
+  noEntryTitle: { color: "#f4ead0", fontSize: 15, fontWeight: "900" },
+  noEntryText: { color: "#aaa087", fontSize: 12, lineHeight: 18, marginTop: 5 },
+  card: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 8, padding: 16, marginBottom: 14 },
   tradeSetupCard: {
     backgroundColor: "#101a15",
     borderWidth: 1,
     borderColor: "#254f40",
-    borderRadius: 22,
+    borderRadius: 8,
     padding: 16,
     marginTop: 12,
     marginBottom: 14
   },
   tradeSetupCardSell: { backgroundColor: "#1a1112", borderColor: "#573036" },
   tradeSetupTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  tradeSetupIdentity: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  tradeSetupIcon: { width: 40, height: 40, borderRadius: 6, backgroundColor: "#142d22", alignItems: "center", justifyContent: "center" },
+  tradeSetupIconSell: { backgroundColor: "#321a1d" },
+  tradeSetupCopy: { flex: 1, minWidth: 0 },
   tradeSetupModule: { color: "#2fe6a8", fontWeight: "900", fontSize: 12, marginBottom: 6 },
   tradeSetupTitle: { color: "#f4f7f4", fontWeight: "900", fontSize: 22, lineHeight: 27 },
+  tradeQualityRow: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 14 },
+  tradeQualityText: { color: "#94a098", backgroundColor: "#19201b", borderRadius: 4, paddingHorizontal: 7, paddingVertical: 5, fontSize: 8, fontWeight: "900" },
+  trackingPill: { backgroundColor: "#7ed7ff" },
+  tapHint: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 13 },
+  executionChecklist: { borderTopWidth: 1, borderTopColor: "#29322c", gap: 10, marginTop: 16, paddingTop: 14 },
+  executionStep: { flexDirection: "row", alignItems: "center", gap: 9 },
+  executionStepNumber: { overflow: "hidden", width: 22, height: 22, borderRadius: 4, backgroundColor: "#253029", color: "#cbd3ce", textAlign: "center", lineHeight: 22, fontSize: 10, fontWeight: "900" },
+  executionStepText: { flex: 1, color: "#aeb8b2", fontSize: 11, lineHeight: 16, fontWeight: "700" },
+  riskNotice: { flexDirection: "row", alignItems: "flex-start", gap: 9, paddingHorizontal: 4, marginBottom: 16 },
+  riskNoticeText: { flex: 1, color: "#7f8a84", fontSize: 10, lineHeight: 15 },
   chartCard: {
-    backgroundColor: "#0d100e",
+    backgroundColor: "#0c100d",
     borderWidth: 1,
     borderColor: "#252c28",
-    borderRadius: 22,
-    paddingTop: 16,
+    borderRadius: 8,
+    paddingTop: 14,
     paddingBottom: 14,
     marginTop: 14,
     marginBottom: 16,
     overflow: "hidden"
   },
-  chartHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 8 },
-  chartLegend: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingBottom: 10 },
-  chartLegendItem: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 14, paddingHorizontal: 9, paddingVertical: 6 },
-  chartLegendDot: { width: 9, height: 9, borderRadius: 5 },
-  chartLegendText: { color: "#aeb8b2", fontSize: 10, fontWeight: "900" },
+  chartHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8, paddingHorizontal: 14, paddingBottom: 12 },
+  chartInstrumentRow: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 9 },
+  goldMark: { width: 36, height: 36, borderRadius: 6, backgroundColor: "#332a14", borderWidth: 1, borderColor: "#5a4820", alignItems: "center", justifyContent: "center" },
+  goldMarkText: { color: "#f1b84b", fontSize: 13, fontWeight: "900" },
+  chartInstrumentMeta: { color: "#738078", fontSize: 9, fontWeight: "700", marginTop: 3 },
+  chartToolbar: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#222a25", paddingHorizontal: 12 },
+  timeframeBadge: { minWidth: 38, borderRadius: 4, backgroundColor: "#202822", paddingHorizontal: 8, paddingVertical: 6, alignItems: "center" },
+  timeframeBadgeText: { color: "#e5ebe7", fontSize: 10, fontWeight: "900" },
+  rangeControl: { flexDirection: "row", gap: 2 },
+  rangeButton: { minWidth: 30, height: 25, borderRadius: 4, alignItems: "center", justifyContent: "center" },
+  rangeButtonActive: { backgroundColor: "#263129" },
+  rangeButtonText: { color: "#6f7c74", fontSize: 9, fontWeight: "900" },
+  rangeButtonTextActive: { color: "#e8edea" },
+  chartLiveBadge: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 5 },
+  chartLiveDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: "#26d89b" },
+  chartLiveText: { color: "#758179", fontSize: 8, fontWeight: "900" },
+  chartLegend: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 12, paddingTop: 10 },
+  chartLegendItem: { flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 4 },
+  chartLegendDot: { width: 6, height: 6, borderRadius: 3 },
+  chartLegendText: { color: "#849088", fontSize: 9, fontWeight: "800" },
   priceBox: { alignItems: "flex-end" },
   priceLabel: { color: "#7d8781", fontSize: 11, fontWeight: "800" },
-  priceValue: { color: "#2fe6a8", fontSize: 21, fontWeight: "900", marginTop: 2 },
-  chartScroll: { paddingRight: 16 },
-  chartPlot: { marginLeft: 10, marginRight: 10, backgroundColor: "#090c0a", borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#1b211d", position: "relative" },
+  priceValue: { color: "#f2f5f3", fontSize: 18, fontWeight: "900", marginTop: 1 },
+  priceChange: { fontSize: 9, fontWeight: "900", marginTop: 4 },
+  chartScroll: { paddingRight: 0 },
+  chartPlot: { backgroundColor: "#090c0a" },
+  ohlcBar: { minHeight: 38, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 9, borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#202722", paddingHorizontal: 12, paddingVertical: 8 },
+  ohlcTime: { color: "#8f9a94", fontSize: 9, fontWeight: "900", marginRight: 2 },
+  ohlcValue: { color: "#d9dfdb", fontSize: 9, fontWeight: "800" },
+  ohlcLabel: { color: "#637068" },
   chartGridLine: { position: "absolute", left: 0, right: 0, height: 1, backgroundColor: "#1b211d" },
   chartLevelWrap: { position: "absolute", left: 0, right: 0, height: 20 },
   chartLevelLine: { position: "absolute", left: 0, right: 0, top: 0, height: 1 },
@@ -3680,11 +4303,11 @@ const styles = StyleSheet.create({
   badPill: { backgroundColor: "#ff6767" },
   warnPill: { backgroundColor: "#f0c94a" },
   metricsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 },
-  metric: { flexGrow: 1, flexBasis: "47%", backgroundColor: "#171a18", borderWidth: 1, borderColor: "#252c28", borderRadius: 13, padding: 13 },
+  metric: { flexGrow: 1, flexBasis: "47%", backgroundColor: "#171a18", borderWidth: 1, borderColor: "#252c28", borderRadius: 6, padding: 13 },
   metricLabel: { color: "#89938d", fontSize: 12, fontWeight: "800" },
   metricValue: { color: "#f4f7f4", fontSize: 16, fontWeight: "900", marginTop: 7 },
   sectionMini: { color: "#f4f7f4", fontWeight: "900", marginTop: 18, marginBottom: 8, fontSize: 16 },
-  checklistGroup: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 15, paddingHorizontal: 12, paddingTop: 10, marginBottom: 10 },
+  checklistGroup: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 6, paddingHorizontal: 12, paddingTop: 10, marginBottom: 10 },
   checklistGroupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingBottom: 2 },
   checklistGroupTitle: { color: "#edf5f0", fontWeight: "900", fontSize: 14, flex: 1 },
   checklistGroupMeta: { color: "#2fe6a8", fontWeight: "900", fontSize: 12 },
@@ -3693,7 +4316,7 @@ const styles = StyleSheet.create({
   ruleBody: { flex: 1 },
   ruleTitle: { color: "#edf5f0", fontWeight: "900" },
   ruleExplanation: { color: "#929c96", fontSize: 12, marginTop: 4, lineHeight: 17 },
-  learningPanel: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 15, padding: 13 },
+  learningPanel: { backgroundColor: "#0d100e", borderWidth: 1, borderColor: "#26302a", borderRadius: 6, padding: 13 },
   learningHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   learningButton: { minWidth: 72, height: 36, borderRadius: 18, backgroundColor: "#2fe6a8", alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
   learningButtonText: { color: "#050706", fontWeight: "900", fontSize: 12 },
@@ -3733,6 +4356,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8
   },
+  detailPillTrade: { color: "#2fe6a8", backgroundColor: "#13211b", borderColor: "#254f40" },
+  detailPillDanger: { color: "#ff8f98", backgroundColor: "#281517", borderColor: "#66333a" },
+  detailPillProgress: { color: "#f6c453", backgroundColor: "#241f12", borderColor: "#665526" },
+  detailPillResult: { color: "#7ed7ff", backgroundColor: "#11212a", borderColor: "#28566b" },
+  detailPillSession: { color: "#9cc8ff", backgroundColor: "#121d29", borderColor: "#304c6c" },
+  detailPillSecurity: { color: "#d6b5ff", backgroundColor: "#201727", borderColor: "#52396b" },
   detailHero: {
     borderRadius: 24,
     backgroundColor: "#141816",
@@ -3741,6 +4370,18 @@ const styles = StyleSheet.create({
     padding: 20,
     marginBottom: 14
   },
+  detailHeroTrade: { backgroundColor: "#101a15", borderColor: "#254f40" },
+  detailHeroDanger: { backgroundColor: "#1a1112", borderColor: "#573036" },
+  detailHeroProgress: { backgroundColor: "#1c1910", borderColor: "#51451f" },
+  detailHeroResult: { backgroundColor: "#10191e", borderColor: "#285063" },
+  detailHeroSession: { backgroundColor: "#111820", borderColor: "#2b4663" },
+  detailHeroSecurity: { backgroundColor: "#19131d", borderColor: "#49325c" },
+  detailEyebrowTrade: { color: "#2fe6a8" },
+  detailEyebrowDanger: { color: "#ff8f98" },
+  detailEyebrowProgress: { color: "#f6c453" },
+  detailEyebrowResult: { color: "#7ed7ff" },
+  detailEyebrowSession: { color: "#9cc8ff" },
+  detailEyebrowSecurity: { color: "#d6b5ff" },
   detailTitle: { color: "#f4f7f4", fontSize: 28, fontWeight: "900", marginTop: 10, lineHeight: 34 },
   detailBody: { color: "#b9c3bd", fontSize: 15, lineHeight: 23, marginTop: 12 },
   tradeBadgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 4, marginBottom: 2 },
@@ -3801,7 +4442,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#111412",
     borderWidth: 1,
     borderColor: "#252c28",
-    borderRadius: 20,
+    borderRadius: 8,
     padding: 14,
     marginBottom: 14
   },
@@ -3818,7 +4459,7 @@ const styles = StyleSheet.create({
   moreProfileMeta: { color: "#8d9791", fontSize: 12, fontWeight: "700", marginTop: 4 },
   morePlanBadge: {
     maxWidth: 98,
-    borderRadius: 14,
+    borderRadius: 4,
     backgroundColor: "#13211b",
     borderWidth: 1,
     borderColor: "#2fe6a8",
@@ -3830,7 +4471,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#111412",
     borderWidth: 1,
     borderColor: "#252c28",
-    borderRadius: 20,
+    borderRadius: 8,
     paddingHorizontal: 14,
     marginBottom: 14
   },
@@ -3855,10 +4496,32 @@ const styles = StyleSheet.create({
   moreMenuTitle: { color: "#edf5f0", fontSize: 15, fontWeight: "900" },
   moreMenuSubtitle: { color: "#89938d", fontSize: 12, fontWeight: "700", marginTop: 4 },
   moreMenuValue: { maxWidth: 80, color: "#8d9791", fontSize: 11, fontWeight: "900" },
-  moreDiagnosticsCard: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 20, padding: 16, marginBottom: 14 },
+  moreDiagnosticsCard: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#252c28", borderRadius: 8, padding: 16, marginBottom: 14 },
   notificationTradeBuy: { borderColor: "#254f40", backgroundColor: "#101a15" },
   notificationTradeSell: { borderColor: "#573036", backgroundColor: "#1a1112" },
+  notificationRiskCard: { borderColor: "#573036", backgroundColor: "#1a1112" },
+  notificationProgressCard: { borderColor: "#51451f", backgroundColor: "#1c1910" },
+  notificationReportCard: { borderColor: "#285063", backgroundColor: "#10191e" },
+  notificationLearningCard: { borderColor: "#51451f", backgroundColor: "#1c1910" },
+  notificationSessionCard: { borderColor: "#2b4663", backgroundColor: "#111820" },
+  notificationSecurityCard: { borderColor: "#49325c", backgroundColor: "#19131d" },
+  notificationRiskBadge: { color: "#fff0f1", backgroundColor: "#b94551" },
+  notificationProgressBadge: { color: "#171203", backgroundColor: "#f6c453" },
+  notificationReportBadge: { color: "#06141b", backgroundColor: "#7ed7ff" },
+  notificationLearningBadge: { color: "#171203", backgroundColor: "#f6c453" },
+  notificationSessionBadge: { color: "#07121e", backgroundColor: "#9cc8ff" },
+  notificationSecurityBadge: { color: "#160c20", backgroundColor: "#d6b5ff" },
   notificationEvidenceStrip: { marginTop: 10, gap: 8 },
+  notificationRuleList: { marginTop: 14, gap: 7, borderTopWidth: 1, borderTopColor: "#48282d", paddingTop: 12 },
+  notificationRuleItem: { color: "#f0c8cc", fontSize: 13, lineHeight: 19, fontWeight: "800" },
+  safetyNote: { color: "#89938d", fontSize: 12, lineHeight: 18, marginTop: 12, fontWeight: "800" },
+  setupProgressTrack: { marginTop: 18, gap: 8 },
+  setupProgressStep: { minHeight: 38, flexDirection: "row", alignItems: "center", gap: 10, opacity: 0.52 },
+  setupProgressStepActive: { opacity: 1 },
+  setupProgressNumber: { width: 25, height: 25, borderRadius: 13, borderWidth: 1, borderColor: "#665526", color: "#8d8261", textAlign: "center", textAlignVertical: "center", fontSize: 11, fontWeight: "900" },
+  setupProgressNumberActive: { color: "#171203", backgroundColor: "#f6c453", borderColor: "#f6c453" },
+  setupProgressLabel: { color: "#8d8261", fontSize: 13, fontWeight: "800" },
+  setupProgressLabelActive: { color: "#f4ead0" },
   moreHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20, marginBottom: 14 },
   moreBackButton: {
     width: 42,
@@ -3898,17 +4561,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#171a18",
     borderWidth: 1,
     borderColor: "#252c28",
-    borderRadius: 13,
+    borderRadius: 6,
     padding: 12,
     marginTop: 7,
     fontSize: 11,
     lineHeight: 16
   },
-  fullButton: { marginTop: 14, backgroundColor: "#2fbf8b", borderRadius: 22, paddingVertical: 14, alignItems: "center" },
+  fullButton: { marginTop: 14, backgroundColor: "#2fbf8b", borderRadius: 6, paddingVertical: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   fullButtonText: { color: "#04100b", fontWeight: "900" },
   disabledButton: { opacity: 0.45 },
   ticketTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, marginBottom: 10 },
-  ticketTypeButton: { backgroundColor: "#171a18", borderWidth: 1, borderColor: "#2a302d", borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9 },
+  ticketTypeButton: { backgroundColor: "#171a18", borderWidth: 1, borderColor: "#2a302d", borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9 },
   ticketTypeButtonActive: { backgroundColor: "#173328", borderColor: "#2fbf8b" },
   ticketTypeText: { color: "#8d9791", fontSize: 11, fontWeight: "900" },
   ticketTypeTextActive: { color: "#2fe6a8" },
@@ -3918,7 +4581,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#171a18",
     borderWidth: 1,
     borderColor: "#2fbf8b",
-    borderRadius: 22,
+    borderRadius: 6,
     paddingVertical: 14,
     alignItems: "center"
   },
@@ -3928,7 +4591,7 @@ const styles = StyleSheet.create({
   loginTitle: { color: "#f4f7f4", fontSize: 40, fontWeight: "900", marginTop: 8 },
   loginCopy: { color: "#9ca7a0", fontSize: 15, lineHeight: 23, marginVertical: 20 },
   passwordHint: { color: "#8d9791", fontSize: 12, lineHeight: 18, marginBottom: 10 },
-  input: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#2a302d", borderRadius: 18, color: "#f4f7f4", paddingHorizontal: 16, paddingVertical: 14, marginBottom: 10 },
-  loginButton: { backgroundColor: "#2fe6a8", borderRadius: 22, paddingVertical: 15, alignItems: "center", marginTop: 6 },
+  input: { backgroundColor: "#111412", borderWidth: 1, borderColor: "#2a302d", borderRadius: 6, color: "#f4f7f4", paddingHorizontal: 16, paddingVertical: 14, marginBottom: 10 },
+  loginButton: { backgroundColor: "#2fe6a8", borderRadius: 6, paddingVertical: 15, alignItems: "center", marginTop: 6 },
   loginButtonText: { color: "#050706", fontWeight: "900", fontSize: 15 }
 });

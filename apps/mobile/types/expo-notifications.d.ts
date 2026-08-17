@@ -4,6 +4,20 @@ declare module "expo-notifications" {
     status?: string;
   };
 
+  export enum AndroidImportance {
+    MAX = 5
+  }
+
+  export function setNotificationChannelAsync(channelId: string, channel: {
+    name: string;
+    description?: string;
+    importance?: AndroidImportance;
+    sound?: string;
+    enableVibrate?: boolean;
+    vibrationPattern?: number[];
+    lightColor?: string;
+  }): Promise<unknown>;
+
   export function setNotificationHandler(handler: {
     handleNotification: () => Promise<{
       shouldShowAlert: boolean;

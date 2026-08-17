@@ -28,7 +28,7 @@ module.exports = {
 
     android: {
       ...appJson.expo.android,
-      package: "com.onehub.fxindicator", // Change to your actual package
+      package: "com.onehub.fxindicator",
       versionCode: buildVersionCode,
       googleServicesFile: "./google-services.json",
     },

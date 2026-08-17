@@ -18,7 +18,12 @@
       "bundleIdentifier": "com.orbguide.xauusdsignal"
     },
     "android": {
-      "package": "com.orbguide.xauusdsignal",
+      "package": "com.onehub.fxindicator",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#050706"

@@ -17,6 +17,7 @@ import { getTenantOrbStrategyConfiguration } from "../admin/settings.js";
 import { runMainBrainPython } from "../admin/learning.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
+import { sendTenantPush } from "../notifications/push.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets } from "../trades/paper-targets.js";
 
 type ReplayCase = "BUY" | "SELL" | "RETEST" | "FAKEOUT" | "SWEEP_REVERSAL" | "OVEREXTENDED" | "NO_TRADE";
@@ -1392,17 +1393,55 @@ export async function setupRoutes(app: FastifyInstance) {
         auth.tenantId
       ]
     );
-    await query(
-      `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority)
-       VALUES ($4,$1,'QA_TEST_SIGNAL',$2,$3,'HIGH')`,
+    const eventKey = `qa-test-signal-${rows[0].id}`;
+    const title = `QA ${direction === "LONG" ? "BUY" : "SELL"} test signal`;
+    const notificationBody = `Test ${direction === "LONG" ? "BUY" : "SELL"} at ${entry.toFixed(2)}. This is not a valid ORB setup.`;
+    const notificationData = {
+      eventKey,
+      eventType: "QA_TEST_SIGNAL",
+      moduleCode: "orb_max_options",
+      moduleName: "Module 1 ORB",
+      symbol: session.symbol,
+      scenario: "QA_TEST_SIGNAL",
+      direction,
+      action: direction === "LONG" ? "BUY" : "SELL",
+      entry,
+      stopLoss: stop,
+      takeProfit: target,
+      rewardToRisk: 2,
+      confidence: 100,
+      grade: "QA",
+      setupCandidateId: rows[0].id,
+      finalReason: `QA test only. ${direction === "LONG" ? "BUY" : "SELL"} signal delivery and mobile rendering verification.`
+    };
+    const notification = await query(
+      `INSERT INTO notifications (tenant_id, event_key, event_type, title, body, priority, data)
+       VALUES ($4,$1,'QA_TEST_SIGNAL',$2,$3,'HIGH',$5::jsonb)
+       RETURNING id`,
       [
-        `qa-test-signal-${rows[0].id}`,
-        `QA ${direction === "LONG" ? "BUY" : "SELL"} test signal`,
-        `Test ${direction === "LONG" ? "BUY" : "SELL"} at ${entry.toFixed(2)}. This is not a valid ORB setup.`,
-        auth.tenantId
+        eventKey,
+        title,
+        notificationBody,
+        auth.tenantId,
+        JSON.stringify(notificationData)
       ]
     );
-    return { setup: rows[0], testMode: true };
+    const push = await sendTenantPush({
+      tenantId: auth.tenantId,
+      title,
+      body: notificationBody,
+      eventKey,
+      eventType: "QA_TEST_SIGNAL",
+      force: true,
+      data: { ...notificationData, notificationId: notification.rows[0]?.id ?? null }
+    });
+    return {
+      setup: rows[0],
+      notificationId: notification.rows[0]?.id ?? null,
+      push,
+      testMode: true,
+      externalOrdersPlaced: 0
+    };
   });
 
   app.post("/api/dev/test-signal/clear", async (request) => {
