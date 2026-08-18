@@ -11,6 +11,7 @@ const client = new pg.Client({ connectionString: databaseUrl });
 const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: string; evidence?: unknown }> = [];
 
 try {
+  reportProgress("Connecting to PostgreSQL");
   await client.connect();
   const tenants = await rows(
     `SELECT DISTINCT t.id, t.name
@@ -124,6 +125,7 @@ try {
   );
   const candles = candleRows.map(toCandle);
   const biasCandles = biasRows.map(toCandle);
+  reportProgress(`Loaded ${candles.length} completed 5M and ${biasCandles.length} completed 15M candles`);
   checks.push({
     name: "Saved XAUUSD candles",
     status: candles.length >= 100 && biasCandles.length >= 30 ? "PASS" : "FAIL",
@@ -138,11 +140,17 @@ try {
     strategyConfiguration("orb_max_options"),
     strategyConfiguration("high_probability_strategy_2")
   ]);
-  const replay = dates.map((date) => ({
-    date,
-    module1: replayModule1(date, candles, module1Config),
-    module2: replayModule2(date, candles, biasCandles, module2Config)
-  }));
+  reportProgress(`Replaying ${dates.length} saved New York session(s): ${dates.join(", ") || "none"}`);
+  const replay = dates.map((date, index) => {
+    reportProgress(`Session ${index + 1}/${dates.length} (${date}): evaluating Module 1`);
+    const module1 = replayModule1(date, candles, module1Config);
+    reportProgress(`Session ${index + 1}/${dates.length} (${date}): Module 1 found ${module1.ready} setup(s); evaluating Module 2`);
+    const module2 = replayModule2(date, candles, biasCandles, module2Config, (completed, total) => {
+      reportProgress(`Session ${index + 1}/${dates.length} (${date}): Module 2 evaluated ${completed}/${total} candles`);
+    });
+    reportProgress(`Session ${index + 1}/${dates.length} (${date}): Module 2 found ${module2.ready} setup(s)`);
+    return { date, module1, module2 };
+  });
   const sessionsWithSignal = replay.filter((row) => row.module1.ready > 0 || row.module2.ready > 0).length;
   const targetSignalsPerSession = Math.max(1, Number(process.env.MVP_TARGET_SIGNALS_PER_NY_SESSION ?? 2));
   const sessionsMeetingCoverageTarget = replay.filter((row) => row.module1.ready + row.module2.ready >= targetSignalsPerSession).length;
@@ -447,12 +455,18 @@ function module1ScenarioFamily(scenario: string) {
   return "ORB_BREAKOUT";
 }
 
-function replayModule2(date: string, candles: Candle[], biasCandles: Candle[], rawConfiguration: any) {
+function replayModule2(
+  date: string,
+  candles: Candle[],
+  biasCandles: Candle[],
+  rawConfiguration: any,
+  onProgress?: (completed: number, total: number) => void
+) {
   const candidates = candles.filter((candle) => nyDate(candle.timestampUtc) === date && nyMinutes(candle.timestampUtc) >= 9 * 60 + 30 && nyMinutes(candle.timestampUtc) <= 16 * 60);
   const ready: any[] = [];
   const seenSignals = new Set<string>();
   let bestObservation: any = null;
-  for (const current of candidates) {
+  for (const [index, current] of candidates.entries()) {
     const context = candles
       .filter((candle) => candle.timestampUtc <= current.timestampUtc && new Date(candle.timestampUtc).getTime() >= new Date(current.timestampUtc).getTime() - 72 * 60 * 60_000)
       .slice(-600);
@@ -492,9 +506,16 @@ function replayModule2(date: string, candles: Candle[], biasCandles: Candle[], r
         ready.push({ at: current.timestampUtc, direction: decision.direction, scenario: decision.scenario, score: decision.favorabilityScore, entry: decision.entryPrice, stop: decision.stopPrice, target: decision.targetPrice, variant });
       }
     }
+    if ((index + 1) % 10 === 0 || index + 1 === candidates.length) {
+      onProgress?.(index + 1, candidates.length);
+    }
   }
   const signals = scoreReplaySignals(ready, candidates);
   return { ready: signals.length, signals, bestObservation };
+}
+
+function reportProgress(message: string) {
+  console.error(`[mvp-runtime] ${new Date().toISOString()} ${message}`);
 }
 
 function scoreReplaySignals(signals: any[], candles: Candle[]) {
