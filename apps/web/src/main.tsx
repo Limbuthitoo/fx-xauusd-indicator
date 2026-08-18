@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartIndicatorVisibility, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
+import { immutableModuleSignalPlan } from "./features/dashboard/signal-contract";
 import { API_BASE_URL, ApiError, api, apiWebSocketUrl, clearAuthToken, setAuthToken } from "./shared/api";
 import "./styles.css";
 
@@ -1193,7 +1194,7 @@ function App() {
                 moduleName={activeModule?.name}
                 setup={currentModuleSetup}
                 trade={currentModuleTrade}
-                tradePlan={currentModuleTradePlan}
+                signalPlan={currentModuleSignalPlan}
                 evaluations={ruleEvaluations}
                 openingRange={selectedModuleCode === "orb_max_options" ? orb : null}
                 session={state.session}
@@ -3328,7 +3329,7 @@ function LiveStrategyCenterPanel({
   moduleName,
   setup,
   trade,
-  tradePlan,
+  signalPlan,
   evaluations,
   openingRange,
   session
@@ -3337,7 +3338,7 @@ function LiveStrategyCenterPanel({
   moduleName?: string;
   setup?: any;
   trade?: any;
-  tradePlan?: any;
+  signalPlan?: ReturnType<typeof immutableModuleSignalPlan>;
   evaluations: any[];
   openingRange?: any;
   session?: any;
@@ -3350,9 +3351,9 @@ function LiveStrategyCenterPanel({
       : genericModuleChecklistRows(evaluations, setup, moduleCode);
   const rows = liveScopedChecklistRows(rawRows, setup);
   const sections = groupedChecklistSections(moduleCode, rows);
-  const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
-  const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
-  const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  const entry = signalPlan?.entry;
+  const stop = signalPlan?.stop;
+  const target = signalPlan?.target;
   const missing = firstMissingRule(rows);
   const module1Path = moduleCode === "orb_max_options" ? module1ActivePath(setup) : null;
   const signalQuality = setup?.scenario_flags?.signalQualityPolicy ?? null;
@@ -3376,7 +3377,7 @@ function LiveStrategyCenterPanel({
       ) : null}
       <div className="live-trade-plan">
         <Metric label="Profile" value={strategyProfile} />
-        <Metric label="Direction" value={trade?.direction ?? setup?.direction ?? "--"} />
+        <Metric label="Direction" value={signalPlan?.direction ?? "--"} />
         <Metric label="Entry" value={formatPriceValue(entry)} />
         <Metric label="Stop" value={formatPriceValue(stop)} />
         <Metric label="Target" value={formatPriceValue(target)} />
@@ -3521,9 +3522,10 @@ function Module2LiveControlPanel({ state, setup, trade, tradePlan, feedHealth }:
   const confirmations = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "confirmation");
   const quality = rows.filter((row: any) => module2RuleLayer(row.rule_code ?? row.ruleCode) === "quality");
   const passed = (items: any[]) => items.filter((row: any) => row.status === "PASS").length;
-  const entry = trade?.actual_entry ?? tradePlan?.planned_entry ?? setup?.entry_price;
-  const stop = trade?.actual_stop ?? tradePlan?.planned_stop ?? setup?.stop_price;
-  const target = trade?.actual_target ?? tradePlan?.planned_target ?? setup?.target_price;
+  const signalPlan = immutableModuleSignalPlan(setup, tradePlan, trade);
+  const entry = signalPlan?.entry;
+  const stop = signalPlan?.stop;
+  const target = signalPlan?.target;
   const missing = firstMissingRule(rows);
   return (
     <Panel icon={<ShieldCheck />} title="Module 2 Live Control">
@@ -3612,15 +3614,21 @@ function Module2CandidateMonitorPanel({ setup, trade }: { setup?: any; trade?: a
   const flags = setup?.scenario_flags ?? {};
   const evaluations = Array.isArray(setup?.evaluations) ? setup.evaluations : [];
   const currentPrice = setup?.current_price == null ? null : Number(setup.current_price);
-  const entry = setup?.entry_price == null ? null : Number(setup.entry_price);
-  const stop = setup?.stop_price == null ? null : Number(setup.stop_price);
+  const setupNotExpired = !setup?.expires_at || new Date(setup.expires_at).getTime() > Date.now();
+  const signalReady = setupNotExpired && ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status ?? ""));
+  const paperReady = trade?.outcome === "ACTIVE" || trade?.status === "ACTIVE" || setup?.status === "PAPER_TRADE_OPENED";
+  const executionVisible = signalReady || paperReady;
+  const candidateEntry = setup?.entry_price == null ? null : Number(setup.entry_price);
+  const candidateStop = setup?.stop_price == null ? null : Number(setup.stop_price);
+  const entry = executionVisible ? candidateEntry : null;
   const latestAt = setup?.latest_candle_at ?? setup?.current_price_at;
   const detectedAt = setup?.detected_at;
   const ageMinutes = detectedAt && latestAt
     ? Math.max(0, Math.round((new Date(latestAt).getTime() - new Date(detectedAt).getTime()) / 60000))
     : null;
-  const entryDistance = currentPrice != null && entry != null ? Math.abs(currentPrice - entry) : null;
-  const riskDistance = entry != null && stop != null ? Math.abs(entry - stop) : 0;
+  const candidateEntryDistance = currentPrice != null && candidateEntry != null ? Math.abs(currentPrice - candidateEntry) : null;
+  const candidateRiskDistance = candidateEntry != null && candidateStop != null ? Math.abs(candidateEntry - candidateStop) : 0;
+  const entryDistance = executionVisible ? candidateEntryDistance : null;
   const probability = Number(setup?.favorability_score ?? flags.confidence ?? 0);
   const output = module2OutputState(setup, undefined);
   const blocker = firstBlockingEvaluation(evaluations);
@@ -3628,10 +3636,8 @@ function Module2CandidateMonitorPanel({ setup, trade }: { setup?: any; trade?: a
   const predictionReady = probability >= 80
     && ageMinutes != null
     && ageMinutes <= 90
-    && entryDistance != null
-    && entryDistance <= Math.max(10, riskDistance * 1.5);
-  const signalReady = ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(String(setup?.status ?? ""));
-  const paperReady = trade?.outcome === "ACTIVE" || setup?.status === "PAPER_TRADE_OPENED";
+    && candidateEntryDistance != null
+    && candidateEntryDistance <= Math.max(10, candidateRiskDistance * 1.5);
   return (
     <Panel icon={<ShieldCheck />} title="Live Candidate Monitor">
       <div className={`module2-live-hero ${paperReady || signalReady ? "good" : "warn"}`}>
@@ -9384,57 +9390,6 @@ function artifactBelongsToNewYorkDate(value: unknown, sessionDate: string) {
   return !Number.isNaN(timestamp.getTime()) && newYorkDateForUi(timestamp) === sessionDate;
 }
 
-function immutableModuleSignalPlan(setup?: any, tradePlan?: any, trade?: any) {
-  const planBelongsToSetup = !tradePlan?.setup_candidate_id || !setup?.id || tradePlan.setup_candidate_id === setup.id;
-  const activePlan = Boolean(tradePlan?.active_trade_id);
-  if (tradePlan?.active_trade_id && tradePlan?.actual_entry != null && tradePlan?.actual_stop != null && tradePlan?.actual_target != null) {
-    const direction = tradePlan.direction;
-    if (!validDirectionalSignalGeometry(direction, tradePlan.actual_entry, tradePlan.actual_stop, tradePlan.actual_target)) return null;
-    return {
-      status: "PAPER_TRADE_OPENED",
-      direction,
-      entry: tradePlan.actual_entry,
-      stop: tradePlan.actual_stop,
-      target: tradePlan.actual_target
-    };
-  }
-  if ((activePlan || planBelongsToSetup) && ["DRAFT", "READY", "EXECUTED"].includes(String(tradePlan?.status)) && tradePlan?.planned_entry != null && tradePlan?.planned_stop != null && tradePlan?.planned_target != null) {
-    const direction = tradePlan.direction;
-    if (!validDirectionalSignalGeometry(direction, tradePlan.planned_entry, tradePlan.planned_stop, tradePlan.planned_target)) return null;
-    return {
-      status: "TRADE_PLANNED",
-      direction,
-      entry: tradePlan.planned_entry,
-      stop: tradePlan.planned_stop,
-      target: tradePlan.planned_target
-    };
-  }
-  if (trade?.actual_entry != null && trade?.actual_stop != null && trade?.actual_target != null) {
-    const direction = trade.direction;
-    if (!validDirectionalSignalGeometry(direction, trade.actual_entry, trade.actual_stop, trade.actual_target)) return null;
-    return {
-      status: "PAPER_TRADE_OPENED",
-      direction,
-      entry: trade.actual_entry,
-      stop: trade.actual_stop,
-      target: trade.actual_target
-    };
-  }
-  const setupReady = ["LONG SETUP READY", "SHORT SETUP READY", "TRADE_PLANNED", "PAPER_TRADE_OPENED"].includes(String(setup?.status));
-  if (setupReady && setup?.entry_price != null && setup?.stop_price != null && setup?.target_price != null) {
-    const direction = setup.direction;
-    if (!validDirectionalSignalGeometry(direction, setup.entry_price, setup.stop_price, setup.target_price)) return null;
-    return {
-      status: setup.status,
-      direction,
-      entry: setup.entry_price,
-      stop: setup.stop_price,
-      target: setup.target_price
-    };
-  }
-  return null;
-}
-
 function setupBoundToActivePlan(setup?: any, tradePlan?: any) {
   if (!tradePlan?.active_trade_id || !tradePlan?.setup_candidate_id || setup?.id === tradePlan.setup_candidate_id) return setup;
   return {
@@ -9452,17 +9407,6 @@ function setupBoundToActivePlan(setup?: any, tradePlan?: any) {
     scenario_flags: tradePlan.scenario_flags,
     final_reason: tradePlan.final_reason
   };
-}
-
-function validDirectionalSignalGeometry(directionValue: unknown, entryValue: unknown, stopValue: unknown, targetValue: unknown) {
-  const direction = String(directionValue ?? "").toUpperCase();
-  const entry = Number(entryValue);
-  const stop = Number(stopValue);
-  const target = Number(targetValue);
-  if (![entry, stop, target].every(Number.isFinite)) return false;
-  if (["LONG", "BUY"].includes(direction)) return stop < entry && entry < target;
-  if (["SHORT", "SELL"].includes(direction)) return target < entry && entry < stop;
-  return false;
 }
 
 function dateInputValue(value?: string | null) {

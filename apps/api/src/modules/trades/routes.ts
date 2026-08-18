@@ -208,6 +208,13 @@ export async function tradeRoutes(app: FastifyInstance) {
         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'
         AND tp.status IN ('DRAFT', 'READY', 'EXECUTED')
         AND (
+          t.id IS NOT NULL
+          OR (
+            sc.status IN ('LONG SETUP READY', 'SHORT SETUP READY', 'TRADE_PLANNED', 'PAPER_TRADE_OPENED')
+            AND (sc.expires_at IS NULL OR sc.expires_at > now())
+          )
+        )
+        AND (
           (sc.direction = 'LONG' AND tp.planned_stop < tp.planned_entry AND tp.planned_entry < tp.planned_target)
           OR
           (sc.direction = 'SHORT' AND tp.planned_target < tp.planned_entry AND tp.planned_entry < tp.planned_stop)
