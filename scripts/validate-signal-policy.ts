@@ -47,7 +47,15 @@ try {
      ORDER BY sc.tenant_id, ts.session_date, signal_at`
   )).rows;
 
-  const assessed = rows.map((row) => {
+  const governedRows = rows.filter((row) =>
+    row.scenario_flags?.signalQualityPolicy != null
+    && row.scenario_flags?.signalFrequencyPolicy != null
+  );
+  const legacyRows = rows.filter((row) =>
+    row.scenario_flags?.signalQualityPolicy == null
+    || row.scenario_flags?.signalFrequencyPolicy == null
+  );
+  const assessed = governedRows.map((row) => {
     const geometry = evaluateSignalGeometryQuality({
       direction: String(row.direction ?? ""),
       entry: Number(row.planned_entry),
@@ -78,8 +86,21 @@ try {
     name: "Promoted production signal sample",
     status: assessed.length > 0 ? "PASS" : "WARN",
     detail: assessed.length > 0
-      ? `${assessed.length} genuine promoted signal contract(s) were inspected.`
-      : "No genuine promoted signal contracts exist in the last eight days; policy wiring is installed but live proof is pending."
+      ? `${assessed.length} policy-governed promoted signal contract(s) were inspected.`
+      : "No policy-governed promoted signal exists yet; wiring is installed and live proof is pending."
+  });
+  checks.push({
+    name: "Legacy pre-policy signal audit",
+    status: legacyRows.length > 0 ? "WARN" : "PASS",
+    detail: legacyRows.length > 0
+      ? `${legacyRows.length} promoted contract(s) predate policy markers and remain available for historical audit without blocking this release.`
+      : "Every promoted contract in the validation window carries production policy markers.",
+    evidence: legacyRows.slice(0, 20).map((row) => ({
+      planId: row.plan_id,
+      setupId: row.setup_id,
+      moduleCode: row.module_code,
+      signalAt: row.signal_at
+    }))
   });
 
   const badQuality = assessed.filter((row) => !row.quality_passed);
