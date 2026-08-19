@@ -15,7 +15,7 @@ import { calculateRisk, evaluateSignalGeometryQuality, XAUUSD_PRODUCTION_SIGNAL_
 import type { Candle, RuleContext } from "@orb-guide/shared-types";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
-import { query } from "../../infrastructure/db/client.js";
+import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
 import { redisClient } from "../../infrastructure/redis/client.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
@@ -4236,12 +4236,21 @@ async function attemptProductionPaperTrade({
   }
 
   const signalThesisKey = setupSignalThesisKey(moduleCode, session, setup);
-  const frequencyGate = await productionSignalFrequencyGate(session, moduleCode, setup, signalThesisKey);
-  if (!frequencyGate.passed) {
-    return { skipped: true, reason: "SIGNAL_FREQUENCY_POLICY_BLOCKED", frequencyGate };
+  const promotionLockKey = [session.tenant_id, session.session_date ?? newYorkDate(), "production-signal-promotion"].join(":");
+  const promotionLock = await pool.connect();
+  let signalPlan: any;
+  try {
+    await promotionLock.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [promotionLockKey]);
+    const frequencyGate = await productionSignalFrequencyGate(session, moduleCode, setup, signalThesisKey);
+    if (!frequencyGate.passed) {
+      return { skipped: true, reason: "SIGNAL_FREQUENCY_POLICY_BLOCKED", frequencyGate };
+    }
+    await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
+    signalPlan = await persistImmutableSignalContract(session, setup, effectiveRisk, signalThesisKey);
+  } finally {
+    await promotionLock.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [promotionLockKey]).catch(() => undefined);
+    promotionLock.release();
   }
-  await saveSetupCandleSnapshot(setup, session, timeframe, liveCandles, current);
-  const signalPlan = await persistImmutableSignalContract(session, setup, effectiveRisk, signalThesisKey);
   const canonicalSetup = signalPlan.setup_candidate_id === setup.id;
   const canonicalSetupRow = canonicalSetup
     ? setup

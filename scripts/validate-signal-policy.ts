@@ -12,6 +12,13 @@ const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: st
 
 try {
   await client.connect();
+  const workerDeployment = (await client.query(
+    `SELECT started_at
+     FROM worker_heartbeats
+     WHERE worker_name = 'market-data-worker'
+     LIMIT 1`
+  )).rows[0] ?? null;
+  const workerStartedAt = workerDeployment?.started_at ? new Date(workerDeployment.started_at).getTime() : Number.NaN;
   const rows = (await client.query(
     `SELECT tp.id AS plan_id,
             tp.signal_thesis_key,
@@ -140,24 +147,50 @@ try {
   const profileGroups = groupBy(assessed, (row) => `${row.tenant_id}:${dateOnly(row.session_date)}:${row.module_code}:${row.strategy_profile}`);
   const profileBreaches = [...profileGroups.entries()]
     .filter(([, values]) => values.length > XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile)
-    .map(([key, values]) => ({ key, count: values.length, maximum: XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile }));
+    .map(([key, values]) => ({
+      key,
+      count: values.length,
+      maximum: XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile,
+      latestSignalAt: [...values].sort((a, b) => new Date(b.signal_at).getTime() - new Date(a.signal_at).getTime())[0]?.signal_at
+    }));
   const cooldownBreaches = [...profileGroups.entries()].flatMap(([key, values]) => {
     const sorted = [...values].sort((a, b) => new Date(a.signal_at).getTime() - new Date(b.signal_at).getTime());
     return sorted.slice(1).flatMap((row, index) => {
       const minutes = (new Date(row.signal_at).getTime() - new Date(sorted[index].signal_at).getTime()) / 60_000;
       return minutes + 0.001 < XAUUSD_PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes
-        ? [{ key, previousPlan: sorted[index].plan_id, plan: row.plan_id, elapsedMinutes: Number(minutes.toFixed(1)) }]
+        ? [{ key, previousPlan: sorted[index].plan_id, plan: row.plan_id, signalAt: row.signal_at, elapsedMinutes: Number(minutes.toFixed(1)) }]
         : [];
     });
   });
+  const isPostDeployment = (signalAt: unknown) => !Number.isFinite(workerStartedAt) || new Date(String(signalAt)).getTime() >= workerStartedAt;
+  const currentProfileBreaches = profileBreaches.filter((breach) => isPostDeployment(breach.latestSignalAt));
+  const historicalProfileBreaches = profileBreaches.filter((breach) => !isPostDeployment(breach.latestSignalAt));
+  const currentCooldownBreaches = cooldownBreaches.filter((breach) => isPostDeployment(breach.signalAt));
+  const historicalCooldownBreaches = cooldownBreaches.filter((breach) => !isPostDeployment(breach.signalAt));
   checks.push({
     name: "Strategy-profile frequency policy",
-    status: profileBreaches.length === 0 && cooldownBreaches.length === 0 ? "PASS" : "FAIL",
-    detail: profileBreaches.length === 0 && cooldownBreaches.length === 0
+    status: currentProfileBreaches.length === 0 && currentCooldownBreaches.length === 0 ? "PASS" : "FAIL",
+    detail: currentProfileBreaches.length === 0 && currentCooldownBreaches.length === 0
       ? `Independent profiles stay within ${XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile} signals/day and ${XAUUSD_PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes}-minute same-profile cooldown.`
-      : `${profileBreaches.length} profile-count and ${cooldownBreaches.length} cooldown breach(es) found.`,
-    evidence: { profileBreaches, cooldownBreaches: cooldownBreaches.slice(0, 20) }
+      : `${currentProfileBreaches.length} profile-count and ${currentCooldownBreaches.length} post-deployment cooldown breach(es) found.`,
+    evidence: {
+      workerStartedAt: workerDeployment?.started_at ?? null,
+      profileBreaches: currentProfileBreaches,
+      cooldownBreaches: currentCooldownBreaches.slice(0, 20)
+    }
   });
+  if (historicalProfileBreaches.length > 0 || historicalCooldownBreaches.length > 0) {
+    checks.push({
+      name: "Pre-deployment frequency-policy incidents",
+      status: "WARN",
+      detail: `${historicalProfileBreaches.length} profile-count and ${historicalCooldownBreaches.length} cooldown breach(es) predate the current worker deployment and remain immutable audit evidence.`,
+      evidence: {
+        workerStartedAt: workerDeployment?.started_at ?? null,
+        profileBreaches: historicalProfileBreaches,
+        cooldownBreaches: historicalCooldownBreaches.slice(0, 20)
+      }
+    });
+  }
 
   const missingPrimary = assessed.filter((row) => !row.has_notification);
   const missingSecondary = assessed.filter((row) => !row.has_paper_trade || !row.has_journal);
