@@ -1,5 +1,24 @@
 import type { Candle, Direction, RuleEvaluation } from "@orb-guide/shared-types";
 
+const NEW_YORK_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+const NEW_YORK_TIME_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+const NEW_YORK_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
 export type LiquiditySweepState =
   | "IDLE"
   | "LEVEL_SELECTED"
@@ -1976,7 +1995,7 @@ function isInsideNewYorkWindow(timestamp: string, start: string, end: string) {
 }
 
 function newYorkMinutes(timestamp: string) {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(timestamp));
+  const parts = NEW_YORK_TIME_PARTS_FORMATTER.formatToParts(new Date(timestamp));
   return Number(parts.find((part) => part.type === "hour")?.value ?? 0) * 60 + Number(parts.find((part) => part.type === "minute")?.value ?? 0);
 }
 
@@ -1986,7 +2005,7 @@ function parseTime(value: string) {
 }
 
 function newYorkDateKey(timestamp: string) {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(timestamp));
+  const parts = NEW_YORK_DATE_FORMATTER.formatToParts(new Date(timestamp));
   const year = parts.find((part) => part.type === "year")?.value ?? "0000";
   const month = parts.find((part) => part.type === "month")?.value ?? "00";
   const day = parts.find((part) => part.type === "day")?.value ?? "00";
@@ -2008,7 +2027,7 @@ function isWeekendDateKey(date: string) {
 }
 
 function timeOnly(timestamp: string) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(timestamp));
+  return NEW_YORK_TIME_FORMATTER.format(new Date(timestamp));
 }
 
 function dedupeLevels(levels: LiquidityLevel[]) {

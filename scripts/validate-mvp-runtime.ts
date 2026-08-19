@@ -9,6 +9,19 @@ loadEnv(process.argv[2] ?? ".env.production");
 const databaseUrl = process.env.DATABASE_URL ?? localDatabaseUrl();
 const client = new pg.Client({ connectionString: databaseUrl });
 const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: string; evidence?: unknown }> = [];
+const NEW_YORK_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+const NEW_YORK_OFFSET_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  timeZoneName: "longOffset"
+});
 
 try {
   reportProgress("Connecting to PostgreSQL");
@@ -580,7 +593,7 @@ function toCandle(row: any): Candle {
 }
 
 function nyParts(timestamp: string) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(timestamp));
+  return NEW_YORK_PARTS_FORMATTER.formatToParts(new Date(timestamp));
 }
 
 function nyDate(timestamp: string) {
@@ -608,7 +621,7 @@ function isWeekday(date: string) {
 
 function candleAtNy(date: string, time: string) {
   const sample = new Date(`${date}T12:00:00Z`);
-  const offset = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "longOffset" }).formatToParts(sample).find((part) => part.type === "timeZoneName")?.value.replace("GMT", "") || "-04:00";
+  const offset = NEW_YORK_OFFSET_FORMATTER.formatToParts(sample).find((part) => part.type === "timeZoneName")?.value.replace("GMT", "") || "-04:00";
   return new Date(`${date}T${time}:00${offset}`).toISOString();
 }
 
