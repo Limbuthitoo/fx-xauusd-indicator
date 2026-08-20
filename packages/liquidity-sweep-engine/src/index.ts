@@ -206,6 +206,7 @@ export type LiquiditySweepConfig = {
   minimumFvgSizeATR: number;
   entryAtFvgPercentage: number;
   minimumRiskReward: number;
+  minimumStopATR: number;
   maximumStopATR: number;
   stopBufferATR: number;
   minimumSignalScore: number;
@@ -364,6 +365,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   minimumFvgSizeATR: 0.1,
   entryAtFvgPercentage: 50,
   minimumRiskReward: 1.5,
+  minimumStopATR: 1,
   maximumStopATR: 1.25,
   stopBufferATR: 0.03,
   minimumSignalScore: 80,
@@ -377,7 +379,13 @@ export function defaultLiquiditySweepConfiguration() {
 }
 
 export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): LiquiditySweepDecision {
-  const config = { ...DEFAULT_CONFIG, ...(context.configuration ?? {}) };
+  const mergedConfig = { ...DEFAULT_CONFIG, ...(context.configuration ?? {}) };
+  const minimumStopATR = Math.max(DEFAULT_CONFIG.minimumStopATR, mergedConfig.minimumStopATR);
+  const config = {
+    ...mergedConfig,
+    minimumStopATR,
+    maximumStopATR: Math.max(minimumStopATR, mergedConfig.maximumStopATR)
+  };
   const setupCandles = normalizeCandles(context.setupCandles);
   const biasCandles = normalizeCandles(context.biasCandles.length > 0 ? context.biasCandles : setupCandles);
   const current = setupCandles.at(-1);
@@ -614,7 +622,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     { code: "QUALITY_SPREAD", name: "Spread filter", passed: spreadDistanceOk, blocking: true, actual: context.spread == null ? "unknown" : `${Math.round(spreadRatio * 100)}% of stop`, required: "<= 10% of stop distance", explanation: spreadDistanceOk ? "Spread is acceptable relative to the stop distance." : "Spread is too large relative to the stop distance." },
     { code: "QUALITY_NEWS", name: "No high-impact news", passed: newsOk, blocking: true, actual: context.newsStatus ?? "CLEAR", required: "CLEAR", explanation: newsOk ? "No high-impact news block is active." : "High-impact news filter is blocking the setup." },
     { code: "QUALITY_RR", name: "Minimum RR and opposing liquidity", passed: rrOk, blocking: true, actual: `${plan.rr.toFixed(2)}R target / ${plan.availableRewardRisk.toFixed(2)}R available`, required: "2R target and >= 1.5R before opposing liquidity", explanation: rrOk ? "Fixed 2R target is valid and opposing liquidity leaves enough room." : "Nearest opposing liquidity does not leave enough reward distance." },
-    { code: "QUALITY_STOP_SIZE", name: "Maximum stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `<= ${config.maximumStopATR} ATR with valid directional geometry`, explanation: plan.stopValid ? "Stop size and direction are acceptable." : plan.geometryValid ? "Stop size is too large." : "Stop placement is on the wrong side of entry." },
+    { code: "QUALITY_STOP_SIZE", name: "Volatility-normalized stop-loss size", passed: plan.stopValid, blocking: true, actual: Number(plan.stopDistanceAtr.toFixed(2)), required: `${config.minimumStopATR}-${config.maximumStopATR} ATR with valid directional geometry`, explanation: plan.stopValid ? "Stop is outside structural invalidation and normal 5-minute volatility." : plan.geometryValid ? "Stop size is outside the approved volatility range." : "Stop placement is on the wrong side of entry." },
     { code: "QUALITY_FRESH_SETUP", name: "Fresh setup", passed: setupFresh, actual: bos ? currentIndex - bos.index : currentIndex - sweep.index, required: bos ? `<= ${config.maximumBarsAfterBosForEntry} candles after BOS` : `<= ${config.maximumBarsAfterSweep} candles after sweep`, explanation: setupFresh ? "Setup is still fresh." : "Setup is stale." }
   ];
   for (const item of quality) {
@@ -625,7 +633,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   push(evaluations, "EMA_FILTER_MODE", "EMA filter mode respected", emaModeOk, ["REQUIRE_ALIGNMENT", "REQUIRE_COUNTERTREND"].includes(config.emaFilterMode), "AUTOMATIC", config.emaFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_ALIGNMENT / REQUIRE_COUNTERTREND", emaModeOk ? "EMA mode does not block this setup." : "EMA mode blocks this setup because the selected 15M EMA/context requirement is not satisfied.");
   push(evaluations, "VOLUME_FILTER_MODE", "Volume filter mode respected", volumeModeOk, config.volumeFilterMode === "REQUIRE_EXPANSION", "AUTOMATIC", config.volumeFilterMode, "OFF / RECORD_ONLY / WARN_ONLY / REQUIRE_EXPANSION", volumeModeOk ? "Volume mode does not block this setup." : "Volume mode requires expansion, but provider volume did not expand enough.");
   const riskOk = spreadDistanceOk && newsOk && rrOk && plan.stopValid && plan.geometryValid && emaModeOk && volumeModeOk && displacementModeOk && directionalConflictClear.clear;
-  push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop <= ${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
+  push(evaluations, "RISK_OK", "Risk engine approved trade plan", riskOk, true, "AUTOMATIC", `RR ${plan.rr.toFixed(2)} / stop ${plan.stopDistanceAtr.toFixed(2)} ATR`, `RR >= ${config.minimumRiskReward}, stop ${config.minimumStopATR}-${config.maximumStopATR} ATR, spread/news/filter gates clear`, riskOk ? "Risk engine approved the profile trade plan." : "Risk engine blocked the profile trade plan.");
 
   const gradeValue = tradeGrade(confirmationCount, qualityCount);
   const score = Math.min(100, Math.round(40 + confirmationScore + (qualityCount / quality.length) * 20));
@@ -688,10 +696,15 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   flags.tradePlan = {
     source: plan.source,
     entry: plan.entry,
+    structuralStop: plan.structuralStop,
     stop: plan.stop,
     target: plan.target,
     riskReward: plan.rr,
-    availableRewardRisk: plan.availableRewardRisk
+    availableRewardRisk: plan.availableRewardRisk,
+    stopDistanceAtr: plan.stopDistanceAtr,
+    minimumStopAtr: config.minimumStopATR,
+    maximumStopAtr: config.maximumStopATR,
+    volatilityAdjusted: plan.stop !== plan.structuralStop
   };
   flags.tradePlanCandidates = plan.candidates;
   flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
@@ -1576,6 +1589,7 @@ type TradePlanZone = {
 type TradePlanCandidate = {
   source: string;
   entry: number;
+  structuralStop: number;
   stop: number;
   target: number;
   rr: number;
@@ -1653,13 +1667,22 @@ function buildTradePlanCandidate(
   config: LiquiditySweepConfig,
   zoneTouched: boolean
 ): TradePlanCandidate {
-  const risk = Math.abs(entry - stop);
+  const minimumRiskDistance = atr * config.minimumStopATR;
+  const volatilityStop = direction === "LONG"
+    ? entry - minimumRiskDistance
+    : entry + minimumRiskDistance;
+  const protectedStop = direction === "LONG"
+    ? Math.min(stop, volatilityStop)
+    : Math.max(stop, volatilityStop);
+  const risk = Math.abs(entry - protectedStop);
   const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
-  const geometryValid = validTradeGeometry(direction, entry, stop, target);
+  const geometryValid = validTradeGeometry(direction, entry, protectedStop, target);
   const availableRewardRisk = opposingLiquidityRewardRisk(levels, direction, entry, risk);
   const rr = geometryValid && risk > 0 ? Math.abs(target - entry) / risk : 0;
   const stopDistanceAtr = atr > 0 ? risk / atr : 999;
-  const stopValid = geometryValid && stopDistanceAtr <= config.maximumStopATR;
+  const stopValid = geometryValid
+    && stopDistanceAtr + Number.EPSILON >= config.minimumStopATR
+    && stopDistanceAtr <= config.maximumStopATR;
   const riskApproved = geometryValid
     && stopValid
     && rr >= 2
@@ -1667,7 +1690,8 @@ function buildTradePlanCandidate(
   return {
     source,
     entry,
-    stop,
+    structuralStop: stop,
+    stop: protectedStop,
     target,
     rr,
     availableRewardRisk,

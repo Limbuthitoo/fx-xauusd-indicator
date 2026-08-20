@@ -268,6 +268,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
     const input = objectValue(value) as Record<string, any>;
     const paperTrading = objectValue(input.paperTrading);
     const chart = objectValue(input.chart);
+    const minimumStopATR = Math.max(1, positiveNumber(input.minimumStopATR, 1, 1.25));
     return {
       ...input,
       moduleCode: "high_probability_strategy_2",
@@ -299,7 +300,8 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       minimumFvgSizeATR: positiveNumber(input.minimumFvgSizeATR, 0.1, 5),
       entryAtFvgPercentage: Math.min(Math.max(numberValue(input.entryAtFvgPercentage, 50), 0), 100),
       minimumRiskReward: positiveNumber(input.minimumRiskReward, 1.5, 10),
-      maximumStopATR: positiveNumber(input.maximumStopATR, 1.25, 10),
+      minimumStopATR,
+      maximumStopATR: Math.max(minimumStopATR, positiveNumber(input.maximumStopATR, 1.25, 10)),
       stopBufferATR: positiveNumber(input.stopBufferATR, 0.03, 2),
       minimumSignalScore: positiveInteger(input.minimumSignalScore, 80, 110),
       maximumSpread: positiveNumber(input.maximumSpread, 0.8, 20),

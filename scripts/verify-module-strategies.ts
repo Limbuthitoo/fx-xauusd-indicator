@@ -331,6 +331,11 @@ assert.ok(Array.isArray(module2PlanCandidates) && module2PlanCandidates.length >
 assert.equal(module2PlanCandidates[0]?.source, module2Plan.source, "Module 2 must select the highest-ranked structural trade plan");
 assert.ok(module2PlanCandidates.some((candidate) => candidate.source === "SWEEP_INVALIDATION"), "Module 2 must retain conservative sweep invalidation as a fallback");
 assert.ok(module2PlanCandidates.filter((candidate) => candidate.riskApproved).every((candidate) => candidate.geometryValid && candidate.stopValid), "Every risk-approved Module 2 candidate must have valid geometry and stop size");
+assert.ok(module2PlanCandidates.every((candidate) => candidate.stopDistanceAtr >= 1 - Number.EPSILON), "Every Module 2 stop must cover at least one 5-minute ATR");
+assert.ok(
+  module2PlanCandidates.every((candidate) => module2.direction === "LONG" ? candidate.stop <= candidate.structuralStop : candidate.stop >= candidate.structuralStop),
+  "The volatility floor must never weaken structural invalidation"
+);
 assert.ok(
   new Date((module2.scenarioFlags.sweep as any).sweptAt).getTime() >= new Date((module2.scenarioFlags.sweep as any).level.confirmedAt).getTime(),
   "Module 2 must never use a sweep that occurred before its liquidity level was confirmed"
