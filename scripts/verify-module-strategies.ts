@@ -13,7 +13,7 @@ import {
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
-import { buildPaperTargetPlan, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalGeometryQuality } from "../packages/risk-engine/src/index.js";
 
 const module1OpeningCandles: Candle[] = [
@@ -350,37 +350,67 @@ const pendingLongTargets: PaperTarget[] = longTargets.map((target) => ({
   target_number: target.targetNumber,
   price: target.price,
   risk_multiple: target.riskMultiple,
+  position_fraction: target.positionFraction,
   status: "PENDING"
 }));
 const progressTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 108, low: 99 });
 assert.deepEqual(progressTouch.pendingHit.map((target) => target.target_number), [1, 2], "A completed candle may advance multiple reached milestones");
 pendingLongTargets[0].status = "HIT";
 pendingLongTargets[1].status = "HIT";
+pendingLongTargets[0].realized_r = pendingLongTargets[0].risk_multiple * pendingLongTargets[0].position_fraction;
+pendingLongTargets[1].realized_r = pendingLongTargets[1].risk_multiple * pendingLongTargets[1].position_fraction;
 const longFinalTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 111, low: 99 });
 assert.deepEqual(longFinalTouch.pendingHit.map((target) => target.target_number), [3], "LONG sequence must leave only TP3 pending after TP1 and TP2");
-const longStopAfterProgress = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 104, low: 94 });
-assert.equal(longStopAfterProgress.stopHit, true, "A LONG stop after TP1/TP2 progress must still close at structural SL without partial realized R");
+const longStopAfterProgress = paperTargetTouches({ direction: "LONG", actual_stop: 100, structural_stop: 95 }, pendingLongTargets, { high: 104, low: 99 });
+assert.equal(longStopAfterProgress.stopHit, true, "A LONG runner must stop at entry after TP1 activates breakeven protection");
+const protectedLongSettlement = paperSettlement(
+  { direction: "LONG", actual_entry: 100, actual_stop: 100, structural_stop: 95, initial_risk_distance: 5 },
+  pendingLongTargets,
+  100
+);
+assert.equal(protectedLongSettlement.outcome, "WIN", "TP1 and TP2 realized profit must keep a breakeven runner close classified as a win");
+assert.equal(protectedLongSettlement.resultR, 0.8333, "Equal-third TP1 + TP2 + breakeven runner must settle near +0.83R");
 const pendingShortTargets: PaperTarget[] = shortTargets.map((target) => ({
   target_number: target.targetNumber,
   price: target.price,
   risk_multiple: target.riskMultiple,
+  position_fraction: target.positionFraction,
   status: "PENDING"
 }));
 const shortProgressTouch = paperTargetTouches({ direction: "SHORT", actual_stop: 105 }, pendingShortTargets, { high: 101, low: 92 });
 assert.deepEqual(shortProgressTouch.pendingHit.map((target) => target.target_number), [1, 2], "SHORT sequence must recognize TP1 and TP2 in descending price order");
 pendingShortTargets[0].status = "HIT";
 pendingShortTargets[1].status = "HIT";
+pendingShortTargets[0].realized_r = pendingShortTargets[0].risk_multiple * pendingShortTargets[0].position_fraction;
+pendingShortTargets[1].realized_r = pendingShortTargets[1].risk_multiple * pendingShortTargets[1].position_fraction;
 const shortFinalTouch = paperTargetTouches({ direction: "SHORT", actual_stop: 105 }, pendingShortTargets, { high: 101, low: 89 });
 assert.deepEqual(shortFinalTouch.pendingHit.map((target) => target.target_number), [3], "SHORT sequence must leave only TP3 pending after TP1 and TP2");
 const ambiguousTargets: PaperTarget[] = longTargets.map((target) => ({
   target_number: target.targetNumber,
   price: target.price,
   risk_multiple: target.riskMultiple,
+  position_fraction: target.positionFraction,
   status: "PENDING"
 }));
 const ambiguousTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, ambiguousTargets, { high: 106, low: 94 });
 assert.equal(ambiguousTouch.stopHit, true);
 assert.equal(ambiguousTouch.ambiguous, true, "A candle touching stop and target must use the conservative stop-first policy");
+const untouchedStop = paperSettlement(
+  { direction: "LONG", actual_entry: 100, actual_stop: 95, structural_stop: 95, initial_risk_distance: 5 },
+  ambiguousTargets,
+  95
+);
+assert.equal(untouchedStop.resultR, -1, "A structural stop before any partial target remains a full -1R loss");
+const completedTargets = pendingLongTargets.map((target) => ({
+  ...target,
+  status: "HIT" as const,
+  realized_r: target.risk_multiple * target.position_fraction
+}));
+assert.equal(
+  paperSettlement({ direction: "LONG", actual_entry: 100, structural_stop: 95, initial_risk_distance: 5 }, completedTargets, 110).resultR,
+  1.5,
+  "A complete equal-third 1R/1.5R/2R ladder must settle at +1.50R"
+);
 console.log(JSON.stringify({
   status: "PASS",
   module1: { scenario: module1.scenario, direction: module1.direction, score: module1.favorabilityScore },

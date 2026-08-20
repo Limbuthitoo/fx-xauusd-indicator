@@ -6641,6 +6641,9 @@ function NotificationDetails({ item }: { item: any }) {
             <Metric label="Setup" value={setupTier ? String(setupTier) : "--"} />
             <Metric label="Grade" value={grade ?? "--"} />
             <Metric label="Evidence score" value={confidence == null ? "--" : `${confidence}/100`} />
+            {data.lockedR != null || data.locked_r != null ? <Metric label="Locked profit" value={`${formatR(data.lockedR ?? data.locked_r)}R`} /> : null}
+            {data.remainingFraction != null || data.remaining_fraction != null ? <Metric label="Runner open" value={`${Math.round(Number(data.remainingFraction ?? data.remaining_fraction) * 100)}%`} /> : null}
+            {data.breakevenProtected === true || data.breakeven_protected === true ? <Metric label="Active stop" value="BREAKEVEN" /> : null}
           </div>
           {targets.length > 0 ? (
             <div className="paper-target-progress">
@@ -6648,7 +6651,7 @@ function NotificationDetails({ item }: { item: any }) {
                 <div key={targetItem.targetNumber ?? targetItem.target_number} className={`paper-target-step ${String(targetItem.status ?? "PENDING").toLowerCase()}`}>
                   <span>TP{targetItem.targetNumber ?? targetItem.target_number}</span>
                   <strong>{formatNotificationValue(targetItem.price, "price")}</strong>
-                  <small>{targetItem.riskMultiple ?? targetItem.risk_multiple}R · {targetItem.status ?? "PENDING"}</small>
+                  <small>{targetItem.riskMultiple ?? targetItem.risk_multiple}R · {Math.round(Number(targetItem.positionFraction ?? targetItem.position_fraction ?? 0) * 100)}% · {targetItem.status ?? "PENDING"}</small>
                 </div>
               ))}
             </div>
@@ -8833,23 +8836,26 @@ function PaperTradingWorkspace({
           <div className="paper-focus-metrics">
             <Metric label="Entry" value={formatPriceValue(selected.entry)} />
             <Metric label={selected.status === "ACTIVE" ? "Current" : "Exit"} value={formatPriceValue(selected.status === "ACTIVE" ? selected.currentPrice : selected.exit)} />
-            <Metric label="Stop loss" value={formatPriceValue(selected.stopLoss)} />
+            <Metric label={selected.breakevenProtected ? "Active stop · BE" : "Active stop"} value={formatPriceValue(selected.stopLoss)} />
             <Metric label="Final target" value={formatPriceValue(selected.takeProfit)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label={selected.status === "ACTIVE" ? "Unrealized" : "Result"} value={`${formatR(selected.status === "ACTIVE" ? selected.unrealizedR : selected.resultR)}R`} />
+            <Metric label="Locked profit" value={`${formatR(selected.lockedR)}R`} />
+            <Metric label={selected.status === "ACTIVE" ? "Runner open" : "Runner closed"} value={`${Math.round(Number(selected.remainingFraction ?? 0) * 100)}%`} />
           </div>
           <div className="paper-target-progress" aria-label="Paper trade target progress">
             {(selected.targets ?? []).map((target: any) => (
               <div key={target.targetNumber} className={`paper-target-step ${String(target.status).toLowerCase()}`}>
-                <span>TP{target.targetNumber} · {Number(target.riskMultiple).toFixed(target.targetNumber === 2 ? 1 : 2)}R</span>
+                <span>TP{target.targetNumber} · {Number(target.riskMultiple).toFixed(target.targetNumber === 2 ? 1 : 2)}R · {Math.round(Number(target.positionFraction ?? 0) * 100)}%</span>
                 <strong>{formatPriceValue(target.price)}</strong>
-                <small>{target.status === "HIT" ? `Hit ${formatNepalTime(target.hitAt)}` : target.status}</small>
+                <small>{target.status === "HIT" ? `Booked ${formatR(target.realizedR)}R · ${formatNepalTime(target.hitAt)}` : target.status}</small>
               </div>
             ))}
           </div>
           <div className="paper-focus-footer">
             <div>
               <p>{selected.reason ?? formatScenario(selected.scenario)}</p>
+              {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after TP1 at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
               {selected.status === "ACTIVE" && selected.currentPriceAt ? <small>Current condition updated {formatNepalTime(selected.currentPriceAt)}.</small> : null}
             </div>
             <button onClick={() => onOpenChart(selected.moduleCode)}><LineChart size={16} />Open module chart</button>
@@ -8909,7 +8915,7 @@ function PaperTradingWorkspace({
 }
 
 function paperTradeTone(status: string, condition: string) {
-  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || /^TP[12] HIT$/.test(condition)) return "good";
+  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || condition === "PARTIAL PROFIT" || condition.includes("BE PROTECTED") || /^TP[12] HIT$/.test(condition)) return "good";
   if (status === "LOSS" || condition === "NEAR STOP") return "bad";
   if (condition === "IN DRAWDOWN") return "warn";
   return "";

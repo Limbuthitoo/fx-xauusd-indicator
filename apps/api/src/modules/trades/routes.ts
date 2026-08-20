@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate } from "../../infrastructure/time.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
-import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones } from "./paper-targets.js";
+import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
   app.get("/api/trades/paper", async (request) => {
@@ -34,6 +34,10 @@ export async function tradeRoutes(app: FastifyInstance) {
          t.actual_exit,
          t.actual_lot,
          t.result_r,
+         t.structural_stop,
+         t.realized_r,
+         t.remaining_fraction,
+         t.breakeven_activated_at,
          t.result_money,
          t.opened_at,
          t.closed_at,
@@ -62,6 +66,8 @@ export async function tradeRoutes(app: FastifyInstance) {
            'targetNumber', ptt.target_number,
            'price', ptt.price,
            'riskMultiple', ptt.risk_multiple,
+           'positionFraction', ptt.position_fraction,
+           'realizedR', ptt.realized_r,
            'status', ptt.status,
            'hitAt', ptt.hit_at,
            'hitPrice', ptt.hit_price
@@ -134,7 +140,7 @@ export async function tradeRoutes(app: FastifyInstance) {
       for (const candle of candles.rows as any[]) {
         const progress = await evaluatePaperTargetMilestones(trade, candle);
         if (progress.stopHit) {
-          exit = { reason: "STOP", price: Number(trade.actual_stop), timestampUtc: candle.timestamp_utc, candle, ambiguous: progress.ambiguous };
+          exit = { reason: progress.stopReason ?? "STOP", price: progress.stopPrice, timestampUtc: candle.timestamp_utc, candle, ambiguous: progress.ambiguous };
           break;
         }
         if (progress.finalTargetHit) {
@@ -143,18 +149,15 @@ export async function tradeRoutes(app: FastifyInstance) {
         }
       }
       if (!exit) continue;
-      const entry = Number(trade.actual_entry);
-      const stop = Number(trade.actual_stop);
-      const stopDistance = Math.abs(entry - stop);
-      const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
-      const resultR = stopDistance > 0 ? ((exit.price - entry) * directionMultiplier) / stopDistance : 0;
-      const outcome = exit.reason === "TARGET" ? "WIN" : exit.reason === "STOP" ? "LOSS" : resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN";
+      const settlement = await paperTradeSettlement(trade, exit.price);
+      const { resultR, outcome } = settlement;
       const updated = await query(
         `UPDATE trades SET
            actual_exit = $2,
            result_r = $3,
            outcome = $4,
-           closed_at = $5
+           closed_at = $5,
+           remaining_fraction = 0
          WHERE id = $1
          RETURNING *`,
         [trade.id, exit.price, resultR, outcome, exit.timestampUtc]
@@ -370,21 +373,19 @@ export async function tradeRoutes(app: FastifyInstance) {
     );
     const trade = tradeResult.rows[0] as any;
     const actualExit = Number(body.actualExit);
-    const entry = Number(trade.actual_entry ?? trade.planned_entry);
-    const stop = Number(trade.actual_stop ?? trade.planned_stop);
     const lot = Number(trade.actual_lot ?? 0);
-    const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
-    const stopDistance = Math.abs(entry - stop);
-    const resultR = stopDistance > 0 ? ((actualExit - entry) * directionMultiplier) / stopDistance : 0;
+    const settlement = await paperTradeSettlement(trade, actualExit);
+    const resultR = settlement.resultR;
     const resultMoney = body.resultMoney ?? null;
-    const outcome = body.outcome ?? (resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN");
+    const outcome = settlement.outcome;
     const { rows } = await query(
       `UPDATE trades SET
         actual_exit = $2,
         result_money = $3,
         result_r = $4,
         outcome = $5,
-        closed_at = now()
+        closed_at = now(),
+        remaining_fraction = 0
        WHERE id = $1
        RETURNING *`,
       [id, actualExit, resultMoney, resultR, outcome]
@@ -584,7 +585,7 @@ export async function tradeRoutes(app: FastifyInstance) {
         t.*, tp.setup_candidate_id, tp.reward_to_risk, sc.session_id, sc.symbol, sc.direction, sc.scenario,
         sc.status AS setup_status, sc.detected_at, sc.favorability_score, sc.favorability_grade,
         sc.final_reason, sc.scenario_flags,
-        (SELECT jsonb_agg(jsonb_build_object('targetNumber', ptt.target_number, 'price', ptt.price, 'riskMultiple', ptt.risk_multiple, 'status', ptt.status, 'hitAt', ptt.hit_at) ORDER BY ptt.target_number)
+        (SELECT jsonb_agg(jsonb_build_object('targetNumber', ptt.target_number, 'price', ptt.price, 'riskMultiple', ptt.risk_multiple, 'positionFraction', ptt.position_fraction, 'realizedR', ptt.realized_r, 'status', ptt.status, 'hitAt', ptt.hit_at) ORDER BY ptt.target_number)
          FROM paper_trade_targets ptt WHERE ptt.trade_id = t.id) AS targets
        FROM trades t
        JOIN trade_plans tp ON tp.id = t.trade_plan_id
@@ -638,7 +639,7 @@ export async function tradeRoutes(app: FastifyInstance) {
         t.*, tp.setup_candidate_id, tp.reward_to_risk, sc.session_id, sc.symbol, sc.direction, sc.scenario,
         sc.status AS setup_status, sc.detected_at, sc.favorability_score, sc.favorability_grade,
         sc.final_reason, sc.scenario_flags, sc.module_code,
-        (SELECT jsonb_agg(jsonb_build_object('targetNumber', ptt.target_number, 'price', ptt.price, 'riskMultiple', ptt.risk_multiple, 'status', ptt.status, 'hitAt', ptt.hit_at) ORDER BY ptt.target_number)
+        (SELECT jsonb_agg(jsonb_build_object('targetNumber', ptt.target_number, 'price', ptt.price, 'riskMultiple', ptt.risk_multiple, 'positionFraction', ptt.position_fraction, 'realizedR', ptt.realized_r, 'status', ptt.status, 'hitAt', ptt.hit_at) ORDER BY ptt.target_number)
          FROM paper_trade_targets ptt WHERE ptt.trade_id = t.id) AS targets
        FROM trades t
        JOIN trade_plans tp ON tp.id = t.trade_plan_id
@@ -793,7 +794,7 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
     for (const candle of candles.rows as any[]) {
       const progress = await evaluatePaperTargetMilestones(trade, candle);
       if (progress.stopHit) {
-        exit = { reason: "STOP", price: Number(trade.actual_stop), timestampUtc: candle.timestamp_utc, candle, ambiguous: progress.ambiguous };
+        exit = { reason: progress.stopReason ?? "STOP", price: progress.stopPrice, timestampUtc: candle.timestamp_utc, candle, ambiguous: progress.ambiguous };
         break;
       }
       if (progress.finalTargetHit) {
@@ -802,18 +803,15 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
       }
     }
     if (!exit) continue;
-    const entry = Number(trade.actual_entry);
-    const stop = Number(trade.actual_stop);
-    const stopDistance = Math.abs(entry - stop);
-    const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
-    const resultR = stopDistance > 0 ? ((exit.price - entry) * directionMultiplier) / stopDistance : 0;
-    const outcome = exit.reason === "TARGET" ? "WIN" : exit.reason === "STOP" ? "LOSS" : resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN";
+    const settlement = await paperTradeSettlement(trade, exit.price);
+    const { resultR, outcome } = settlement;
     await query(
       `UPDATE trades SET
          actual_exit = $2,
          result_r = $3,
          outcome = $4,
-         closed_at = $5
+         closed_at = $5,
+         remaining_fraction = 0
        WHERE id = $1
          AND outcome = 'ACTIVE'`,
       [trade.id, exit.price, resultR, outcome, exit.timestampUtc]
@@ -845,16 +843,19 @@ function paperTradeView(row: any) {
   const direction = row.direction === "SHORT" ? "SHORT" : "LONG";
   const entry = Number(row.actual_entry);
   const stop = Number(row.actual_stop);
+  const structuralStop = Number(row.structural_stop ?? row.actual_stop);
   const target = Number(row.actual_target);
   const currentPrice = row.current_price == null ? null : Number(row.current_price);
-  const stopDistance = Math.abs(entry - stop);
+  const stopDistance = Math.abs(entry - structuralStop);
   const entryDistanceFromCurrent = currentPrice == null ? null : Math.abs(currentPrice - entry);
   const staleMarketDistance = currentPrice != null && stopDistance > 0 && entryDistanceFromCurrent != null
     ? entryDistanceFromCurrent > Math.max(stopDistance * 3, 10)
     : false;
   const multiplier = direction === "SHORT" ? -1 : 1;
+  const lockedR = Number(row.realized_r ?? 0);
+  const remainingFraction = Number(row.remaining_fraction ?? 1);
   const unrealizedR = row.outcome === "ACTIVE" && currentPrice != null && stopDistance > 0
-    ? ((currentPrice - entry) * multiplier) / stopDistance
+    ? lockedR + remainingFraction * (((currentPrice - entry) * multiplier) / stopDistance)
     : null;
   return {
     id: row.id,
@@ -866,6 +867,7 @@ function paperTradeView(row: any) {
     action: direction === "SHORT" ? "SELL" : "BUY",
     entry,
     stopLoss: stop,
+    structuralStop,
     takeProfit: target,
     currentPrice,
     currentPriceAt: row.current_price_at,
@@ -880,8 +882,12 @@ function paperTradeView(row: any) {
     rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
     plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),
     status: row.outcome,
-    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets),
+    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets, row.breakeven_activated_at),
     unrealizedR,
+    lockedR,
+    remainingFraction,
+    breakevenProtected: row.breakeven_activated_at != null,
+    breakevenActivatedAt: row.breakeven_activated_at,
     exit: row.actual_exit == null ? null : Number(row.actual_exit),
     resultR: row.result_r == null ? null : Number(row.result_r),
     resultMoney: row.result_money == null ? null : Number(row.result_money),
@@ -902,6 +908,8 @@ function normalizePaperTargets(targets: any) {
     targetNumber: Number(target.targetNumber),
     price: Number(target.price),
     riskMultiple: Number(target.riskMultiple),
+    positionFraction: Number(target.positionFraction ?? 0),
+    realizedR: target.realizedR == null ? null : Number(target.realizedR),
     hitPrice: target.hitPrice == null ? null : Number(target.hitPrice)
   }));
 }
@@ -913,19 +921,22 @@ function paperTargetProgress(targets: any) {
     hitCount: hit.length,
     total: rows.length,
     latestHit: hit.length > 0 ? `TP${Math.max(...hit.map((target: any) => target.targetNumber))}` : null,
+    lockedR: hit.reduce((total: number, target: any) => total + Number(target.realizedR ?? 0), 0),
+    realizedFraction: hit.reduce((total: number, target: any) => total + Number(target.positionFraction ?? 0), 0),
     finalTargetHit: rows.some((target: any) => target.targetNumber === 3 && target.status === "HIT")
   };
 }
 
-function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any) {
-  if (status === "WIN") return "TARGET HIT";
+function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any, breakevenActivatedAt?: unknown) {
+  const progress = paperTargetProgress(targets);
+  if (status === "WIN") return progress.finalTargetHit ? "TARGET HIT" : "PARTIAL PROFIT";
   if (status === "LOSS") return "SL HIT";
   if (status === "BREAKEVEN") return "BREAKEVEN";
   if (status !== "ACTIVE") return status || "CLOSED";
   if (unrealizedR == null) return "AWAITING PRICE";
   if (unrealizedR <= -1) return "SL HIT";
   if (rewardToRisk != null && unrealizedR >= rewardToRisk) return "TARGET HIT";
-  const progress = paperTargetProgress(targets);
+  if (breakevenActivatedAt != null) return `${progress.latestHit ?? "TP1"} · BE PROTECTED`;
   if (progress.latestHit) return `${progress.latestHit} HIT`;
   if (unrealizedR >= 1.5) return "NEAR TARGET";
   if (unrealizedR > 0) return "IN PROFIT";
@@ -1025,13 +1036,10 @@ async function closePaperTrade(setup: any, tenantId: string | null, event: strin
   const trade = active.rows[0] as any;
   if (!trade) return { error: "No active module paper trade to close." };
   const exit = event === "TP_HIT" ? Number(trade.actual_target) : event === "SL_HIT" ? Number(trade.actual_stop) : Number(actualExit ?? trade.actual_entry);
-  const entry = Number(trade.actual_entry);
-  const stop = Number(trade.actual_stop);
-  const multiplier = trade.direction === "SHORT" ? -1 : 1;
-  const resultR = Math.abs(entry - stop) > 0 ? ((exit - entry) * multiplier) / Math.abs(entry - stop) : 0;
-  const outcome = resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN";
+  const settlement = await paperTradeSettlement(trade, exit);
+  const { resultR, outcome } = settlement;
   const { rows } = await query(
-    "UPDATE trades SET actual_exit = $2, result_r = $3, outcome = $4, closed_at = now() WHERE id = $1 RETURNING *",
+    "UPDATE trades SET actual_exit = $2, result_r = $3, outcome = $4, closed_at = now(), remaining_fraction = 0 WHERE id = $1 RETURNING *",
     [trade.id, exit, resultR, outcome]
   );
   await cancelPendingPaperTargets(trade.id, event);

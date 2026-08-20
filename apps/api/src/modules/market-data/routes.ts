@@ -26,7 +26,7 @@ import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
-import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeTargets } from "../trades/paper-targets.js";
+import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
 import { buildPaperTargetPlan } from "../trades/paper-target-plan.js";
 
 type TwelveDataTimeSeriesResponse = {
@@ -4886,7 +4886,7 @@ async function createModule2PositionFromPaperTrade(session: any, setup: any, pla
       trade.opened_at ?? new Date().toISOString(),
       JSON.stringify({
         mode: "PAPER",
-        managementModel: "FIXED_STOP_FIXED_TARGET",
+        managementModel: "EQUAL_THIRDS_TP1_BREAKEVEN",
         setupCandidateId: setup.id,
         scenario: setup.scenario,
         setupTier: setup.scenario_flags?.setupTier ?? null
@@ -4961,7 +4961,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         `paper-tp${target.target_number}-${trade.id}`,
         `PAPER_TP${target.target_number}_HIT`,
         `Paper trade TP${target.target_number} reached`,
-        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD reached TP${target.target_number} at ${target.price} (${target.risk_multiple}R). ${target.target_number === 3 ? "The final strategy target is complete." : "TP3 remains the closing target."}`,
+        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD booked ${Math.round(target.position_fraction * 100)}% at TP${target.target_number} (${target.risk_multiple}R). ${target.target_number === 1 ? "The remaining position is now protected at breakeven." : target.target_number === 3 ? "The final runner is complete." : "The TP3 runner remains protected at breakeven."}`,
         target.target_number === 3 ? "HIGH" : "NORMAL",
         {
           moduleCode: trade.module_code,
@@ -4971,11 +4971,16 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
           direction: trade.direction,
           action: trade.direction === "SHORT" ? "SELL" : "BUY",
           entry: trade.actual_entry,
-          stopLoss: trade.actual_stop,
+          stopLoss: targetProgress.stopPrice,
           takeProfit: trade.actual_target,
           targetNumber: target.target_number,
           targetPrice: target.price,
           riskMultiple: target.risk_multiple,
+          positionFraction: target.position_fraction,
+          realizedR: target.realized_r,
+          lockedR: targetProgress.lockedR,
+          remainingFraction: targetProgress.remainingFraction,
+          breakevenProtected: targetProgress.breakevenProtected,
           targets: targetPayload
         },
         "takeProfitStopLoss"
@@ -4989,23 +4994,20 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
       });
     }
     const exit = targetProgress.stopHit
-      ? { reason: "STOP", price: Number(trade.actual_stop), ambiguous: targetProgress.ambiguous }
+      ? { reason: targetProgress.stopReason ?? "STOP", price: targetProgress.stopPrice, ambiguous: targetProgress.ambiguous }
       : targetProgress.finalTargetHit
         ? { reason: "TARGET", price: Number(trade.actual_target), ambiguous: false }
         : null;
     if (!exit) continue;
-    const entry = Number(trade.actual_entry);
-    const stop = Number(trade.structural_stop ?? trade.actual_stop);
-    const stopDistance = Math.abs(entry - stop);
-    const directionMultiplier = trade.direction === "SHORT" ? -1 : 1;
-    const resultR = stopDistance > 0 ? ((exit.price - entry) * directionMultiplier) / stopDistance : 0;
-    const outcome = exit.reason === "TARGET" ? "WIN" : exit.reason === "STOP" ? "LOSS" : resultR > 0 ? "WIN" : resultR < 0 ? "LOSS" : "BREAKEVEN";
+    const settlement = await paperTradeSettlement(trade, exit.price);
+    const { resultR, outcome } = settlement;
     const updated = await query(
       `UPDATE trades SET
         actual_exit = $2,
         result_r = $3,
         outcome = $4,
-        closed_at = $5
+        closed_at = $5,
+        remaining_fraction = 0
        WHERE id = $1
        RETURNING *`,
       [trade.id, exit.price, resultR, outcome, latest.timestampUtc]
@@ -5027,7 +5029,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         trade.setup_candidate_id,
         trade.id,
         trade.session_id,
-        `Automatic paper trade closed by ${exit.reason}${exit.ambiguous ? " on ambiguous TP/SL candle, stop-first rule used" : ""}. Result ${resultR.toFixed(2)}R.`,
+        `Automatic paper trade closed by ${exit.reason}${exit.ambiguous ? " on ambiguous TP/SL candle, stop-first rule used" : ""}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
         outcome,
         trade.tenant_id
       ]
@@ -5037,7 +5039,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
       `paper-exit-${trade.id}`,
       "PAPER_TRADE_CLOSED",
       `Paper trade closed: ${outcome}`,
-      `${exit.reason} at ${exit.price}. Result ${resultR.toFixed(2)}R.`,
+      `${exit.reason === "BREAKEVEN_STOP" ? "Runner stopped at breakeven" : exit.reason} at ${exit.price}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
       "HIGH",
       {
         moduleCode: trade.module_code,
@@ -5047,10 +5049,13 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         direction: trade.direction,
         action: trade.direction === "SHORT" ? "SELL" : "BUY",
         entry: trade.actual_entry,
-        stopLoss: trade.actual_stop,
+        stopLoss: exit.reason === "BREAKEVEN_STOP" ? exit.price : trade.actual_stop,
         takeProfit: trade.actual_target,
         exitPrice: exit.price,
         resultR,
+        lockedR: settlement.lockedR,
+        remainingFraction: 0,
+        breakevenProtected: exit.reason === "BREAKEVEN_STOP" || targetProgress.breakevenProtected,
         closeReason: exit.reason,
         targets: closedTargets
       },

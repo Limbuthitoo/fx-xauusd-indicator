@@ -152,6 +152,11 @@ type NotificationDetail = {
   targetNumber?: string | number | null;
   targetPrice?: string | number | null;
   riskMultiple?: string | number | null;
+  positionFraction?: string | number | null;
+  realizedR?: string | number | null;
+  lockedR?: string | number | null;
+  remainingFraction?: string | number | null;
+  breakevenProtected?: boolean | null;
   rewardToRisk?: string | number | null;
   grade?: string | number | null;
   confidence?: string | number | null;
@@ -225,6 +230,10 @@ type JournalTrade = {
   actual_stop?: string | number | null;
   actual_target?: string | number | null;
   actual_exit?: string | number | null;
+  structural_stop?: string | number | null;
+  realized_r?: string | number | null;
+  remaining_fraction?: string | number | null;
+  breakeven_activated_at?: string | null;
   reward_to_risk?: string | number | null;
   opened_at?: string | null;
   closed_at?: string | null;
@@ -237,6 +246,8 @@ type JournalTrade = {
     targetNumber: number;
     price: string | number;
     riskMultiple: string | number;
+    positionFraction?: string | number;
+    realizedR?: string | number | null;
     status: "PENDING" | "HIT" | "CANCELLED";
     hitAt?: string | null;
   }>;
@@ -1653,7 +1664,9 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
-        <Metric label="SL" value={formatPrice(stopLoss)} />
+        <Metric label={trade.breakeven_activated_at ? "SL · BREAKEVEN" : "SL"} value={formatPrice(stopLoss)} />
+        {tracking ? <Metric label="Locked" value={`${formatR(trade.realized_r)}R`} /> : null}
+        {tracking ? <Metric label="Runner" value={`${Math.round(Number(trade.remaining_fraction ?? 1) * 100)}%`} /> : null}
         {horizon === "long" ? (
           <Metric label="Main TP" value={formatPrice(mainTarget ?? targetLadder.tp2)} />
         ) : (
@@ -1710,7 +1723,9 @@ function BuySellSetupDetail({
         <View style={styles.metricsGrid}>
           <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
           <Metric label="Entry" value={formatPrice(entry)} />
-          <Metric label="Stop Loss" value={formatPrice(stopLoss)} />
+          <Metric label={trade.breakeven_activated_at ? "Active Stop · Breakeven" : "Stop Loss"} value={formatPrice(stopLoss)} />
+          {tracking ? <Metric label="Locked Profit" value={`${formatR(trade.realized_r)}R`} /> : null}
+          {tracking ? <Metric label="Runner Open" value={`${Math.round(Number(trade.remaining_fraction ?? 1) * 100)}%`} /> : null}
           {horizon === "long" ? (
             <Metric label="Main TP" value={formatPrice(mainTarget)} />
           ) : (
@@ -1729,7 +1744,7 @@ function BuySellSetupDetail({
           {tracking ? (
             <>
               <View style={styles.executionStep}><Text style={styles.executionStepNumber}>1</Text><Text style={styles.executionStepText}>Paper tracking is already active for this signal</Text></View>
-              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>Monitor TP milestones and stop-loss state</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>TP1 books one third and moves the runner stop to breakeven</Text></View>
               <View style={styles.executionStep}><Text style={styles.executionStepNumber}>3</Text><Text style={styles.executionStepText}>Wait for a new entry-ready alert before another trade</Text></View>
             </>
           ) : (
@@ -1913,19 +1928,21 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry" value={formatPrice(trade.actual_entry)} />
-        <Metric label="SL" value={formatPrice(trade.actual_stop)} />
+        <Metric label={trade.breakeven_activated_at ? "Active SL · BE" : "Active SL"} value={formatPrice(trade.actual_stop)} />
         <Metric label="TP" value={formatPrice(trade.actual_target)} />
         <Metric label="Exit" value={formatPrice(trade.actual_exit)} />
         <Metric label="Result" value={formatR(trade.result_r)} />
+        <Metric label="Locked" value={`${formatR(trade.realized_r)}R`} />
+        <Metric label="Runner" value={`${Math.round(Number(trade.remaining_fraction ?? 0) * 100)}%`} />
         <Metric label="RR" value={formatDetailValue(trade.reward_to_risk)} />
       </View>
       {Array.isArray(trade.targets) && trade.targets.length > 0 ? (
         <View style={styles.mobileTargetProgress}>
           {trade.targets.map((target) => (
             <View key={target.targetNumber} style={[styles.mobileTargetStep, target.status === "HIT" && styles.mobileTargetStepHit]}>
-              <Text style={styles.noticeTime}>TP{target.targetNumber} · {target.riskMultiple}R</Text>
+              <Text style={styles.noticeTime}>TP{target.targetNumber} · {target.riskMultiple}R · {Math.round(Number(target.positionFraction ?? 0) * 100)}%</Text>
               <Text style={styles.ruleTitle}>{formatPrice(target.price)}</Text>
-              <Text style={styles.noticeTime}>{target.status}</Text>
+              <Text style={styles.noticeTime}>{target.status === "HIT" ? `BOOKED ${formatR(target.realizedR)}R` : target.status}</Text>
             </View>
           ))}
         </View>
@@ -2097,18 +2114,20 @@ function PaperTradeNotification({ detail, module }: { detail: NotificationDetail
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry" value={formatDetailValue(detail.entry ?? trade.actual_entry)} />
-        <Metric label="Stop Loss" value={formatDetailValue(detail.stopLoss ?? trade.actual_stop)} />
+        <Metric label={detail.breakevenProtected ? "Active Stop · Breakeven" : "Stop Loss"} value={formatDetailValue(detail.stopLoss ?? trade.actual_stop)} />
         <Metric label="Target" value={formatDetailValue(detail.takeProfit ?? trade.actual_target)} />
         <Metric label="RR" value={formatDetailValue(detail.rewardToRisk ?? trade.reward_to_risk)} />
         <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
         <Metric label="Status" value={formatDetailValue(detail.status ?? trade.outcome)} />
+        <Metric label="Locked Profit" value={`${formatR(detail.lockedR ?? trade.realized_r)}R`} />
+        <Metric label="Runner Open" value={`${Math.round(Number(detail.remainingFraction ?? trade.remaining_fraction ?? 0) * 100)}%`} />
       </View>
       {detail.targetNumber != null ? (
         <View style={styles.mobileTargetProgress}>
           <View style={[styles.mobileTargetStep, styles.mobileTargetStepHit]}>
             <Text style={styles.noticeTime}>TP{detail.targetNumber} reached</Text>
             <Text style={styles.ruleTitle}>{formatPrice(detail.targetPrice)}</Text>
-            <Text style={styles.noticeTime}>{formatDetailValue(detail.riskMultiple)}R</Text>
+            <Text style={styles.noticeTime}>{formatDetailValue(detail.riskMultiple)}R · {Math.round(Number(detail.positionFraction ?? 0) * 100)}% · booked {formatR(detail.realizedR)}R</Text>
           </View>
         </View>
       ) : null}
@@ -2119,7 +2138,7 @@ function PaperTradeNotification({ detail, module }: { detail: NotificationDetail
               styles.mobileTargetStep,
               String(target.status).toUpperCase() === "HIT" && styles.mobileTargetStepHit
             ]}>
-              <Text style={styles.noticeTime}>TP{target.targetNumber ?? target.target_number} · {target.riskMultiple ?? target.risk_multiple}R</Text>
+              <Text style={styles.noticeTime}>TP{target.targetNumber ?? target.target_number} · {target.riskMultiple ?? target.risk_multiple}R · {Math.round(Number(target.positionFraction ?? target.position_fraction ?? 0) * 100)}%</Text>
               <Text style={styles.ruleTitle}>{formatPrice(target.price)}</Text>
               <Text style={styles.noticeTime}>{target.status ?? "PENDING"}</Text>
             </View>
@@ -3375,6 +3394,11 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     targetNumber: payload.targetNumber ?? payload.target_number ?? null,
     targetPrice: payload.targetPrice ?? payload.target_price ?? null,
     riskMultiple: payload.riskMultiple ?? payload.risk_multiple ?? null,
+    positionFraction: payload.positionFraction ?? payload.position_fraction ?? null,
+    realizedR: payload.realizedR ?? payload.realized_r ?? null,
+    lockedR: payload.lockedR ?? payload.locked_r ?? null,
+    remainingFraction: payload.remainingFraction ?? payload.remaining_fraction ?? null,
+    breakevenProtected: payload.breakevenProtected === true || payload.breakeven_protected === true,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? null,
     grade: payload.grade ?? null,
     confidence: payload.confidence ?? null,
@@ -3476,6 +3500,11 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     targetNumber: payload.targetNumber ?? payload.target_number ?? null,
     targetPrice: payload.targetPrice ?? payload.target_price ?? null,
     riskMultiple: payload.riskMultiple ?? payload.risk_multiple ?? null,
+    positionFraction: payload.positionFraction ?? payload.position_fraction ?? null,
+    realizedR: payload.realizedR ?? payload.realized_r ?? null,
+    lockedR: payload.lockedR ?? payload.locked_r ?? trade.realized_r ?? null,
+    remainingFraction: payload.remainingFraction ?? payload.remaining_fraction ?? trade.remaining_fraction ?? null,
+    breakevenProtected: payload.breakevenProtected === true || payload.breakeven_protected === true || trade.breakeven_activated_at != null,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
     grade: payload.grade ?? extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,
     confidence: payload.confidence ?? extractBodyField(body, "confidence") ?? module?.currentSetup?.confidence_score ?? null,

@@ -108,6 +108,8 @@ export async function mobileRoutes(app: FastifyInstance) {
              'targetNumber', ptt.target_number,
              'price', ptt.price,
              'riskMultiple', ptt.risk_multiple,
+             'positionFraction', ptt.position_fraction,
+             'realizedR', ptt.realized_r,
              'status', ptt.status,
              'hitAt', ptt.hit_at,
              'hitPrice', ptt.hit_price
@@ -222,6 +224,8 @@ export async function mobileRoutes(app: FastifyInstance) {
                'targetNumber', ptt.target_number,
                'price', ptt.price,
                'riskMultiple', ptt.risk_multiple,
+               'positionFraction', ptt.position_fraction,
+               'realizedR', ptt.realized_r,
                'status', ptt.status,
                'hitAt', ptt.hit_at,
                'hitPrice', ptt.hit_price

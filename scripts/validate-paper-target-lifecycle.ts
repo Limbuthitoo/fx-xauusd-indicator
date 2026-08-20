@@ -16,6 +16,13 @@ try {
   ))[0];
   add("Migration 082", Boolean(migration), "Migration 082 is recorded in the checksum ledger.", "Migration 082 is missing from schema_migrations.", migration);
 
+  const managementMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '087_paper_trade_scale_out_breakeven.sql'`
+  ))[0];
+  add("Migration 087", Boolean(managementMigration), "Scale-out and breakeven management migration is recorded.", "Migration 087 is missing from schema_migrations.", managementMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -33,6 +40,11 @@ try {
        to_regclass('public.paper_trade_targets') IS NOT NULL AS targets_table,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'structural_stop') AS structural_stop,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'initial_risk_distance') AS initial_risk,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'realized_r') AS locked_r,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'remaining_fraction') AS remaining_fraction,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'breakeven_activated_at') AS breakeven_activation,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'position_fraction') AS target_fraction,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'realized_r') AS target_realized_r,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
   );
   const schemaRow = schema[0] ?? {};
@@ -68,9 +80,9 @@ try {
      WHERE t.actual_entry IS NOT NULL
        AND t.actual_stop IS NOT NULL
        AND t.actual_target IS NOT NULL
-       AND abs(t.actual_entry - t.actual_stop) > 0
-       AND ((sc.direction = 'LONG' AND t.actual_stop < t.actual_entry AND t.actual_entry < t.actual_target)
-         OR (sc.direction = 'SHORT' AND t.actual_target < t.actual_entry AND t.actual_entry < t.actual_stop))
+       AND abs(t.actual_entry - COALESCE(t.structural_stop, t.actual_stop)) > 0
+       AND ((sc.direction = 'LONG' AND COALESCE(t.structural_stop, t.actual_stop) < t.actual_entry AND t.actual_entry < t.actual_target)
+         OR (sc.direction = 'SHORT' AND t.actual_target < t.actual_entry AND t.actual_entry < COALESCE(t.structural_stop, t.actual_stop)))
      GROUP BY t.id, sc.module_code, sc.direction, t.outcome, t.opened_at
      HAVING count(ptt.id) <> 3
      ORDER BY t.opened_at DESC NULLS LAST
@@ -116,13 +128,56 @@ try {
   add("Structural-risk snapshots", invalidSnapshots.length === 0, "Every target lifecycle preserves a valid structural SL and initial R distance.", `${invalidSnapshots.length} sampled lifecycle trade(s) have an invalid risk snapshot.`, invalidSnapshots);
 
   const invalidTargetState = await rows(
-    `SELECT trade_id, target_number, status, hit_at, hit_price
+    `SELECT trade_id, target_number, status, hit_at, hit_price, position_fraction, risk_multiple, realized_r
      FROM paper_trade_targets
      WHERE (status = 'HIT' AND (hit_at IS NULL OR hit_price IS NULL))
         OR (status <> 'HIT' AND (hit_at IS NOT NULL OR hit_price IS NOT NULL))
+        OR (status = 'HIT' AND abs(realized_r - risk_multiple * position_fraction) > 0.000011)
+        OR (status <> 'HIT' AND realized_r IS NOT NULL)
      LIMIT 50`
   );
   add("Target state integrity", invalidTargetState.length === 0, "Target status, hit timestamp, and hit price agree.", `${invalidTargetState.length} sampled target state row(s) are inconsistent.`, invalidTargetState);
+
+  const invalidAllocations = await rows(
+    `SELECT trade_id, count(*)::int AS targets, sum(position_fraction)::numeric AS allocated_fraction
+     FROM paper_trade_targets
+     GROUP BY trade_id
+     HAVING count(*) <> 3 OR abs(sum(position_fraction) - 1) > 0.000001
+     LIMIT 50`
+  );
+  add("Scale-out allocation", invalidAllocations.length === 0, "Every target ladder allocates exactly 100% of the paper position.", `${invalidAllocations.length} target ladder(s) have invalid position allocation.`, invalidAllocations);
+
+  const inconsistentManagement = await rows(
+    `WITH target_state AS (
+       SELECT trade_id,
+              COALESCE(sum(realized_r) FILTER (WHERE status = 'HIT'), 0) AS locked_r,
+              COALESCE(sum(position_fraction) FILTER (WHERE status = 'HIT'), 0) AS hit_fraction
+       FROM paper_trade_targets
+       GROUP BY trade_id
+     )
+     SELECT t.id, t.outcome, t.realized_r, t.remaining_fraction,
+            target_state.locked_r, target_state.hit_fraction
+     FROM trades t
+     JOIN target_state ON target_state.trade_id = t.id
+     WHERE abs(t.realized_r - target_state.locked_r) > 0.000011
+        OR (t.outcome = 'ACTIVE' AND abs(t.remaining_fraction - greatest(0, 1 - target_state.hit_fraction)) > 0.000011)
+        OR (t.outcome <> 'ACTIVE' AND t.remaining_fraction <> 0)
+     LIMIT 50`
+  );
+  add("Management accounting", inconsistentManagement.length === 0, "Trade-level locked R and remaining size reconcile to target fills.", `${inconsistentManagement.length} trade(s) do not reconcile to persisted target fills.`, inconsistentManagement);
+
+  const unprotectedRunners = await rows(
+    `SELECT t.id, t.outcome, t.actual_entry, t.actual_stop, t.structural_stop,
+            t.realized_r, t.remaining_fraction, t.breakeven_activated_at
+     FROM trades t
+     WHERE EXISTS (
+       SELECT 1 FROM paper_trade_targets ptt
+       WHERE ptt.trade_id = t.id AND ptt.target_number = 1 AND ptt.status = 'HIT'
+     )
+       AND (t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011)
+     LIMIT 50`
+  );
+  add("TP1 breakeven protection", unprotectedRunners.length === 0, "Every TP1 fill moves the managed runner stop to entry while preserving structural risk.", `${unprotectedRunners.length} TP1 runner(s) are not protected at breakeven.`, unprotectedRunners);
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences
@@ -134,23 +189,33 @@ try {
   add("Idempotent milestones", duplicateEvents.length === 0, "No paper trade has duplicate TP/SL milestone events.", `${duplicateEvents.length} duplicate milestone group(s) exist.`, duplicateEvents);
 
   const invalidClosures = await rows(
-    `SELECT t.id, sc.direction, t.outcome, t.actual_entry, t.actual_exit,
-            t.structural_stop, t.initial_risk_distance, t.result_r,
-            ((t.actual_exit - t.actual_entry) * CASE WHEN sc.direction = 'SHORT' THEN -1 ELSE 1 END)
-              / NULLIF(t.initial_risk_distance, 0) AS expected_r
+    `WITH target_state AS (
+       SELECT trade_id,
+              COALESCE(sum(realized_r) FILTER (WHERE status = 'HIT'), 0) AS locked_r,
+              COALESCE(sum(position_fraction) FILTER (WHERE status = 'HIT'), 0) AS hit_fraction
+       FROM paper_trade_targets
+       GROUP BY trade_id
+     )
+     SELECT t.id, sc.direction, t.outcome, t.actual_entry, t.actual_exit,
+            t.structural_stop, t.initial_risk_distance, t.result_r, target_state.locked_r,
+            target_state.locked_r + greatest(0, 1 - target_state.hit_fraction) *
+              (((t.actual_exit - t.actual_entry) * CASE WHEN sc.direction = 'SHORT' THEN -1 ELSE 1 END)
+                / NULLIF(t.initial_risk_distance, 0)) AS expected_r
      FROM trades t
      JOIN trade_plans plan ON plan.id = t.trade_plan_id
      JOIN setup_candidates sc ON sc.id = plan.setup_candidate_id
+     JOIN target_state ON target_state.trade_id = t.id
      WHERE t.closed_at >= COALESCE($1::timestamptz, '-infinity'::timestamptz)
        AND t.actual_exit IS NOT NULL
        AND t.result_r IS NOT NULL
        AND t.initial_risk_distance > 0
-       AND abs(t.result_r - (((t.actual_exit - t.actual_entry) * CASE WHEN sc.direction = 'SHORT' THEN -1 ELSE 1 END)
-         / t.initial_risk_distance)) > 0.011
+       AND abs(t.result_r - (target_state.locked_r + greatest(0, 1 - target_state.hit_fraction) *
+         (((t.actual_exit - t.actual_entry) * CASE WHEN sc.direction = 'SHORT' THEN -1 ELSE 1 END)
+           / t.initial_risk_distance))) > 0.011
      LIMIT 50`,
-    [migration?.applied_at ?? null]
+    [managementMigration?.applied_at ?? null]
   );
-  add("Realized R", invalidClosures.length === 0, "Post-migration realized R is calculated from final exit and initial structural risk; no partial exits are implied.", `${invalidClosures.length} sampled closeout(s) have inconsistent realized R.`, invalidClosures);
+  add("Weighted realized R", invalidClosures.length === 0, "Closed results combine booked target R with the remaining runner exit against immutable structural risk.", `${invalidClosures.length} sampled closeout(s) have inconsistent weighted R.`, invalidClosures);
 
   const lifecycleCounts = (await rows(
     `SELECT
@@ -160,7 +225,7 @@ try {
        count(*) FILTER (WHERE event_type = 'PAPER_SL_HIT')::int AS sl_hits
      FROM trade_events
      WHERE created_at >= COALESCE($1::timestamptz, '-infinity'::timestamptz)`,
-    [migration?.applied_at ?? null]
+    [managementMigration?.applied_at ?? null]
   ))[0] ?? {};
   const observed = Object.values(lifecycleCounts).some((value) => Number(value) > 0);
   checks.push({
@@ -183,7 +248,7 @@ try {
            AND n.event_type = e.event_type
        )
      LIMIT 50`,
-    [migration?.applied_at ?? null]
+    [managementMigration?.applied_at ?? null]
   );
   add("Target notifications", missingNotifications.length === 0, "Every observed post-migration TP milestone has a matching detailed notification.", `${missingNotifications.length} TP milestone notification(s) are missing.`, missingNotifications);
 
