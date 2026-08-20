@@ -9,6 +9,7 @@ import {
   RangeConflictResolver,
   RangeDecisionEngine,
   RetestEngine,
+  evaluateBreakoutRetestLifecycle,
   evaluateRangeBreakout
 } from "@orb-guide/range-engine";
 import { calculateRisk, evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
@@ -5567,16 +5568,17 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   return { setup: saved.rows[0], decision, risk };
 }
 
-function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle: Candle, previousCandles: Candle[], configuration: Record<string, any>) {
+export function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle: Candle, previousCandles: Candle[], configuration: Record<string, any>) {
   const candles5m = mergeCandles([...previousCandles, currentCandle]);
   const rangeEngine = objectRecord(configuration.rangeEngine);
   const horizontalInput = objectRecord(rangeEngine.horizontalRange);
   const activeNewYorkRange = isModule1ActiveOrbPreset(range.module1RangeSessionPreset ?? session.session_preset);
+  const horizontalSignalMode = horizontalInput.signalMode === "DISABLED" ? "DISABLED" : "ACTIVE_SIGNAL";
   const horizontalConfig = {
     ...DEFAULT_HORIZONTAL_RANGE_CONFIG,
     ...horizontalInput,
-    enabled: activeNewYorkRange && horizontalInput.enabled === true,
-    observationOnly: false
+    enabled: activeNewYorkRange && horizontalInput.enabled === true && horizontalSignalMode === "ACTIVE_SIGNAL",
+    observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL"
   };
   const context = {
     symbol: session.symbol,
@@ -5594,7 +5596,12 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
     strategyVersion: String(session.strategy_version_id)
   };
   const orbResult = new MaxOptionsOrbRangeDetector().detect(context);
-  const horizontalResult = new HorizontalRangeDetector(horizontalConfig).detect(context);
+  const horizontalDetectionCandles = candles5m.slice(0, -1);
+  const horizontalResult = new HorizontalRangeDetector(horizontalConfig).detect({
+    ...context,
+    now: horizontalDetectionCandles.at(-1)?.timestampUtc ?? context.now,
+    candles5m: horizontalDetectionCandles
+  });
   const fallbackTradingRange = {
     id: `MAX_OPTIONS_ORB:${range.module1RangeSessionStartAt ?? session.session_start_at}:${Number(range.high).toFixed(2)}:${Number(range.low).toFixed(2)}`,
     symbol: session.symbol,
@@ -5646,17 +5653,25 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
     riskPermitted: true,
     signalMode: "ACTIVE_SIGNAL"
   });
-  const horizontalRange = horizontalResult.range ?? null;
+  const detectedHorizontalRange = horizontalResult.range ?? null;
   const horizontalProfile = RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION;
-  const horizontalBreakout = horizontalRange
-    ? evaluateRangeBreakout(horizontalRange as any, currentCandle, { ...horizontalProfile, atr: calculateSimpleAtr(candles5m, 14) } as any)
+  const horizontalLifecycle = detectedHorizontalRange
+    ? evaluateBreakoutRetestLifecycle(
+        detectedHorizontalRange as any,
+        candles5m,
+        { ...horizontalProfile, atr: calculateSimpleAtr(candles5m, 14) } as any
+      )
     : null;
-  const horizontalFalseBreakout = horizontalRange
-    ? new FalseBreakoutEngine().evaluate(horizontalRange as any, currentCandle, previousCandles)
-    : null;
-  const horizontalRetest = horizontalRange && horizontalBreakout?.direction
-    ? new RetestEngine().evaluate(horizontalRange as any, horizontalBreakout.direction, currentCandle, horizontalProfile, previousCandles)
-    : null;
+  const horizontalRange = detectedHorizontalRange && horizontalLifecycle
+    ? {
+        ...detectedHorizontalRange,
+        state: horizontalLifecycle.rangeState,
+        breakoutDirection: horizontalLifecycle.breakout?.direction ?? detectedHorizontalRange.breakoutDirection
+      }
+    : detectedHorizontalRange;
+  const horizontalBreakout = horizontalLifecycle?.breakout ?? null;
+  const horizontalFalseBreakout = horizontalLifecycle?.falseBreakout ?? null;
+  const horizontalRetest = horizontalLifecycle?.retest ?? null;
   const horizontalConflict = horizontalRange
     ? new RangeConflictResolver().resolve([horizontalRange as any], horizontalBreakout?.direction)
     : null;
@@ -5669,7 +5684,7 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
         conflict: horizontalConflict,
         dataHealthy: session.data_status !== "MISSING_CANDLES" && session.data_status !== "INVALID",
         riskPermitted: true,
-        signalMode: "ACTIVE_SIGNAL"
+        signalMode: horizontalSignalMode
       })
     : null;
 
@@ -5698,9 +5713,10 @@ function buildModule1RangeEngineMetadata(session: any, range: any, currentCandle
       status: horizontalResult.status,
       enabled: horizontalConfig.enabled,
       nyOnly: true,
-      observationOnly: false,
-      signalMode: "ACTIVE_SIGNAL",
+      observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL",
+      signalMode: horizontalSignalMode,
       range: horizontalRange,
+      lifecycle: horizontalLifecycle,
       breakout: horizontalBreakout,
       falseBreakout: horizontalFalseBreakout,
       retest: horizontalRetest,
@@ -5844,6 +5860,7 @@ async function persistGenericRangeEngineEvidence(session: any, setup: any, metad
   const activeDecision = horizontalSetup ? metadata.horizontal?.decision : metadata.decision;
   const activeRetest = horizontalSetup ? metadata.horizontal?.retest : metadata.retest;
   const activeConflict = horizontalSetup ? metadata.horizontal?.conflict : metadata.conflict;
+  const lifecycleBreakoutCandle = horizontalSetup ? metadata.horizontal?.lifecycle?.breakoutCandle : null;
   const falseBreakout = horizontalSetup
     ? metadata.horizontal?.falseBreakout
     : metadata.falseBreakout ?? new FalseBreakoutEngine().evaluate(range, currentCandle, previousCandles);
@@ -5882,8 +5899,8 @@ async function persistGenericRangeEngineEvidence(session: any, setup: any, metad
       range.id,
       breakout?.direction ?? setup.direction ?? null,
       state,
-      currentCandle.timestampUtc,
-      numericParam(currentCandle.close, 5),
+      lifecycleBreakoutCandle?.timestampUtc ?? currentCandle.timestampUtc,
+      numericParam(lifecycleBreakoutCandle?.close ?? currentCandle.close, 5),
       numericParam(breakout?.breakDistanceAtr, 4),
       numericParam(breakout?.bodyRatio, 4),
       numericParam(breakout?.closeLocationRatio, 4),
@@ -5959,6 +5976,7 @@ async function persistTradingRange(tenantId: string, range: any) {
       confidence_score = EXCLUDED.confidence_score,
       upper_zone_json = EXCLUDED.upper_zone_json,
       lower_zone_json = EXCLUDED.lower_zone_json,
+      breakout_direction = EXCLUDED.breakout_direction,
       source_payload = EXCLUDED.source_payload,
       updated_at = now()`,
     [

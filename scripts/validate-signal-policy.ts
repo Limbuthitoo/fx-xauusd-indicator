@@ -13,6 +13,28 @@ const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: st
 
 try {
   await client.connect();
+  const horizontalConfigs = (await client.query(
+    `SELECT id,
+            configuration_json #>> '{rangeEngine,horizontalRange,enabled}' AS enabled,
+            configuration_json #>> '{rangeEngine,horizontalRange,observationOnly}' AS observation_only,
+            configuration_json #>> '{rangeEngine,horizontalRange,signalMode}' AS signal_mode
+     FROM strategy_versions
+     WHERE status = 'ACTIVE'
+       AND configuration_json->>'moduleCode' = 'orb_max_options'`
+  )).rows;
+  const inactiveHorizontalConfigs = horizontalConfigs.filter((row) =>
+    row.enabled !== "true" || row.observation_only !== "false" || row.signal_mode !== "ACTIVE_SIGNAL"
+  );
+  checks.push({
+    name: "Module 1 full-session horizontal signal mode",
+    status: horizontalConfigs.length > 0 && inactiveHorizontalConfigs.length === 0 ? "PASS" : "FAIL",
+    detail: horizontalConfigs.length === 0
+      ? "No active Module 1 strategy configuration was found."
+      : inactiveHorizontalConfigs.length === 0
+        ? "Every active Module 1 version enables the New York horizontal breakout/retest profile as ACTIVE_SIGNAL."
+        : `${inactiveHorizontalConfigs.length} active Module 1 configuration(s) are not aligned to ACTIVE_SIGNAL.`,
+    evidence: inactiveHorizontalConfigs
+  });
   const workerDeployment = (await client.query(
     `SELECT started_at
      FROM worker_heartbeats

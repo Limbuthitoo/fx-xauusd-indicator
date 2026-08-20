@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
 import { query } from "../../infrastructure/db/client.js";
 import { tenantReportHistoryMonths } from "../billing/limits.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
@@ -525,7 +526,12 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
     query(
       `SELECT count(*)::int AS count
        FROM (
-         SELECT sc.session_id
+         SELECT sc.session_id,
+                CASE
+                  WHEN upper(sc.scenario) LIKE '%HORIZONTAL%' THEN 'HORIZONTAL_RANGE_BREAKOUT'
+                  WHEN upper(sc.scenario) LIKE '%RETEST%' THEN 'BREAKOUT_RETEST'
+                  ELSE 'ORB_BREAKOUT'
+                END AS strategy_profile
          FROM trades t
          JOIN trade_plans tp ON tp.id = t.trade_plan_id
          JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -533,10 +539,10 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
            AND sc.module_code = $2
            AND sc.scenario <> 'QA_TEST_SIGNAL'
            AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-         GROUP BY sc.session_id
-         HAVING count(t.id) > 1
+         GROUP BY sc.session_id, strategy_profile
+         HAVING count(t.id) > $3
        ) duplicate_sessions`,
-      [tenantId, moduleCode]
+      [tenantId, moduleCode, XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile]
     )
   ]);
   const invalidTradeCount = Number(invalidTrades.rows[0]?.count ?? 0);
@@ -547,7 +553,12 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
   const checks = [
     { code: "INVALID_SETUPS_NEVER_TRADE", status: invalidTradeCount === 0 ? "PASS" : "FAIL", count: invalidTradeCount },
     { code: "MODULE_BOUNDARY_CLEAN", status: moduleMixCount === 0 ? "PASS" : "FAIL", count: moduleMixCount },
-    { code: "ONE_PRODUCTION_TRADE_PER_SESSION", status: duplicateTradeCount === 0 ? "PASS" : "FAIL", count: duplicateTradeCount },
+    {
+      code: "STRATEGY_PROFILE_TRADE_LIMIT",
+      status: duplicateTradeCount === 0 ? "PASS" : "FAIL",
+      count: duplicateTradeCount,
+      maximumPerProfile: XAUUSD_PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile
+    },
     { code: "REPLAY_EXCLUDED_FROM_PRODUCTION", status: "PASS", count: replayTradeCount },
     { code: "LIVE_PRODUCTION_TRADES", status: "INFO", count: liveTradeCount }
   ];

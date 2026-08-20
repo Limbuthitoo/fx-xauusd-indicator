@@ -192,6 +192,14 @@ export interface RetestEvaluation {
   reason: string;
 }
 
+export interface BreakoutRetestLifecycleEvaluation {
+  rangeState: RangeState;
+  breakout: BreakoutEvaluation | null;
+  breakoutCandle: Candle | null;
+  falseBreakout: FalseBreakoutEvaluation | null;
+  retest: RetestEvaluation | null;
+}
+
 export interface RangeRelationship {
   parentRangeId: string;
   childRangeId: string;
@@ -254,7 +262,7 @@ export const RANGE_FEATURE_FLAGS = {
   genericRangeEngine: true,
   maxOptionsOrbDetector: true,
   horizontalRangeDetector: true,
-  horizontalRangeSignalMode: "OBSERVATION_ONLY" as RangeSignalMode,
+  horizontalRangeSignalMode: "ACTIVE_SIGNAL" as RangeSignalMode,
   sharedBreakoutEngineForOrb: false,
   rangeConflictResolver: true,
   compositeRanges: true
@@ -347,7 +355,8 @@ export class HorizontalRangeDetector implements RangeDetector {
 
   detect(context: RangeDetectionContext): RangeDetectionResult {
     if (!this.config.enabled) return emptyResult(this.code, "NONE", "Horizontal range detector is disabled.");
-    const candles = context.candles5m.slice(-this.config.maximumRangeCandles);
+    const historyCandles = this.config.maximumRangeCandles + this.config.expireAfterCandles;
+    const candles = context.candles5m.slice(-historyCandles);
     const best = this.bestCandidate(context, candles);
     if (!best) return rejectedHorizontalStructureResult(this.code, context, candles, this.config);
     return {
@@ -372,16 +381,20 @@ export class HorizontalRangeDetector implements RangeDetector {
   }
 
   private bestCandidate(context: RangeDetectionContext, candles: Candle[]) {
-    let best: TradingRange | null = null;
-    for (let size = this.config.minimumRangeCandles; size <= Math.min(this.config.maximumRangeCandles, candles.length); size += 1) {
-      const window = candles.slice(-size);
-      const candidate = this.candidate(context, window);
-      if (!candidate) continue;
-      if (!best || Number(candidate.qualityScore ?? 0) > Number(best.qualityScore ?? 0) || (candidate.qualityScore === best.qualityScore && size > best.sourceEvidence.candleIds.length)) {
-        best = candidate;
+    const earliestEnd = Math.max(this.config.minimumRangeCandles, candles.length - this.config.expireAfterCandles);
+    for (let end = candles.length; end >= earliestEnd; end -= 1) {
+      let bestAtEnd: TradingRange | null = null;
+      for (let size = this.config.minimumRangeCandles; size <= Math.min(this.config.maximumRangeCandles, end); size += 1) {
+        const window = candles.slice(end - size, end);
+        const candidate = this.candidate(context, window);
+        if (!candidate) continue;
+        if (!bestAtEnd || Number(candidate.qualityScore ?? 0) > Number(bestAtEnd.qualityScore ?? 0) || (candidate.qualityScore === bestAtEnd.qualityScore && size > bestAtEnd.sourceEvidence.candleIds.length)) {
+          bestAtEnd = candidate;
+        }
       }
+      if (bestAtEnd) return bestAtEnd;
     }
-    return best;
+    return null;
   }
 
   private candidate(context: RangeDetectionContext, candles: Candle[]) {
@@ -440,6 +453,7 @@ export class HorizontalRangeDetector implements RangeDetector {
     const qualityScore = horizontalQualityScore({ upperTouchCount, lowerTouchCount, containmentRatio, efficiencyRatio, midpointCrossCount, balancedMidpointRatio, upperSlopeAtrPerBar, lowerSlopeAtrPerBar, widthAtr, candleCount: candles.length, config: this.config });
     validationRules.push(rule("HORIZONTAL_QUALITY_SCORE", "Horizontal range quality score", qualityScore >= this.config.minimumQualityScore ? "PASS" : "FAIL", true, qualityScore, this.config.minimumQualityScore));
     if (validationRules.some((item) => item.status !== "PASS")) return null;
+    const formationEndedAt = candles.at(-1)!.timestampUtc;
     return tradingRangeFromBounds({
       context,
       source: "HORIZONTAL_CONSOLIDATION",
@@ -448,8 +462,8 @@ export class HorizontalRangeDetector implements RangeDetector {
       high,
       low,
       startedAt: candles[0].timestampUtc,
-      detectedAt: context.now,
-      lockedAt: this.config.lockAfterValidation ? context.now : undefined,
+      detectedAt: formationEndedAt,
+      lockedAt: this.config.lockAfterValidation ? formationEndedAt : undefined,
       widthAtr,
       qualityScore,
       evidence: {
@@ -682,6 +696,80 @@ export class RetestEngine {
       reason: confirmed ? "Retest confirmed by rejection candle." : "Retest touched zone but confirmation candle is incomplete."
     } satisfies RetestEvaluation;
   }
+}
+
+export function evaluateBreakoutRetestLifecycle(
+  range: TradingRange,
+  candles: Candle[],
+  profile: RangeBreakoutProfile = RANGE_BREAKOUT_PROFILES[range.source]
+): BreakoutRetestLifecycleEvaluation {
+  const formationEndedAt = range.sourceEvidence.endCandleId ?? range.lockedAt ?? range.detectedAt;
+  const formationEnd = new Date(formationEndedAt).getTime();
+  const postFormation = candles.filter((candle) => new Date(candle.timestampUtc).getTime() > formationEnd);
+  const current = postFormation.at(-1) ?? null;
+  if (!current) {
+    return { rangeState: "LOCKED", breakout: null, breakoutCandle: null, falseBreakout: null, retest: null };
+  }
+
+  let confirmedBreakout: BreakoutEvaluation | null = null;
+  let breakoutCandle: Candle | null = null;
+  for (const candle of postFormation) {
+    const evaluation = evaluateRangeBreakout(range, candle, profile);
+    if (!evaluation.confirmed || !evaluation.direction) continue;
+    confirmedBreakout = evaluation;
+    breakoutCandle = candle;
+    break;
+  }
+
+  const currentIndex = postFormation.length - 1;
+  const historyBeforeCurrent = postFormation.slice(0, currentIndex);
+  if (!confirmedBreakout || !breakoutCandle || !confirmedBreakout.direction) {
+    const breakout = evaluateRangeBreakout(range, current, profile);
+    const falseBreakout = new FalseBreakoutEngine().evaluate(range, current, historyBeforeCurrent);
+    return {
+      rangeState: falseBreakout.falseBreakout
+        ? "FALSE_BREAKOUT"
+        : breakout.status === "WICK_ONLY"
+          ? "BREAKOUT_CANDIDATE"
+          : "LOCKED",
+      breakout,
+      breakoutCandle: breakout.confirmed ? current : null,
+      falseBreakout,
+      retest: breakout.confirmed
+        ? { status: "WAITING", confirmed: false, invalidated: false, inZone: false, deepInside: false, reason: "Breakout confirmed; retest must occur on a later completed candle." }
+        : null
+    };
+  }
+
+  const breakoutIndex = postFormation.findIndex((candle) => candle.timestampUtc === breakoutCandle!.timestampUtc);
+  if (breakoutIndex === currentIndex) {
+    return {
+      rangeState: "BREAKOUT_CONFIRMED",
+      breakout: confirmedBreakout,
+      breakoutCandle,
+      falseBreakout: new FalseBreakoutEngine().evaluate(range, current, []),
+      retest: { status: "WAITING", confirmed: false, invalidated: false, inZone: false, deepInside: false, reason: "Breakout confirmed; retest must occur on a later completed candle." }
+    };
+  }
+
+  const postBreakoutHistory = postFormation.slice(breakoutIndex, currentIndex);
+  const falseBreakout = new FalseBreakoutEngine().evaluate(range, current, postBreakoutHistory);
+  const retest = new RetestEngine().evaluate(range, confirmedBreakout.direction, current, profile, postBreakoutHistory);
+  return {
+    rangeState: falseBreakout.falseBreakout
+      ? "FALSE_BREAKOUT"
+      : retest.status === "CONFIRMED"
+        ? "RETEST_CONFIRMED"
+        : retest.status === "INVALIDATED"
+          ? "INVALIDATED"
+          : retest.status === "EXPIRED"
+            ? "EXPIRED"
+            : "WAITING_FOR_RETEST",
+    breakout: confirmedBreakout,
+    breakoutCandle,
+    falseBreakout,
+    retest
+  };
 }
 
 export class RangeConflictResolver {

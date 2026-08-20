@@ -8087,10 +8087,10 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
     {
       rule_code: "FAVORABILITY_SCORE",
       name: "Prediction confidence",
-      status: setup?.favorability_score == null ? "WAITING" : Number(setup.favorability_score) >= 70 ? "PASS" : "FAIL",
+      status: setup?.favorability_score == null ? "WAITING" : Number(setup.favorability_score) >= 80 ? "PASS" : "FAIL",
       blocking: false,
       required_for_entry: false,
-      explanation: setup?.favorability_score == null ? "Waiting for confidence scoring." : `Score is ${setup.favorability_score}/100. It ranks predictions and setup quality; valid ORB or horizontal-range strategy and risk rules independently decide BUY/SELL readiness.`
+      explanation: setup?.favorability_score == null ? "Waiting for confidence scoring." : `Score is ${setup.favorability_score}/100. Production BUY/SELL promotion requires 80/100 plus valid strategy geometry and risk permission.`
     },
     {
       rule_code: "HORIZONTAL_RANGE_OBSERVATION",
@@ -8106,7 +8106,7 @@ function maxOrbChecklistRows(evaluations: any[], setup?: any, session?: any) {
     checklistRow(byCode, "HORIZONTAL_BREAKOUT_CONFIRMED", "Horizontal breakout confirmed", horizontal?.breakout?.confirmed ? "PASS" : horizontal?.range ? "WAITING" : "NOT_APPLICABLE", horizontal?.breakout?.reason ?? "Waiting for a completed candle to close outside the horizontal range."),
     checklistRow(byCode, "HORIZONTAL_RETEST_CONFIRMED", "Horizontal retest confirmed", horizontal?.retest?.confirmed ? "PASS" : horizontal?.breakout?.confirmed ? "WAITING" : "NOT_APPLICABLE", horizontal?.retest?.reason ?? "Waiting for a clean retest/rejection after breakout."),
     checklistRow(byCode, "HORIZONTAL_CONFLICT_CLEAR", "Horizontal conflict clear", horizontal?.conflict?.status === "CONFLICT" ? "FAIL" : horizontal?.range ? "PASS" : "NOT_APPLICABLE", horizontal?.conflict?.reason ?? "No opposite active range conflict detected."),
-    checklistRow(byCode, "HORIZONTAL_QUALITY_SCORE", "Horizontal quality score", horizontal?.range?.qualityScore == null ? "NOT_APPLICABLE" : Number(horizontal.range.qualityScore) >= 60 ? "PASS" : "FAIL", horizontal?.range?.qualityScore == null ? "Waiting for horizontal quality score." : `Horizontal range quality is ${horizontal.range.qualityScore}.`),
+    checklistRow(byCode, "HORIZONTAL_QUALITY_SCORE", "Horizontal quality score", horizontal?.range?.qualityScore == null ? "NOT_APPLICABLE" : Number(horizontal.range.qualityScore) >= 70 ? "PASS" : "FAIL", horizontal?.range?.qualityScore == null ? "Waiting for horizontal quality score." : `Horizontal range quality is ${horizontal.range.qualityScore}/100. Required: 70 or higher.`),
     {
       rule_code: "STRICT_CHECKLIST",
       name: "Automation profile gate",

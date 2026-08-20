@@ -352,6 +352,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const paperTrading = objectValue(base.paperTrading);
   const rangeEngine = objectValue(base.rangeEngine);
   const horizontalRange = objectValue(rangeEngine.horizontalRange);
+  const horizontalSignalMode = String(horizontalRange.signalMode ?? "ACTIVE_SIGNAL") === "DISABLED" ? "DISABLED" : "ACTIVE_SIGNAL";
   const chart = objectValue(base.chart);
 
   return {
@@ -415,7 +416,8 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       horizontalRange: {
         ...horizontalRange,
         enabled: booleanValue(horizontalRange.enabled, false),
-        observationOnly: true,
+        observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL",
+        signalMode: horizontalSignalMode,
         timeframe: ["5min", "15min"].includes(String(horizontalRange.timeframe)) ? String(horizontalRange.timeframe) : "5min",
         minimumRangeCandles: positiveInteger(horizontalRange.minimumRangeCandles, 12, 240),
         maximumRangeCandles: positiveInteger(horizontalRange.maximumRangeCandles, 60, 500),

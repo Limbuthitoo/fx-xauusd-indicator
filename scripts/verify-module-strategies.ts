@@ -5,13 +5,15 @@ import {
   FalseBreakoutEngine,
   HorizontalRangeDetector,
   MaxOptionsOrbRangeDetector,
+  RANGE_BREAKOUT_PROFILES,
   RangeConflictResolver,
   RangeDecisionEngine,
   RetestEngine,
+  evaluateBreakoutRetestLifecycle,
   evaluateRangeBreakout
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { buildModule1RangeEngineMetadata, calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
@@ -219,6 +221,68 @@ const expiredDecision = new RangeDecisionEngine().decide({ range: horizontal.ran
 assert.equal(expiredDecision.status, "EXPIRED", "Expired horizontal retest must stop the MVP entry path");
 const horizontalDecision = new RangeDecisionEngine().decide({ range: horizontal.range!, breakout: horizontalBreakout, retest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" });
 assert.equal(horizontalDecision.status, "BUY_READY", "Active horizontal range breakout/retest must be able to trigger the Module 1 MVP chain");
+const lifecycleBreakout = candle("2026-08-10T10:00:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5);
+const lifecycleRetest = candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.05, horizontal.range!.high + 0.7, horizontal.range!.high - 0.15, horizontal.range!.high + 0.55);
+const recoveredHorizontal = new HorizontalRangeDetector({ ...horizontalConfig, observationOnly: false }).detect({
+  symbol: "XAUUSD",
+  now: lifecycleRetest.timestampUtc,
+  timezone: "America/New_York",
+  candles5m: [...horizontalCandles, lifecycleBreakout, lifecycleRetest],
+  activeRanges: [],
+  strategyVersion: "horizontal-live-lifecycle"
+});
+assert.equal(recoveredHorizontal.status, "VALID", "Horizontal detector must recover a locked range after its breakout candle");
+assert.equal(recoveredHorizontal.range?.sourceEvidence.endCandleId, horizontalCandles.at(-1)!.timestampUtc, "Recovered range formation must end before the breakout candle");
+const recoveredLifecycle = evaluateBreakoutRetestLifecycle(
+  recoveredHorizontal.range!,
+  [...horizontalCandles, lifecycleBreakout, lifecycleRetest],
+  RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION
+);
+assert.equal(recoveredLifecycle.breakout?.status, "CONFIRMED", "Recovered horizontal lifecycle must retain the original completed-candle breakout");
+assert.equal(recoveredLifecycle.breakoutCandle?.timestampUtc, lifecycleBreakout.timestampUtc, "Horizontal lifecycle must preserve the original breakout timestamp");
+assert.equal(recoveredLifecycle.retest?.status, "CONFIRMED", "A later boundary rejection candle must confirm the horizontal retest");
+assert.equal(recoveredLifecycle.rangeState, "RETEST_CONFIRMED", "Confirmed breakout and retest must advance the horizontal range lifecycle");
+assert.equal(
+  new RangeDecisionEngine().decide({ range: { ...recoveredHorizontal.range!, state: recoveredLifecycle.rangeState }, breakout: recoveredLifecycle.breakout, falseBreakout: recoveredLifecycle.falseBreakout, retest: recoveredLifecycle.retest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" }).status,
+  "BUY_READY",
+  "Recovered full-session horizontal lifecycle must produce BUY_READY"
+);
+const module1HorizontalRuntime = buildModule1RangeEngineMetadata(
+  {
+    id: "module1-horizontal-session",
+    symbol: "XAUUSD",
+    strategy_version_id: "module1-horizontal-version",
+    session_preset: "NEW_YORK_ORB",
+    session_start_at: horizontalCandles[0].timestampUtc,
+    opening_range_end_at: horizontalCandles[2].timestampUtc,
+    signal_window_end_at: "2026-08-10T20:00:00Z",
+    data_status: "READY"
+  },
+  {
+    high: module1Range.high,
+    low: module1Range.low,
+    midpoint: module1Range.midpoint,
+    width: module1Range.width,
+    module1RangeSessionPreset: "NEW_YORK_ORB",
+    module1RangeSessionStartAt: horizontalCandles[0].timestampUtc,
+    module1RangeOpeningRangeEndAt: horizontalCandles[2].timestampUtc
+  },
+  lifecycleRetest,
+  [...horizontalCandles, lifecycleBreakout],
+  { timezone: "America/New_York", rangeEngine: { horizontalRange: { ...horizontalConfig, observationOnly: false, signalMode: "ACTIVE_SIGNAL" } } }
+);
+assert.equal(module1HorizontalRuntime.horizontal.signalMode, "ACTIVE_SIGNAL", "Module 1 runtime must expose the horizontal profile as active");
+assert.equal(module1HorizontalRuntime.horizontal.decision.status, "BUY_READY", "Module 1 worker wiring must promote a recovered horizontal breakout/retest");
+const sellBreakout = candle("2026-08-10T10:00:00Z", horizontal.range!.low + 0.1, horizontal.range!.low + 0.2, horizontal.range!.low - 0.8, horizontal.range!.low - 0.5);
+const sellRetest = candle("2026-08-10T10:05:00Z", horizontal.range!.low + 0.05, horizontal.range!.low + 0.15, horizontal.range!.low - 0.7, horizontal.range!.low - 0.55);
+const sellLifecycle = evaluateBreakoutRetestLifecycle(horizontal.range!, [...horizontalCandles, sellBreakout, sellRetest], RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION);
+assert.equal(sellLifecycle.breakout?.direction, "SHORT", "Horizontal lifecycle must support downside breakouts");
+assert.equal(sellLifecycle.retest?.status, "CONFIRMED", "A later bearish rejection candle must confirm the downside retest");
+assert.equal(
+  new RangeDecisionEngine().decide({ range: { ...horizontal.range!, state: sellLifecycle.rangeState }, breakout: sellLifecycle.breakout, falseBreakout: sellLifecycle.falseBreakout, retest: sellLifecycle.retest, dataHealthy: true, riskPermitted: true, signalMode: "ACTIVE_SIGNAL" }).status,
+  "SELL_READY",
+  "Recovered full-session horizontal lifecycle must produce SELL_READY"
+);
 const conflict = new RangeConflictResolver().resolve([orbRangeResult.range!, horizontal.range!], "LONG");
 assert.notEqual(conflict.status, "CONFLICT", "Aligned/same-direction range evidence must not block ORB");
 const oppositeHorizontal = { ...horizontal.range!, id: `${horizontal.range!.id}:opposite`, breakoutDirection: "SHORT" as const };

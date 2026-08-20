@@ -255,9 +255,9 @@ function isModule1HorizontalRangeActive(setup: TwelveDataChartProps["setup"]) {
   const horizontal = setup?.scenario_flags?.horizontalRangeObservation ?? setup?.scenario_flags?.genericRangeEngine?.horizontal;
   if (horizontal?.enabled !== true || !horizontal?.range) return false;
   const status = String(horizontal.status ?? horizontal.range?.state ?? "").toUpperCase();
-  const decisionStatus = String(setup?.scenario_flags?.genericRangeEngine?.decision?.status ?? "").toUpperCase();
-  return ["VALID", "LOCKED", "BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(status)
-    || ["BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(decisionStatus);
+  const decisionStatus = String(horizontal?.decision?.status ?? "").toUpperCase();
+  return ["VALID", "LOCKED", "BREAKOUT_CANDIDATE", "BREAKOUT_CONFIRMED", "WAITING_FOR_RETEST", "RETEST_CONFIRMED", "ENTRY_READY", "BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(status)
+    || ["POTENTIAL_BUY", "POTENTIAL_SELL", "WAITING_FOR_RETEST", "BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(decisionStatus);
 }
 
 const CHART_BAR_SPACING = 2.5;
@@ -1182,6 +1182,7 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
     const horizontal = flags.horizontalRangeObservation ?? flags.genericRangeEngine?.horizontal;
     const range = horizontal?.range;
     const breakout = horizontal?.breakout;
+    const breakoutCandle = horizontal?.lifecycle?.breakoutCandle;
     const retest = horizontal?.retest;
     const decision = horizontal?.decision;
     if (range?.lockedAt ?? range?.detectedAt) {
@@ -1193,9 +1194,9 @@ function moduleEvidenceMarkers(setup: TwelveDataChartProps["setup"]): SeriesMark
         text: "M1 Range locked"
       });
     }
-    if (breakout?.status === "CONFIRMED" && setup.detected_at) {
+    if (breakout?.status === "CONFIRMED" && (breakoutCandle?.timestampUtc || setup.detected_at)) {
       markers.push({
-        time: toChartTime(setup.detected_at),
+        time: toChartTime(breakoutCandle?.timestampUtc ?? setup.detected_at),
         position: isLong ? "belowBar" : "aboveBar",
         color: isLong ? "#16a46c" : "#e05252",
         shape: isLong ? "arrowUp" : "arrowDown",
