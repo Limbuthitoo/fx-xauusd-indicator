@@ -23,6 +23,13 @@ try {
   ))[0];
   add("Migration 087", Boolean(managementMigration), "Scale-out and breakeven management migration is recorded.", "Migration 087 is missing from schema_migrations.", managementMigration);
 
+  const excursionMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '088_signal_quality_v2_excursions.sql'`
+  ))[0];
+  add("Migration 088", Boolean(excursionMigration), "Signal quality V2 excursion migration is recorded.", "Migration 088 is missing from schema_migrations.", excursionMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -43,6 +50,8 @@ try {
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'realized_r') AS locked_r,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'remaining_fraction') AS remaining_fraction,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'breakeven_activated_at') AS breakeven_activation,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'max_favorable_excursion_r') AS mfe_r,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'max_adverse_excursion_r') AS mae_r,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'position_fraction') AS target_fraction,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'realized_r') AS target_realized_r,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
@@ -126,6 +135,15 @@ try {
      LIMIT 50`
   );
   add("Structural-risk snapshots", invalidSnapshots.length === 0, "Every target lifecycle preserves a valid structural SL and initial R distance.", `${invalidSnapshots.length} sampled lifecycle trade(s) have an invalid risk snapshot.`, invalidSnapshots);
+
+  const invalidExcursions = await rows(
+    `SELECT id, max_favorable_excursion_r, max_adverse_excursion_r, excursion_updated_at
+     FROM trades
+     WHERE max_favorable_excursion_r < 0 OR max_adverse_excursion_r < 0
+        OR (excursion_updated_at IS NOT NULL AND (max_favorable_price IS NULL OR max_adverse_price IS NULL))
+     LIMIT 50`
+  );
+  add("Excursion integrity", invalidExcursions.length === 0, "MFE and MAE are non-negative and retain their observed prices.", `${invalidExcursions.length} trade excursion record(s) are invalid.`, invalidExcursions);
 
   const invalidTargetState = await rows(
     `SELECT trade_id, target_number, status, hit_at, hit_price, position_fraction, risk_multiple, realized_r

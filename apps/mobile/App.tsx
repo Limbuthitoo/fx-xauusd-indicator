@@ -234,6 +234,8 @@ type JournalTrade = {
   realized_r?: string | number | null;
   remaining_fraction?: string | number | null;
   breakeven_activated_at?: string | null;
+  max_favorable_excursion_r?: string | number | null;
+  max_adverse_excursion_r?: string | number | null;
   reward_to_risk?: string | number | null;
   opened_at?: string | null;
   closed_at?: string | null;
@@ -1659,6 +1661,7 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
       <View style={styles.tradeQualityRow}>
         <Text style={styles.tradeQualityText}>{tracking ? "PAPER ACTIVE" : horizon === "long" ? "FULL CHECKLIST" : "ENTRY READY"}</Text>
         <Text style={styles.tradeQualityText}>CONFIDENCE {setupScoreLabel(setup)}</Text>
+        {setup.scenario_flags?.signalExecutionPolicy?.executionScore != null ? <Text style={styles.tradeQualityText}>ENTRY {formatR(setup.scenario_flags.signalExecutionPolicy.executionScore)}/100</Text> : null}
         <Text style={styles.tradeQualityText}>RR {formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)}</Text>
         <Text style={styles.tradeQualityText}>AGE {formatSignalAge(trade.opened_at ?? setup.detected_at)}</Text>
       </View>
@@ -1737,6 +1740,7 @@ function BuySellSetupDetail({
           )}
           <Metric label="RR" value={formatDetailValue(trade.reward_to_risk ?? setup.reward_to_risk)} />
           <Metric label="Setup Score" value={setupScoreLabel(setup)} />
+          <Metric label="Entry Quality" value={setup.scenario_flags?.signalExecutionPolicy?.executionScore == null ? "--" : `${formatR(setup.scenario_flags.signalExecutionPolicy.executionScore)}/100`} />
           <Metric label="Grade" value={formatDetailValue(setup.trade_grade ?? setup.favorability_grade)} />
           <Metric label="Paper" value={trade.outcome ?? "READY"} />
         </View>
@@ -1885,6 +1889,9 @@ function PaperTradingScreen({ dashboard, journalByModule }: { dashboard: Dashboa
               <Metric label="TP1 Reach" value={formatPercent(targets.tp1ReachRate)} />
               <Metric label="TP2 Reach" value={formatPercent(targets.tp2ReachRate)} />
               <Metric label="TP3 Reach" value={formatPercent(targets.tp3ReachRate)} />
+              <Metric label="BE Saves" value={formatPercent(targets.breakevenSaveRate)} />
+              <Metric label="Avg MFE" value={`${formatR(targets.averageMfeR)}R`} />
+              <Metric label="Avg MAE" value={`${formatR(targets.averageMaeR)}R`} />
               <Metric label="Expectancy" value={`${formatR(targets.expectancyR)}R`} />
               <Metric label="Profit Factor" value={targets.profitFactor == null ? "--" : formatR(targets.profitFactor)} />
               <Metric label="Evidence" value={targets.evidence?.status ?? "EARLY"} />
@@ -1934,6 +1941,8 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
         <Metric label="Result" value={formatR(trade.result_r)} />
         <Metric label="Locked" value={`${formatR(trade.realized_r)}R`} />
         <Metric label="Runner" value={`${Math.round(Number(trade.remaining_fraction ?? 0) * 100)}%`} />
+        <Metric label="MFE" value={`${formatR(trade.max_favorable_excursion_r)}R`} />
+        <Metric label="MAE" value={`${formatR(trade.max_adverse_excursion_r)}R`} />
         <Metric label="RR" value={formatDetailValue(trade.reward_to_risk)} />
       </View>
       {Array.isArray(trade.targets) && trade.targets.length > 0 ? (

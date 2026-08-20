@@ -1715,6 +1715,8 @@ function signalSetupView(row: any, evaluations: any[]) {
       ]
     },
     signalFrequency: flags.signalFrequencyPolicy ?? null,
+    signalExecution: flags.signalExecutionPolicy ?? null,
+    signalCompetition: flags.signalCompetitionPolicy ?? null,
     checklistSummary: {
       mandatory: signalRuleSummary(mandatoryRules),
       variant: signalRuleSummary(variantRules),

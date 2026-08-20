@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import pg from "pg";
 import {
   evaluateSignalGeometryQuality,
+  signalsAreCorrelated,
   XAUUSD_PRODUCTION_SIGNAL_POLICY
 } from "../packages/risk-engine/src/index.js";
 
@@ -57,10 +58,14 @@ try {
   const governedRows = rows.filter((row) =>
     row.scenario_flags?.signalQualityPolicy != null
     && row.scenario_flags?.signalFrequencyPolicy != null
+    && row.scenario_flags?.signalExecutionPolicy != null
+    && row.scenario_flags?.signalCompetitionPolicy != null
   );
   const legacyRows = rows.filter((row) =>
     row.scenario_flags?.signalQualityPolicy == null
     || row.scenario_flags?.signalFrequencyPolicy == null
+    || row.scenario_flags?.signalExecutionPolicy == null
+    || row.scenario_flags?.signalCompetitionPolicy == null
   );
   const assessed = governedRows.map((row) => {
     const geometry = evaluateSignalGeometryQuality({
@@ -129,6 +134,29 @@ try {
     status: duplicateTheses.length === 0 ? "PASS" : "FAIL",
     detail: duplicateTheses.length === 0 ? "Every market thesis has one immutable promoted contract." : `${duplicateTheses.length} duplicate signal thesis/theses found.`,
     evidence: duplicateTheses.slice(0, 20)
+  });
+
+  const correlatedExposure = [...groupBy(assessed, (row) => `${row.tenant_id}:${dateOnly(row.session_date)}`).values()]
+    .flatMap((values) => values.flatMap((candidate, index) => values.slice(index + 1).flatMap((incumbent) => signalsAreCorrelated({
+      direction: String(candidate.direction),
+      entry: Number(candidate.planned_entry),
+      riskDistance: Math.abs(Number(candidate.planned_entry) - Number(candidate.planned_stop)),
+      signalAt: candidate.signal_at
+    }, {
+      direction: String(incumbent.direction),
+      entry: Number(incumbent.planned_entry),
+      riskDistance: Math.abs(Number(incumbent.planned_entry) - Number(incumbent.planned_stop)),
+      signalAt: incumbent.signal_at
+    }, XAUUSD_PRODUCTION_SIGNAL_POLICY.correlatedSignalWindowMinutes, XAUUSD_PRODUCTION_SIGNAL_POLICY.correlatedEntryDistanceR)
+      ? [{ firstPlan: candidate.plan_id, secondPlan: incumbent.plan_id, direction: candidate.direction }]
+      : [])));
+  checks.push({
+    name: "Correlated exposure arbitration",
+    status: correlatedExposure.length === 0 ? "PASS" : "FAIL",
+    detail: correlatedExposure.length === 0
+      ? "No policy-governed Module 1/2 contracts duplicate the same recent XAUUSD exposure."
+      : `${correlatedExposure.length} correlated promoted contract pair(s) bypassed first-qualified arbitration.`,
+    evidence: correlatedExposure.slice(0, 20)
   });
 
   const dailyGroups = groupBy(assessed, (row) => `${row.tenant_id}:${dateOnly(row.session_date)}`);

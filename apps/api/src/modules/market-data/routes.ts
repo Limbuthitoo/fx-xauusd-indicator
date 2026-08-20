@@ -11,7 +11,7 @@ import {
   RetestEngine,
   evaluateRangeBreakout
 } from "@orb-guide/range-engine";
-import { calculateRisk, evaluateSignalGeometryQuality, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
+import { calculateRisk, evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
 import type { Candle, RuleContext } from "@orb-guide/shared-types";
 import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
@@ -4011,6 +4011,123 @@ async function enforceProductionSignalQuality(setup: any) {
   return result;
 }
 
+async function enforceSignalExecutionQuality(setup: any, current: any) {
+  const result = evaluateSignalExecutionQuality({
+    direction: String(setup?.direction ?? ""),
+    entry: Number(setup?.entry_price),
+    stop: Number(setup?.stop_price),
+    currentPrice: Number(current?.close),
+    evidenceScore: Number(setup?.favorability_score),
+    maximumEntryChaseR: PRODUCTION_SIGNAL_POLICY.maximumEntryChaseR,
+    maximumEntryDriftR: PRODUCTION_SIGNAL_POLICY.maximumEntryDriftR
+  });
+  const policy = {
+    ...result,
+    riskDistance: Number(result.riskDistance.toFixed(5)),
+    favorableDriftR: Number.isFinite(result.favorableDriftR) ? Number(result.favorableDriftR.toFixed(4)) : null,
+    absoluteDriftR: Number.isFinite(result.absoluteDriftR) ? Number(result.absoluteDriftR.toFixed(4)) : null,
+    maximumEntryChaseR: PRODUCTION_SIGNAL_POLICY.maximumEntryChaseR,
+    maximumEntryDriftR: PRODUCTION_SIGNAL_POLICY.maximumEntryDriftR,
+    livePrice: Number(current?.close),
+    candleTimestamp: current?.timestamp_utc ?? current?.timestampUtc ?? null
+  };
+  setup.scenario_flags = { ...(setup.scenario_flags ?? {}), signalExecutionPolicy: policy };
+  const finalReason = policy.passed ? null : `Entry quality policy blocked this setup: ${policy.reasons.join(" ")}`;
+  await query(
+    `UPDATE setup_candidates
+     SET status = CASE WHEN $3::boolean THEN status ELSE 'BLOCKED' END,
+         final_reason = CASE WHEN $3::boolean THEN final_reason ELSE $2 END,
+         scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalExecutionPolicy', $4::jsonb)
+     WHERE id = $1`,
+    [setup.id, finalReason, policy.passed, JSON.stringify(policy)]
+  );
+  if (!policy.passed) {
+    await recordOperationalEvent({
+      severity: "INFO",
+      category: "WORKER",
+      eventType: "SIGNAL_ENTRY_QUALITY_BLOCKED",
+      source: "market-data-worker",
+      tenantId: setup.tenant_id,
+      message: finalReason ?? "Entry quality policy blocked this setup.",
+      metadata: { moduleCode: setup.module_code, setupId: setup.id, signalExecution: policy }
+    });
+  }
+  return policy;
+}
+
+async function productionSignalCompetitionGate(session: any, moduleCode: string, setup: any) {
+  const candidates = await query(
+    `SELECT tp.id AS plan_id, tp.planned_entry, tp.planned_stop,
+            COALESCE(tp.promoted_at, tp.created_at) AS signal_at,
+            sc.id AS setup_id, sc.module_code, sc.direction, sc.scenario,
+            sc.favorability_score, sc.scenario_flags, t.id AS trade_id, t.outcome
+     FROM trade_plans tp
+     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     JOIN trading_sessions ts ON ts.id = sc.session_id
+     LEFT JOIN trades t ON t.trade_plan_id = tp.id
+     WHERE sc.tenant_id = $1
+       AND ts.session_date = $2::date
+       AND sc.id <> $3
+       AND tp.signal_thesis_key IS NOT NULL
+       AND sc.scenario <> 'QA_TEST_SIGNAL'
+       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+     ORDER BY COALESCE(tp.promoted_at, tp.created_at) ASC`,
+    [session.tenant_id, session.session_date ?? newYorkDate(), setup.id]
+  );
+  const candidate = {
+    direction: String(setup.direction ?? ""),
+    entry: Number(setup.entry_price),
+    riskDistance: Math.abs(Number(setup.entry_price) - Number(setup.stop_price)),
+    signalAt: setup.detected_at ?? new Date()
+  };
+  const incumbent = (candidates.rows as any[]).find((row) => signalsAreCorrelated(candidate, {
+    direction: String(row.direction ?? ""),
+    entry: Number(row.planned_entry),
+    riskDistance: Math.abs(Number(row.planned_entry) - Number(row.planned_stop)),
+    signalAt: row.signal_at
+  }, PRODUCTION_SIGNAL_POLICY.correlatedSignalWindowMinutes, PRODUCTION_SIGNAL_POLICY.correlatedEntryDistanceR));
+  const result = {
+    passed: !incumbent,
+    arbitration: "FIRST_QUALIFIED_CONTRACT_WINS",
+    candidateScore: Number(setup.scenario_flags?.signalExecutionPolicy?.executionScore ?? setup.favorability_score ?? 0),
+    incumbent: incumbent ? {
+      setupId: incumbent.setup_id,
+      planId: incumbent.plan_id,
+      tradeId: incumbent.trade_id ?? null,
+      moduleCode: incumbent.module_code,
+      strategyProfile: releaseGateProfileCode(incumbent.module_code, incumbent) ?? incumbent.scenario,
+      evidenceScore: Number(incumbent.favorability_score ?? 0),
+      signalAt: incumbent.signal_at,
+      outcome: incumbent.outcome ?? null
+    } : null,
+    windowMinutes: PRODUCTION_SIGNAL_POLICY.correlatedSignalWindowMinutes,
+    maximumEntryDistanceR: PRODUCTION_SIGNAL_POLICY.correlatedEntryDistanceR,
+    reasons: incumbent ? ["A recently promoted same-direction XAUUSD contract already represents this exposure."] : []
+  };
+  setup.scenario_flags = { ...(setup.scenario_flags ?? {}), signalCompetitionPolicy: result };
+  const reason = result.passed ? null : `Signal competition policy blocked this setup: ${result.reasons.join(" ")}`;
+  await query(
+    `UPDATE setup_candidates
+     SET status = CASE WHEN $3::boolean THEN status ELSE 'BLOCKED' END,
+         final_reason = CASE WHEN $3::boolean THEN final_reason ELSE $2 END,
+         scenario_flags = COALESCE(scenario_flags, '{}'::jsonb) || jsonb_build_object('signalCompetitionPolicy', $4::jsonb)
+     WHERE id = $1`,
+    [setup.id, reason, result.passed, JSON.stringify(result)]
+  );
+  if (!result.passed) {
+    await recordOperationalEvent({
+      severity: "INFO",
+      category: "WORKER",
+      eventType: "CORRELATED_SIGNAL_SUPPRESSED",
+      source: "market-data-worker",
+      tenantId: session.tenant_id,
+      message: reason ?? "Correlated signal suppressed.",
+      metadata: { moduleCode, setupId: setup.id, signalCompetition: result }
+    });
+  }
+  return result;
+}
+
 async function productionSignalFrequencyGate(session: any, moduleCode: string, setup: any, signalThesisKey: string) {
   const existing = await query(
     `SELECT id
@@ -4194,6 +4311,10 @@ async function attemptProductionPaperTrade({
   if (!signalQuality.passed) {
     return { skipped: true, reason: "SIGNAL_QUALITY_POLICY_BLOCKED", signalQuality };
   }
+  const executionQuality = await enforceSignalExecutionQuality(setup, current);
+  if (!executionQuality.passed) {
+    return { skipped: true, reason: "SIGNAL_ENTRY_QUALITY_BLOCKED", executionQuality };
+  }
   const productionReady = isProductionReadySetup(setup, effectiveDecision, effectiveRisk);
   const releaseGate = await liveStrategyReleaseGate(moduleCode, setup);
   if (releaseGate.blocked) {
@@ -4241,6 +4362,10 @@ async function attemptProductionPaperTrade({
   let signalPlan: any;
   try {
     await promotionLock.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [promotionLockKey]);
+    const competitionGate = await productionSignalCompetitionGate(session, moduleCode, setup);
+    if (!competitionGate.passed) {
+      return { skipped: true, reason: "CORRELATED_SIGNAL_SUPPRESSED", competitionGate };
+    }
     const frequencyGate = await productionSignalFrequencyGate(session, moduleCode, setup, signalThesisKey);
     if (!frequencyGate.passed) {
       return { skipped: true, reason: "SIGNAL_FREQUENCY_POLICY_BLOCKED", frequencyGate };

@@ -5,14 +5,16 @@ export type TargetPerformancePeriod = "week" | "month";
 type PerformanceRow = {
   trade_id: string; profile_code: string | null; profile_name: string | null; outcome: string | null;
   result_r: number | string | null; holding_seconds: number | string | null; target_count: number | string;
+  locked_r: number | string | null; mfe_r: number | string | null; mae_r: number | string | null;
   tp1_hit: boolean; tp2_hit: boolean; tp3_hit: boolean; sl_hit: boolean;
-  stopped_after_tp1: boolean; stopped_after_tp2: boolean;
+  stopped_after_tp1: boolean; stopped_after_tp2: boolean; breakeven_protected: boolean; breakeven_runner_saved: boolean;
 };
 
 export async function buildTargetPerformanceReport(tenantId: string, moduleCode: string, period: TargetPerformancePeriod) {
   const result = await query(
-    `SELECT trade_id, profile_code, profile_name, outcome, result_r, holding_seconds,
-            target_count, tp1_hit, tp2_hit, tp3_hit, sl_hit, stopped_after_tp1, stopped_after_tp2
+    `SELECT trade_id, profile_code, profile_name, outcome, result_r, locked_r, mfe_r, mae_r, holding_seconds,
+            target_count, tp1_hit, tp2_hit, tp3_hit, sl_hit, stopped_after_tp1, stopped_after_tp2,
+            breakeven_protected, breakeven_runner_saved
      FROM paper_trade_target_performance
      WHERE tenant_id = $1 AND module_code = $2 AND is_qa = false
        AND opened_at >= date_trunc($3, now()) ORDER BY opened_at ASC`,
@@ -35,6 +37,9 @@ export function summarizeTargetPerformance(rows: PerformanceRow[]) {
   const grossProfit = results.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
   const grossLoss = Math.abs(results.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
   const holdSeconds = decided.map((row) => num(row.holding_seconds)).filter((value) => Number.isFinite(value) && value >= 0);
+  const excursions = rows.filter((row) => Number.isFinite(Number(row.mfe_r)) && Number.isFinite(Number(row.mae_r)));
+  const protectedTrades = rows.filter((row) => row.breakeven_protected);
+  const protectedRunnersSaved = protectedTrades.filter((row) => row.breakeven_runner_saved).length;
   return {
     trades: rows.length, decided: decided.length, active: rows.filter((row) => row.outcome === "ACTIVE").length,
     wins, losses, winRate: ratio(wins, decided.length), tp1Hits, tp2Hits, tp3Hits,
@@ -42,6 +47,12 @@ export function summarizeTargetPerformance(rows: PerformanceRow[]) {
     tp1ReachRate: ratio(tp1Hits, rows.length), tp2ReachRate: ratio(tp2Hits, rows.length), tp3ReachRate: ratio(tp3Hits, rows.length),
     tp1ToTp2: ratio(tp2Hits, tp1Hits), tp2ToTp3: ratio(tp3Hits, tp2Hits),
     stopAfterTp1, stopAfterTp2, stopAfterTp1Rate: ratio(stopAfterTp1, tp1Hits), stopAfterTp2Rate: ratio(stopAfterTp2, tp2Hits),
+    breakevenProtected: protectedTrades.length, protectedRunnersSaved,
+    breakevenProtectionRate: ratio(protectedTrades.length, rows.length),
+    breakevenSaveRate: ratio(protectedRunnersSaved, protectedTrades.length),
+    averageLockedR: average(protectedTrades.map((row) => num(row.locked_r))),
+    averageMfeR: average(excursions.map((row) => num(row.mfe_r))),
+    averageMaeR: average(excursions.map((row) => num(row.mae_r))),
     expectancyR: average(results), profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss) : grossProfit > 0 ? null : 0,
     totalR: round(results.reduce((sum, value) => sum + value, 0)), averageHoldSeconds: average(holdSeconds),
     targetCoverageComplete: rows.length > 0 && rows.every((row) => num(row.target_count) === 3), evidence: evidenceGrade(decided.length)

@@ -77,6 +77,7 @@ export function paperTargetPayload(targets: PaperTarget[]) {
 }
 
 export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
+  await updatePaperTradeExcursion(trade, candle);
   const targets = await ensurePaperTradeTargets(String(trade.id));
   const currentState = await syncPaperTradeManagement(String(trade.id));
   const managedTrade = { ...trade, ...currentState };
@@ -184,6 +185,36 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
     lockedR: Number(refreshedTrade.realized_r ?? 0),
     remainingFraction: Number(refreshedTrade.remaining_fraction ?? 1)
   };
+}
+
+async function updatePaperTradeExcursion(trade: any, candle: any) {
+  const entry = Number(trade.actual_entry);
+  const stop = Number(trade.structural_stop ?? trade.actual_stop);
+  const high = Number(candle.high);
+  const low = Number(candle.low);
+  const riskDistance = Number(trade.initial_risk_distance ?? Math.abs(entry - stop));
+  if (![entry, stop, high, low, riskDistance].every(Number.isFinite) || riskDistance <= 0) return;
+  const short = String(trade.direction).toUpperCase() === "SHORT";
+  const favorablePrice = short ? low : high;
+  const adversePrice = short ? high : low;
+  const favorableR = Math.max(0, (short ? entry - favorablePrice : favorablePrice - entry) / riskDistance);
+  const adverseR = Math.max(0, (short ? adversePrice - entry : entry - adversePrice) / riskDistance);
+  await query(
+    `UPDATE trades SET
+       max_favorable_price = CASE
+         WHEN max_favorable_price IS NULL THEN $2
+         WHEN $6::boolean THEN LEAST(max_favorable_price, $2)
+         ELSE GREATEST(max_favorable_price, $2) END,
+       max_adverse_price = CASE
+         WHEN max_adverse_price IS NULL THEN $3
+         WHEN $6::boolean THEN GREATEST(max_adverse_price, $3)
+         ELSE LEAST(max_adverse_price, $3) END,
+       max_favorable_excursion_r = GREATEST(max_favorable_excursion_r, $4),
+       max_adverse_excursion_r = GREATEST(max_adverse_excursion_r, $5),
+       excursion_updated_at = $7
+     WHERE id = $1`,
+    [trade.id, favorablePrice, adversePrice, favorableR, adverseR, short, candle.timestamp_utc ?? candle.timestampUtc ?? new Date().toISOString()]
+  );
 }
 
 export async function paperTradeSettlement(trade: any, exitPrice: number) {

@@ -64,6 +64,8 @@ check("Header bell opens notification history", appSource.includes('accessibilit
 check("Bell badge counts unread alerts", appSource.includes("const unreadAlerts =") && appSource.includes("!item.acknowledged_at"), "unread notification count");
 check("Signal Desk trusts entry contracts", !appSource.includes("setupProbability(setup) >= 80"), "no unrelated confidence threshold");
 check("Paper tracking is distinct from fresh entry", appSource.includes("hasTrackedSignal") && appSource.includes('PAPER TRACKING'), "duplicate-entry guard");
+check("Paper performance shows breakeven efficiency", appSource.includes('label="BE Saves"') && appSource.includes("breakevenSaveRate"), "managed-runner evidence");
+check("Paper journal shows MFE and MAE", appSource.includes('label="MFE"') && appSource.includes('label="MAE"'), "entry-quality excursions");
 check("Blocked Home cards hide execution geometry", appSource.includes("const showTradeGeometry") && appSource.includes("primaryMode === \"BLOCKED\""), "NO TRADE context only");
 check("Expo push uses alert channel", pushSource.includes('channelId: "trading-alerts"'), "trading-alerts");
 check("Firebase push is high priority", pushSource.includes('priority: "high"'), "high");

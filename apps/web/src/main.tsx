@@ -7641,6 +7641,10 @@ function TargetPerformancePanel({ performance, moduleName }: { performance?: { w
         <Metric label="TP2 to TP3" value={formatPercent(summary.tp2ToTp3)} />
         <Metric label="SL after TP1" value={formatPercent(summary.stopAfterTp1Rate)} />
         <Metric label="SL after TP2" value={formatPercent(summary.stopAfterTp2Rate)} />
+        <Metric label="BE protected" value={summary.breakevenProtected ?? 0} />
+        <Metric label="BE runner saves" value={formatPercent(summary.breakevenSaveRate)} />
+        <Metric label="Average MFE" value={`${formatR(summary.averageMfeR)}R`} />
+        <Metric label="Average MAE" value={`${formatR(summary.averageMaeR)}R`} />
         <Metric label="Expectancy" value={`${formatR(summary.expectancyR)}R`} />
         <Metric label="Profit factor" value={summary.profitFactor == null ? "No losses yet" : formatR(summary.profitFactor)} />
         <Metric label="Average hold" value={formatHoldSeconds(summary.averageHoldSeconds)} />
@@ -8842,6 +8846,8 @@ function PaperTradingWorkspace({
             <Metric label={selected.status === "ACTIVE" ? "Unrealized" : "Result"} value={`${formatR(selected.status === "ACTIVE" ? selected.unrealizedR : selected.resultR)}R`} />
             <Metric label="Locked profit" value={`${formatR(selected.lockedR)}R`} />
             <Metric label={selected.status === "ACTIVE" ? "Runner open" : "Runner closed"} value={`${Math.round(Number(selected.remainingFraction ?? 0) * 100)}%`} />
+            <Metric label="MFE" value={`${formatR(selected.maxFavorableExcursionR)}R`} />
+            <Metric label="MAE" value={`${formatR(selected.maxAdverseExcursionR)}R`} />
           </div>
           <div className="paper-target-progress" aria-label="Paper trade target progress">
             {(selected.targets ?? []).map((target: any) => (

@@ -7,8 +7,75 @@ export const XAUUSD_PRODUCTION_SIGNAL_POLICY = {
   minimumFinalRewardToRisk: 2,
   maximumSignalsPerNewYorkDate: 3,
   maximumSignalsPerStrategyProfile: 2,
-  sameProfileCooldownMinutes: 45
+  sameProfileCooldownMinutes: 45,
+  maximumEntryChaseR: 0.35,
+  maximumEntryDriftR: 0.5,
+  correlatedSignalWindowMinutes: 30,
+  correlatedEntryDistanceR: 0.5
 } as const;
+
+export type SignalExecutionQualityInput = {
+  direction: string;
+  entry: number;
+  stop: number;
+  currentPrice: number;
+  evidenceScore: number;
+  maximumEntryChaseR: number;
+  maximumEntryDriftR: number;
+};
+
+export function evaluateSignalExecutionQuality(input: SignalExecutionQualityInput) {
+  const directionMultiplier = ["SHORT", "SELL"].includes(input.direction.toUpperCase()) ? -1 : 1;
+  const riskDistance = Math.abs(input.entry - input.stop);
+  const favorableDriftR = riskDistance > 0
+    ? ((input.currentPrice - input.entry) * directionMultiplier) / riskDistance
+    : Number.POSITIVE_INFINITY;
+  const absoluteDriftR = Math.abs(favorableDriftR);
+  const reasons: string[] = [];
+  if (![input.entry, input.stop, input.currentPrice, input.evidenceScore].every(Number.isFinite) || riskDistance <= 0) {
+    reasons.push("Live entry quality could not be measured from valid signal geometry.");
+  } else {
+    if (favorableDriftR > input.maximumEntryChaseR) {
+      reasons.push(`Price has already moved ${favorableDriftR.toFixed(2)}R beyond entry; do not chase above ${input.maximumEntryChaseR.toFixed(2)}R.`);
+    }
+    if (absoluteDriftR > input.maximumEntryDriftR) {
+      reasons.push(`Live price is ${absoluteDriftR.toFixed(2)}R from entry; wait for a new confirmed contract.`);
+    }
+  }
+  const executionScore = Number.isFinite(favorableDriftR)
+    ? Math.max(0, Math.min(100, input.evidenceScore - Math.max(0, favorableDriftR) * 20 - Math.max(0, -favorableDriftR) * 10))
+    : 0;
+  return {
+    passed: reasons.length === 0,
+    riskDistance,
+    favorableDriftR,
+    absoluteDriftR,
+    executionScore: Number(executionScore.toFixed(2)),
+    reasons
+  };
+}
+
+export type CorrelatedSignalInput = {
+  direction: string;
+  entry: number;
+  riskDistance: number;
+  signalAt: string | Date;
+};
+
+export function signalsAreCorrelated(
+  candidate: CorrelatedSignalInput,
+  incumbent: CorrelatedSignalInput,
+  windowMinutes: number,
+  maximumEntryDistanceR: number
+) {
+  if (candidate.direction.toUpperCase() !== incumbent.direction.toUpperCase()) return false;
+  const candidateAt = new Date(candidate.signalAt).getTime();
+  const incumbentAt = new Date(incumbent.signalAt).getTime();
+  if (!Number.isFinite(candidateAt) || !Number.isFinite(incumbentAt)) return false;
+  if (Math.abs(candidateAt - incumbentAt) > windowMinutes * 60_000) return false;
+  const referenceRisk = Math.max(candidate.riskDistance, incumbent.riskDistance);
+  return referenceRisk > 0 && Math.abs(candidate.entry - incumbent.entry) / referenceRisk <= maximumEntryDistanceR;
+}
 
 export type SignalGeometryQualityInput = {
   direction: string;
