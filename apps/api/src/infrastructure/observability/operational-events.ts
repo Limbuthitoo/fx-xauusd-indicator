@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { query } from "../db/client.js";
+import { redactSensitiveText, redactSensitiveValue } from "../security/redaction.js";
 
 type OperationalEventInput = {
   severity?: "DEBUG" | "INFO" | "WARN" | "ERROR" | "CRITICAL";
@@ -38,8 +39,8 @@ export async function recordOperationalEvent(input: OperationalEventInput) {
       input.durationMs ?? null,
       input.tenantId ?? null,
       input.adminUserId ?? null,
-      input.message,
-      JSON.stringify(input.metadata ?? {})
+      redactSensitiveText(input.message, [config.databaseUrl, config.redisUrl]),
+      JSON.stringify(redactSensitiveValue(input.metadata ?? {}, [config.databaseUrl, config.redisUrl]))
     ]
   ).catch(() => undefined);
 }

@@ -1,34 +1,25 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { config } from "../../infrastructure/config.js";
+import { redactSensitiveText } from "../../infrastructure/security/redaction.js";
 
 const execFileAsync = promisify(execFile);
 const pythonBin = process.env.PYTHON_BIN || "python3";
 const pythonCwd = process.cwd().replace(/\/apps\/api$/, "");
 
 export async function runOrbLearningPython(tenantId: string) {
-  const { stdout } = await execFileAsync(pythonBin, ["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId], {
-    cwd: pythonCwd,
-    timeout: 120_000
-  });
-  return JSON.parse(stdout);
+  return runPythonJson(["-m", "apps.quant.app.learning.orb_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId], 120_000);
 }
 
 export async function runModule2LearningPython(tenantId: string) {
-  const { stdout } = await execFileAsync(
-    pythonBin,
+  return runPythonJson(
     ["-m", "apps.quant.app.learning.module2_learning", "--database-url", config.databaseUrl, "--tenant-id", tenantId],
-    {
-      cwd: pythonCwd,
-      timeout: 120_000
-    }
+    120_000
   );
-  return JSON.parse(stdout);
 }
 
 export async function runGenericModuleLearningPython(tenantId: string, moduleCode: string) {
-  const { stdout } = await execFileAsync(
-    pythonBin,
+  return runPythonJson(
     [
       "-m",
       "apps.quant.app.learning.generic_module_learning",
@@ -39,12 +30,8 @@ export async function runGenericModuleLearningPython(tenantId: string, moduleCod
       "--module-code",
       moduleCode
     ],
-    {
-      cwd: pythonCwd,
-      timeout: 120_000
-    }
+    120_000
   );
-  return JSON.parse(stdout);
 }
 
 export async function runStrategyModuleLearningPython(tenantId: string, moduleCode: string) {
@@ -64,11 +51,7 @@ export async function runStrategyIndicatorAuditPython(tenantId: string, moduleCo
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
-  const { stdout } = await execFileAsync(pythonBin, args, {
-    cwd: pythonCwd,
-    timeout: 120_000
-  });
-  return JSON.parse(stdout);
+  return runPythonJson(args, 120_000);
 }
 
 export async function runDeterministicStrategyCoachPython(tenantId: string, moduleCode?: string) {
@@ -81,11 +64,7 @@ export async function runDeterministicStrategyCoachPython(tenantId: string, modu
     tenantId
   ];
   if (moduleCode) args.push("--module-code", moduleCode);
-  const { stdout } = await execFileAsync(pythonBin, args, {
-    cwd: pythonCwd,
-    timeout: 180_000
-  });
-  return JSON.parse(stdout);
+  return runPythonJson(args, 180_000);
 }
 
 export async function runMainBrainPython(tenantId: string, moduleCode?: string, options?: { proofMode?: boolean; setupId?: string }) {
@@ -100,9 +79,14 @@ export async function runMainBrainPython(tenantId: string, moduleCode?: string, 
   if (moduleCode) args.push("--module-code", moduleCode);
   if (options?.proofMode) args.push("--proof-mode");
   if (options?.setupId) args.push("--setup-id", options.setupId);
-  const { stdout } = await execFileAsync(pythonBin, args, {
-    cwd: pythonCwd,
-    timeout: 60_000
-  });
-  return JSON.parse(stdout);
+  return runPythonJson(args, 60_000);
+}
+
+async function runPythonJson(args: string[], timeout: number) {
+  try {
+    const { stdout } = await execFileAsync(pythonBin, args, { cwd: pythonCwd, timeout });
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(redactSensitiveText(error, [config.databaseUrl, config.redisUrl]));
+  }
 }

@@ -3,6 +3,7 @@ import pg from "pg";
 import { buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
 import { evaluateLiquiditySweepSetup } from "../packages/liquidity-sweep-engine/src/index.js";
 import type { Candle, StrategyConfiguration } from "../packages/shared-types/src/index.js";
+import { redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
 
 loadEnv(process.argv[2] ?? ".env.production");
 
@@ -102,7 +103,7 @@ try {
     detail: recentFailures.length === 0
       ? `No strategy or Python brain failures since the current worker started at ${workerDeployment?.started_at ?? "unknown"}.`
       : `${recentFailures.length} strategy/Python failure event(s) occurred after the current worker deployment.`,
-    evidence: { workerDeployment, failures: recentFailures.slice(0, 10) }
+    evidence: redactSensitiveValue({ workerDeployment, failures: recentFailures.slice(0, 10) }, [databaseUrl])
   });
 
   const historicalFailures = await rows(
@@ -120,7 +121,7 @@ try {
       name: "Pre-deployment failure history",
       status: "WARN",
       detail: `${historicalFailures.length} sampled strategy/Python failure event(s) predate the current worker deployment and remain for audit history.`,
-      evidence: historicalFailures
+      evidence: redactSensitiveValue(historicalFailures, [databaseUrl])
     });
   }
 

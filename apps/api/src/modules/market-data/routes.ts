@@ -18,6 +18,7 @@ import { config } from "../../infrastructure/config.js";
 import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
 import { redisClient } from "../../infrastructure/redis/client.js";
+import { redactSensitiveText } from "../../infrastructure/security/redaction.js";
 import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
 import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
@@ -1163,6 +1164,7 @@ async function runProductionLearningCoach(tenantId: string | null, moduleCode: s
       closedPaperTrades: Number(result?.summary?.closedPaperTrades ?? result?.modules?.[0]?.summary?.outcomes?.trades ?? 0)
     };
   } catch (error) {
+    const safeError = redactSensitiveText(error, [config.databaseUrl, config.redisUrl]);
     await query(
       `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
        VALUES ('ERROR', 'SYSTEM', 'LEARNING_COACH_FAILED', 'market-data-worker', $1, $2, $3::jsonb)`,
@@ -1172,11 +1174,11 @@ async function runProductionLearningCoach(tenantId: string | null, moduleCode: s
         JSON.stringify({
           moduleCode,
           sessionId,
-          error: error instanceof Error ? error.message : String(error)
+          error: safeError
         })
       ]
     );
-    return { status: "FAILED", moduleCode, sessionId, error: error instanceof Error ? error.message : String(error) };
+    return { status: "FAILED", moduleCode, sessionId, error: safeError };
   }
 }
 
@@ -3629,6 +3631,7 @@ async function runProductionBrainSweep(tenantId: string | null, moduleCode: stri
       target: decision?.target ?? null
     };
   } catch (error) {
+    const safeError = redactSensitiveText(error, [config.databaseUrl, config.redisUrl]);
     await query(
       `INSERT INTO operational_events (severity, category, event_type, source, tenant_id, message, metadata)
        VALUES ('ERROR', 'SYSTEM', 'MAIN_BRAIN_FAILED', 'market-data-worker', $1, $2, $3::jsonb)`,
@@ -3637,11 +3640,11 @@ async function runProductionBrainSweep(tenantId: string | null, moduleCode: stri
         `Python main brain failed for ${moduleCode}.`,
         JSON.stringify({
           moduleCode,
-          error: error instanceof Error ? error.message : String(error)
+          error: safeError
         })
       ]
     );
-    return { status: "FAILED", moduleCode, error: error instanceof Error ? error.message : String(error) };
+    return { status: "FAILED", moduleCode, error: safeError };
   }
 }
 

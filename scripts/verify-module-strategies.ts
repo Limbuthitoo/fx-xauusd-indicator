@@ -15,6 +15,17 @@ import { calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeeken
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
+import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
+
+const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
+const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
+assert.equal(redactedCommand.includes("do-not-leak"), false, "Subprocess errors must redact database passwords");
+assert.equal(redactedCommand.includes(sampleDatabaseUrl), false, "Subprocess errors must redact complete database URLs");
+assert.deepEqual(
+  redactSensitiveValue({ nested: { error: `DATABASE_URL=${sampleDatabaseUrl}` } }, [sampleDatabaseUrl]),
+  { nested: { error: "DATABASE_URL=[REDACTED]" } },
+  "Operational-event metadata must be redacted recursively"
+);
 
 const module1OpeningCandles: Candle[] = [
   candle("2026-08-10T13:30:00Z", 100.0, 100.8, 99.4, 100.5),
