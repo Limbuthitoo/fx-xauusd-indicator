@@ -16,9 +16,34 @@ from app.brain.module2_sweep_bos_brain import (  # noqa: E402
     QUALITY_RULES as MODULE2_QUALITY,
     decide as decide_module2,
 )
+from app.brain.main_brain import latest_setup  # noqa: E402
 
 
 HEALTH = {"status": "LIVE"}
+
+
+class RecordingCursor:
+    def __init__(self) -> None:
+        self.query = ""
+        self.params: tuple[object, ...] = ()
+
+    def execute(self, query: str, params: tuple[object, ...]) -> None:
+        self.query = query
+        self.params = params
+
+    def fetchone(self) -> None:
+        return None
+
+
+targeted_cursor = RecordingCursor()
+latest_setup(targeted_cursor, "tenant-1", "high_probability_strategy_2", setup_id="setup-1")
+assert targeted_cursor.query.count("%s") == len(targeted_cursor.params) == 3
+assert targeted_cursor.params == ("tenant-1", "high_probability_strategy_2", "setup-1")
+
+fresh_cursor = RecordingCursor()
+latest_setup(fresh_cursor, "tenant-1", "high_probability_strategy_2")
+assert fresh_cursor.query.count("%s") == len(fresh_cursor.params) == 3
+assert fresh_cursor.params == ("tenant-1", "high_probability_strategy_2", "TWELVE_DATA%")
 
 
 def evaluations(codes: list[str]) -> list[dict[str, object]]:

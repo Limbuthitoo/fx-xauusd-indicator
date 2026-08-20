@@ -149,7 +149,7 @@ def latest_setup(cur, tenant_id: str, module_code: str, proof_mode: bool = False
     query_params: tuple[Any, ...] = (tenant_id, module_code)
     if setup_id:
         query_params += (setup_id,)
-    if not proof_mode:
+    if not proof_mode and not setup_id:
         query_params += ("TWELVE_DATA%",)
     cur.execute(
         f"""
