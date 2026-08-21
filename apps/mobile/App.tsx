@@ -1049,7 +1049,12 @@ function AppContent() {
       <NotificationDetailScreen
         detail={selectedNotificationDetail}
         dashboard={dashboard}
+        activeTab={activeTab}
         onBack={() => setSelectedNotificationDetail(null)}
+        onSelectTab={(tab) => {
+          setSelectedNotificationDetail(null);
+          setActiveTab(tab);
+        }}
         onOpenChart={(moduleCode) => {
           setSelectedNotificationDetail(null);
           setActiveTab("chart");
@@ -1186,16 +1191,7 @@ function AppContent() {
         ) : null}
 
       </ScrollView>
-      <View style={styles.bottomNav}>
-        {mobileTabs.map((tab) => (
-          <Pressable key={tab.key} style={styles.bottomNavItem} onPress={() => setActiveTab(tab.key)}>
-            <View style={styles.bottomNavIcon}>
-              <BottomNavIcon tab={tab.key} active={activeTab === tab.key} />
-            </View>
-            <Text style={[styles.bottomNavText, activeTab === tab.key && styles.bottomNavTextActive]}>{tab.label}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <AppBottomNavigation activeTab={activeTab} onSelect={setActiveTab} />
     </SafeAreaView>
   );
 }
@@ -1996,12 +1992,16 @@ function AlertsScreen({
 function NotificationDetailScreen({
   detail,
   dashboard,
+  activeTab,
   onBack,
+  onSelectTab,
   onOpenChart
 }: {
   detail: NotificationDetail;
   dashboard: Dashboard | null;
+  activeTab: MobileTab;
   onBack: () => void;
+  onSelectTab: (tab: MobileTab) => void;
   onOpenChart: (moduleCode: string) => void;
 }) {
   const moduleCode = detail.moduleCode ?? moduleCodeFromText(`${detail.eventType ?? ""} ${detail.title} ${detail.body}`);
@@ -2051,6 +2051,7 @@ function NotificationDetailScreen({
           ) : <Text style={styles.reason}>{notificationWorkspaceHint(category)}</Text>}
         </View>
       </ScrollView>
+      <AppBottomNavigation activeTab={activeTab} onSelect={onSelectTab} />
     </SafeAreaView>
   );
 }
@@ -3235,6 +3236,27 @@ function BottomNavIcon({ tab, active }: { tab: MobileTab; active: boolean }) {
   if (tab === "chart") return <CandlestickChart {...props} />;
   if (tab === "paper") return <BookOpen {...props} />;
   return <MoreHorizontal {...props} />;
+}
+
+function AppBottomNavigation({ activeTab, onSelect }: { activeTab: MobileTab; onSelect: (tab: MobileTab) => void }) {
+  return (
+    <View style={styles.bottomNav}>
+      {mobileTabs.map((tab) => (
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === tab.key }}
+          key={tab.key}
+          style={styles.bottomNavItem}
+          onPress={() => onSelect(tab.key)}
+        >
+          <View style={styles.bottomNavIcon}>
+            <BottomNavIcon tab={tab.key} active={activeTab === tab.key} />
+          </View>
+          <Text style={[styles.bottomNavText, activeTab === tab.key && styles.bottomNavTextActive]}>{tab.label}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
 }
 
 function MiniIcon({ name }: { name: string }) {
