@@ -535,6 +535,7 @@ async function validateProductionProofReplay(tenantId: string | null) {
   const row = await one(
     `SELECT
        sc.id,
+       sc.detected_at,
        sc.status,
        sc.scenario,
        sc.direction,
@@ -617,6 +618,12 @@ async function validateProductionProofReplay(tenantId: string | null) {
   const data = row.notification_data ?? {};
   const flags = row.scenario_flags ?? {};
   const variantCode = flags.variantCode ?? flags.module2Variant?.code ?? null;
+  const productionContractAppliedAt = await migrationAppliedAt("092_module2_production_confirmation_floor.sql");
+  const predatesProductionContract = Boolean(
+    productionContractAppliedAt
+    && row.detected_at
+    && new Date(row.detected_at).getTime() < productionContractAppliedAt.getTime()
+  );
   const failures = [
     variantCode === "SWEEP_MSS_RETEST" ? null : "strict variant is not SWEEP_MSS_RETEST",
     ["LONG SETUP READY", "SHORT SETUP READY", "PAPER_TRADE_OPENED"].includes(row.status) ? null : "setup is not entry-ready",
@@ -630,8 +637,10 @@ async function validateProductionProofReplay(tenantId: string | null) {
   ].filter(Boolean);
   checks.push({
     name: "Module 2 production proof replay",
-    status: failures.length === 0 ? "PASS" : "FAIL",
-    detail: failures.length === 0
+    status: predatesProductionContract ? "WARN" : failures.length === 0 ? "PASS" : "FAIL",
+    detail: predatesProductionContract
+      ? "Latest dedicated production proof predates migration 092. It remains historical evidence; run a fresh authenticated proof to validate the current two-confirmation lifecycle."
+      : failures.length === 0
       ? "Latest production-proof replay completed the setup, BUY/SELL details, paper trade, journal, notification payload, and Python brain chain."
       : `Production-proof replay incomplete: ${failures.join("; ")}.`,
     evidence: {
