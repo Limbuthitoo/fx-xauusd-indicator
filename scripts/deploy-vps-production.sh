@@ -5,6 +5,13 @@ ENV_FILE="${1:-.env.production}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml -f docker-compose.prod.yml)
 VALIDATION_TIMEOUT_SECONDS="${VALIDATION_TIMEOUT_SECONDS:-300}"
 
+run_validation() {
+  local script="$1"
+  echo "Running $script in an isolated production-tools container"
+  "${COMPOSE[@]}" --profile prod-tools run --rm --no-deps migrate \
+    sh -lc "export PATH=/opt/venv/bin:\$PATH; cd /app && timeout -s TERM ${VALIDATION_TIMEOUT_SECONDS} npm run ${script}"
+}
+
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Environment file not found: $ENV_FILE" >&2
   exit 1
@@ -45,14 +52,7 @@ done
 "${COMPOSE[@]}" --profile prod ps
 
 echo "[8/9] Verifying deterministic target sequences and PostgreSQL lifecycle integrity"
-npm run verify:modules
-run_validation() {
-  local script="$1"
-  echo "Running $script in an isolated production-tools container"
-  "${COMPOSE[@]}" --profile prod-tools run --rm --no-deps migrate \
-    sh -lc "cd /app && timeout -s TERM ${VALIDATION_TIMEOUT_SECONDS} npm run ${script}"
-}
-
+run_validation verify:modules
 run_validation validate:paper-lifecycle
 run_validation validate:mvp-runtime
 run_validation validate:signal-policy

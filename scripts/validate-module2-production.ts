@@ -552,25 +552,56 @@ async function validateProductionProofReplay(tenantId: string | null) {
        brain.id AS brain_event_id,
        brain.metadata AS brain_metadata
      FROM setup_candidates sc
-     LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
-     LEFT JOIN trades t ON t.trade_plan_id = tp.id
-     LEFT JOIN notifications n ON n.tenant_id = sc.tenant_id
-       AND n.event_type = 'MODULE2_PRODUCTION_PROOF'
-       AND n.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
-     LEFT JOIN journal_entries j ON j.setup_candidate_id = sc.id
+     LEFT JOIN LATERAL (
+       SELECT id
+       FROM trade_plans
+       WHERE setup_candidate_id = sc.id
+       ORDER BY created_at DESC
+       LIMIT 1
+     ) tp ON true
+     LEFT JOIN LATERAL (
+       SELECT id, outcome
+       FROM trades
+       WHERE trade_plan_id = tp.id
+       ORDER BY opened_at DESC
+       LIMIT 1
+     ) t ON true
+     LEFT JOIN LATERAL (
+       SELECT id, data
+       FROM notifications
+       WHERE tenant_id = sc.tenant_id
+         AND event_type = 'MODULE2_PRODUCTION_PROOF'
+         AND data->>'setupCandidateId' = sc.id::text
+       ORDER BY created_at DESC
+       LIMIT 1
+     ) n ON true
+     LEFT JOIN LATERAL (
+       SELECT id
+       FROM journal_entries
+       WHERE setup_candidate_id = sc.id
+       ORDER BY created_at DESC
+       LIMIT 1
+     ) j ON true
      LEFT JOIN LATERAL (
        SELECT id, metadata
        FROM operational_events oe
        WHERE oe.tenant_id = sc.tenant_id
          AND oe.event_type = 'MAIN_BRAIN_DECISION'
          AND oe.metadata->>'moduleCode' = $2
-         AND oe.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
+         AND oe.metadata->>'setupId' = sc.id::text
        ORDER BY oe.created_at DESC
        LIMIT 1
      ) brain ON true
      WHERE sc.tenant_id = $1
        AND sc.module_code = $2
        AND COALESCE(sc.scenario_flags->>'productionProof', 'false') = 'true'
+       AND EXISTS (
+         SELECT 1
+         FROM operational_events proof
+         WHERE proof.tenant_id = sc.tenant_id
+           AND proof.event_type = 'MODULE2_PRODUCTION_PROOF'
+           AND proof.metadata->>'setupId' = sc.id::text
+       )
      ORDER BY sc.detected_at DESC
      LIMIT 1`,
     [tenantId, MODULE_CODE]
