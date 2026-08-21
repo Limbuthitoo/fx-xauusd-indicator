@@ -253,9 +253,9 @@ assert module1["shouldEmitSignal"] and module1["shouldTrackPaperTrade"] and modu
 assert module1_horizontal["shouldEmitSignal"] and module1_horizontal["shouldTrackPaperTrade"] and module1_horizontal["action"] == "SELL"
 assert module1_horizontal["checklist"]["horizontalMandatoryPassed"]
 assert module2["shouldEmitSignal"] and module2["shouldTrackPaperTrade"] and module2["action"] == "SELL"
-assert module2_flexible_variant["shouldEmitSignal"] and module2_flexible_variant["shouldTrackPaperTrade"] and module2_flexible_variant["action"] == "BUY"
+assert not module2_flexible_variant["shouldEmitSignal"] and not module2_flexible_variant["shouldTrackPaperTrade"]
 assert module2_signal_without_paper_slot["shouldEmitSignal"] and not module2_signal_without_paper_slot["shouldTrackPaperTrade"]
-assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_VARIANT_SIGNAL_READY"
+assert module2_flexible_variant["decisionType"] == "LIQUIDITY_SWEEP_CHECKLIST_MISMATCH"
 assert module2["checklist"]["mandatoryPassed"] and module2["checklist"]["fullPassed"]
 assert not module1_incomplete["shouldEmitSignal"] and not module1_incomplete["shouldTrackPaperTrade"]
 assert not module2_incomplete["shouldEmitSignal"] and not module2_incomplete["shouldTrackPaperTrade"]

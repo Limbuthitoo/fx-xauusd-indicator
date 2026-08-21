@@ -303,6 +303,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       minimumStopATR,
       maximumStopATR: Math.max(minimumStopATR, positiveNumber(input.maximumStopATR, 1.25, 10)),
       stopBufferATR: positiveNumber(input.stopBufferATR, 0.03, 2),
+      minimumProductionConfirmations: positiveInteger(input.minimumProductionConfirmations, 2, 10),
       minimumSignalScore: positiveInteger(input.minimumSignalScore, 80, 110),
       maximumSpread: positiveNumber(input.maximumSpread, 0.8, 20),
       roundNumberStep: positiveNumber(input.roundNumberStep, 10, 1000),

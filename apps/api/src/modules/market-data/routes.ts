@@ -1430,6 +1430,7 @@ function module2LearningGuardrailsForCloseout(recommendation: any, proposed: any
 function module2RuleLayerForCloseout(code?: string) {
   if (!code) return "none";
   if (code === "CONFIRM_ENTRY_CANDLE") return "hard";
+  if (code === "PRODUCTION_CONFIRMATION_COUNT") return "hard";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
   if (requiredEntryRules("high_probability_strategy_2").includes(code)) return "hard";
@@ -4231,7 +4232,15 @@ function isProductionReadySetup(setup: any, decision: any, risk?: any) {
   if (!validDirectionalTradeGeometry(direction, entry, stop, target)) return false;
   if (setup.module_code === "high_probability_strategy_2") {
     const flags = setup.scenario_flags ?? decision?.scenarioFlags ?? {};
-    return Boolean(flags.mandatoryChecklistMatched && flags.module2Variant?.paperEligible !== false);
+    const variant = flags.module2Variant ?? {};
+    const confirmationLayer = flags.confirmationLayer ?? {};
+    const requiredConfirmations = Math.max(2, Number(confirmationLayer.productionRequired ?? 2));
+    return Boolean(
+      flags.mandatoryChecklistMatched
+      && variant.paperEligible !== false
+      && variant.approvalStatus === "PRODUCTION_APPROVED"
+      && Number(confirmationLayer.count ?? 0) >= requiredConfirmations
+    );
   }
   const tier = String(setup.scenario_flags?.setupTier ?? decision?.scenarioFlags?.setupTier ?? "FULL");
   if (tier === "MANDATORY") {
@@ -4614,6 +4623,7 @@ function requiredEntryRules(moduleCode: string) {
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED"
   ];
 }
@@ -4622,7 +4632,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   const module1Confirmation = new Set(["BREAKOUT_BODY_RATIO", "CLOSE_LOCATION_RATIO", "FAVORABILITY_SCORE"]);
   const module1Quality = new Set(["NEWS_FILTER"]);
   const module2Mandatory = new Set(requiredEntryRules("high_probability_strategy_2"));
-  const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
+  const module2Confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT"]);
   const module2Quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   const module2PaperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
   if (ruleCode.endsWith("_STATE") || ruleCode === "SCENARIO_SELECTED") return { ruleLayer: "STATE", requiredForEntry: false };
@@ -4651,7 +4661,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
   if (module2PaperTracking.has(ruleCode)) return { ruleLayer: "PAPER_TRACKING", requiredForEntry: false };
   if (module2Confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
   if (module2Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
-  if (ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
+  if (["PRODUCTION_CONFIRMATION_COUNT", "VARIANT_SELECTED"].includes(ruleCode)) return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 

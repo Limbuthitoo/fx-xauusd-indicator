@@ -209,6 +209,7 @@ export type LiquiditySweepConfig = {
   minimumStopATR: number;
   maximumStopATR: number;
   stopBufferATR: number;
+  minimumProductionConfirmations: number;
   minimumSignalScore: number;
   maximumSpread: number;
   enableNewsFilter: boolean;
@@ -368,6 +369,7 @@ const DEFAULT_CONFIG: LiquiditySweepConfig = {
   minimumStopATR: 1,
   maximumStopATR: 1.25,
   stopBufferATR: 0.03,
+  minimumProductionConfirmations: 2,
   minimumSignalScore: 80,
   maximumSpread: 0.8,
   enableNewsFilter: true,
@@ -384,7 +386,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const config = {
     ...mergedConfig,
     minimumStopATR,
-    maximumStopATR: Math.max(minimumStopATR, mergedConfig.maximumStopATR)
+    maximumStopATR: Math.max(minimumStopATR, mergedConfig.maximumStopATR),
+    minimumProductionConfirmations: Math.min(10, Math.max(2, Math.round(mergedConfig.minimumProductionConfirmations)))
   };
   const setupCandles = normalizeCandles(context.setupCandles);
   const biasCandles = normalizeCandles(context.biasCandles.length > 0 ? context.biasCandles : setupCandles);
@@ -590,6 +593,8 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
   const confirmationCount = confirmations.filter((item) => item.passed).length;
   const confirmationScore = confirmations.reduce((sum, item) => sum + (item.passed ? item.points : 0), 0);
   push(evaluations, "CONFIRMATION_COUNT", "Confirmation evidence count", confirmationCount >= 3, false, "AUTOMATIC", confirmationCount, `>= 3 of ${confirmations.length} for full-grade evidence`, confirmationCount >= 3 ? "Full-grade confirmation evidence passed." : "Fewer than 3 confirmation rules matched; this does not veto a selected independent variant whose own mandatory rules passed.");
+  const productionConfirmationOk = confirmationCount >= config.minimumProductionConfirmations;
+  push(evaluations, "PRODUCTION_CONFIRMATION_COUNT", "Production confirmation floor", productionConfirmationOk, true, "AUTOMATIC", confirmationCount, `>= ${config.minimumProductionConfirmations} of ${confirmations.length}`, productionConfirmationOk ? "The production signal has enough independent confirmation evidence." : `Production BUY/SELL requires at least ${config.minimumProductionConfirmations} independent confirmations; paper-approved profiles remain available for research only.`);
 
   const plan = buildLayeredTradePlan(
     levels,
@@ -653,6 +658,7 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     engulfingOk,
     volumeExpansionOk,
     orderBlockRetestOk,
+    productionConfirmationOk,
     spreadOk,
     newsOk,
     rrOk,
@@ -671,9 +677,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     riskOk
   });
   const selectedVariant = selectModule2Variant(variants);
-  push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one signal-approved variant mandatory profile passes", selectedVariant ? selectedVariant.reason : "No signal-approved confirmation profile has completed. Variants are independent profiles; only one valid signal-approved profile is needed.");
+  const selectedPaperVariant = selectModule2PaperVariant(variants);
+  push(evaluations, "VARIANT_SELECTED", "Production confirmation profile selected", Boolean(selectedVariant?.paperEligible && selectedVariant.approvalStatus === "PRODUCTION_APPROVED"), true, "AUTOMATIC", selectedVariant?.code ?? "NONE", "one production-approved E/F/I profile passes", selectedVariant ? selectedVariant.reason : "No production-approved confirmation profile has completed. Lower-confidence paper profiles remain visible for research and replay evidence only.");
   push(evaluations, "SIGNAL_SCORE", "Prediction confidence threshold", scoreOk, false, "AUTOMATIC", score, `>= ${config.minimumSignalScore} for prediction publication`, scoreOk ? "Module 2 confidence is high enough to publish an upcoming prediction." : "Confidence is below the prediction threshold; an independently valid BUY/SELL profile may still proceed through the risk engine.");
-  const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible);
+  const mandatoryEntryPassed = Boolean(selectedVariant?.paperEligible && selectedVariant.approvalStatus === "PRODUCTION_APPROVED" && productionConfirmationOk);
   const fullChecklistPassed = mandatoryEntryPassed && riskOk && evaluations.filter((item) => item.blocking).every((item) => item.status === "PASS") && confirmationCount >= 3 && qualityCount >= 3;
   flags.levels = levels;
   flags.htfBias = htfBias;
@@ -707,9 +714,10 @@ export function evaluateLiquiditySweepSetup(context: LiquiditySweepContext): Liq
     volatilityAdjusted: plan.stop !== plan.structuralStop
   };
   flags.tradePlanCandidates = plan.candidates;
-  flags.confirmationLayer = { count: confirmationCount, required: 3, score: confirmationScore, rules: confirmations };
+  flags.confirmationLayer = { count: confirmationCount, required: 3, productionRequired: config.minimumProductionConfirmations, score: confirmationScore, rules: confirmations };
   flags.qualityLayer = { count: qualityCount, required: 3, rules: quality };
   flags.module2Variant = selectedVariant;
+  flags.module2PaperVariant = selectedPaperVariant;
   flags.module2Variants = variants;
   flags.variantCode = selectedVariant?.code ?? null;
   flags.variantVersion = selectedVariant?.version ?? MODULE2_VARIANT_VERSION;
@@ -825,6 +833,7 @@ function module2MandatoryEntryPassed(evaluations: RuleEvaluation[]) {
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED"
   ]);
   return [...required].every((ruleCode) =>
@@ -845,9 +854,10 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
     "DIRECTIONAL_CONFLICT_CLEAR",
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED"
   ]);
-  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRMATION_COUNT"]);
+  const confirmations = new Set(["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENGULFING", "CONFIRM_PIN_BAR", "CONFIRM_INSIDE_BAR_BREAK", "CONFIRM_DOJI_REJECTION", "CONFIRM_VOLUME_EXPANSION", "CONFIRM_ENTRY_CANDLE", "CONFIRMATION_COUNT"]);
   const quality = new Set(["QUALITY_ATR_VOLATILITY", "QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE", "QUALITY_FRESH_SETUP", "QUALITY_FILTER_COUNT", "EMA_FILTER_MODE", "VOLUME_FILTER_MODE", "DISPLACEMENT_FILTER_MODE", "DOUBLE_SWEEP_FILTER"]);
   const paperTracking = new Set(["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"]);
   if (ruleCode === "SIGNAL_SCORE") return { ruleLayer: "FINAL", requiredForEntry: false };
@@ -856,7 +866,7 @@ function module2RuleLayer(ruleCode: string): Pick<RuleEvaluation, "ruleLayer" | 
   if (["PROTECTED_POINT_CONFIDENCE", "BOS_CHOCH_CONFIRMED", "MSS_STRENGTH", "ENTRY_ZONE_READY", "ENTRY_ZONE_RETRACE"].includes(ruleCode)) return { ruleLayer: "EVIDENCE", requiredForEntry: false };
   if (confirmations.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
   if (quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: ["QUALITY_SPREAD", "QUALITY_NEWS", "QUALITY_RR", "QUALITY_STOP_SIZE"].includes(ruleCode) };
-  if (ruleCode === "VARIANT_SELECTED") return { ruleLayer: "FINAL", requiredForEntry: true };
+  if (["PRODUCTION_CONFIRMATION_COUNT", "VARIANT_SELECTED"].includes(ruleCode)) return { ruleLayer: "FINAL", requiredForEntry: true };
   return { ruleLayer: "EVIDENCE", requiredForEntry: false };
 }
 
@@ -2415,6 +2425,7 @@ function module2VariantCandidates(input: {
   engulfingOk: boolean;
   volumeExpansionOk: boolean;
   orderBlockRetestOk: boolean;
+  productionConfirmationOk: boolean;
   spreadOk: boolean;
   newsOk: boolean;
   rrOk: boolean;
@@ -2456,10 +2467,12 @@ function module2VariantCandidates(input: {
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_ENGULFING", input.engulfingOk]
     ], "Variant D passed: sweep plus engulfing rejection confirmed the strategy profile.", base, input.direction),
-    variant("E", "SWEEP_BOS_RETEST", "E. Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE"], [
+    variant("E", "SWEEP_BOS_RETEST", "E. Sweep + BOS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 82, ["LIQUIDITY_SWEEP_CONFIRMED", "CONTINUATION_BOS", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "PRODUCTION_CONFIRMATION_COUNT"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONTINUATION_BOS", input.structureType === "CONTINUATION_BOS" && Boolean(input.bos)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["PRODUCTION_CONFIRMATION_COUNT", input.productionConfirmationOk]
     ], "Variant E passed: sweep, BOS, and retest confirmed the strategy profile.", base, input.direction),
     variant("F", "SWEEP_MSS_RETEST", "F. Sweep + MSS + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 90, [
       "LIQUIDITY_LEVEL_IDENTIFIED",
@@ -2471,6 +2484,7 @@ function module2VariantCandidates(input: {
       "ENTRY_ZONE_READY",
       "ENTRY_ZONE_RETRACE",
       "CONFIRM_ENTRY_CANDLE",
+      "PRODUCTION_CONFIRMATION_COUNT",
       "DIRECTIONAL_CONFLICT_CLEAR"
     ], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
@@ -2480,6 +2494,7 @@ function module2VariantCandidates(input: {
       ["ENTRY_ZONE_READY", Boolean(input.zone)],
       ["ENTRY_ZONE_RETRACE", input.retrace],
       ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["PRODUCTION_CONFIRMATION_COUNT", input.productionConfirmationOk],
       ["DIRECTIONAL_CONFLICT_CLEAR", input.directionalConflictClear]
     ], "Strict production path passed: sweep, close-back rejection, reversal MSS, MSS-zone retest, and entry confirmation are complete.", base, input.direction),
     variant("G", "SWEEP_EMA_ALIGNMENT", "G. Sweep + EMA alignment", "ENTRY_GRADE", "PAPER_APPROVED", true, 64, ["LIQUIDITY_SWEEP_CONFIRMED", "CONFIRM_EMA_200"], [
@@ -2490,11 +2505,13 @@ function module2VariantCandidates(input: {
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["CONFIRM_VOLUME_EXPANSION", input.volumeExpansionOk]
     ], "Variant H passed: sweep and provider volume expansion confirmed the strategy profile.", base, input.direction),
-    variant("I", "SWEEP_MSS_DISPLACEMENT_RETEST", "I. Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE"], [
+    variant("I", "SWEEP_MSS_DISPLACEMENT_RETEST", "I. Sweep + MSS + displacement + retest", "PRODUCTION", "PRODUCTION_APPROVED", true, 96, ["LIQUIDITY_SWEEP_CONFIRMED", "REVERSAL_MSS", "DISPLACEMENT_CONFIRMED", "ENTRY_ZONE_RETRACE", "CONFIRM_ENTRY_CANDLE", "PRODUCTION_CONFIRMATION_COUNT"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
       ["REVERSAL_MSS", input.structureType === "REVERSAL_MSS" && Boolean(input.bos)],
       ["DISPLACEMENT_CONFIRMED", Boolean(input.displacement)],
-      ["ENTRY_ZONE_RETRACE", input.retrace]
+      ["ENTRY_ZONE_RETRACE", input.retrace],
+      ["CONFIRM_ENTRY_CANDLE", input.entryConfirmation],
+      ["PRODUCTION_CONFIRMATION_COUNT", input.productionConfirmationOk]
     ], "Variant I passed: sweep, MSS, displacement, and retest confirmed the highest-confirmation strategy profile.", base, input.direction),
     variant("J", "SWEEP_NO_CONFIRMATION", "J. Sweep + no confirmation", "RESEARCH", "RESEARCH_ONLY", false, 12, ["LIQUIDITY_SWEEP_CONFIRMED"], [
       ["LIQUIDITY_SWEEP_CONFIRMED", Boolean(input.sweep)],
@@ -2540,6 +2557,12 @@ function variant(
 
 function selectModule2Variant(variants: Module2Variant[]) {
   return variants
+    .filter((row) => row.paperEligible && row.approvalStatus === "PRODUCTION_APPROVED")
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+}
+
+function selectModule2PaperVariant(variants: Module2Variant[]) {
+  return variants
     .filter((row) => row.paperEligible)
     .sort((left, right) => right.score - left.score)[0] ?? null;
 }
@@ -2581,7 +2604,7 @@ function reasonList(score: number, level: LiquidityLevel, htfBias: string, fvg: 
   return [
     `${level.type} ${level.side === "BUY_SIDE" ? "buy-side" : "sell-side"} liquidity swept`,
     `HTF bias: ${htfBias}`,
-    `${confirmationCount}/7 confirmations matched`,
+    `${confirmationCount}/10 confirmations matched`,
     `${qualityCount}/6 quality filters matched`,
     fvg ? "Fresh FVG found" : "Order-block fallback used",
     orderBlock ? "Order-block confluence available" : "No order-block confluence",

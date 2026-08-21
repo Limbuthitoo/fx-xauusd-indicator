@@ -108,6 +108,7 @@ const MODULE2_STRICT_REQUIRED_RULES = [
   "CONFIRM_ENTRY_CANDLE",
   "DIRECTIONAL_CONFLICT_CLEAR",
   "RISK_OK",
+  "PRODUCTION_CONFIRMATION_COUNT",
   "VARIANT_SELECTED"
 ] as const;
 const MODULE2_CONFIRMATION_RULES = ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRM_ENTRY_CANDLE"] as const;
@@ -1818,6 +1819,7 @@ function isSignalHardBlocker(moduleCode: string, evaluation: any) {
       "SWEEP_REJECTION_CONFIRMED",
       "SWEEP_ACCEPTANCE_BLOCK",
       "RISK_OK",
+      "PRODUCTION_CONFIRMATION_COUNT",
       "VARIANT_SELECTED"
     ].includes(code);
   }
@@ -1850,6 +1852,7 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
   if (moduleCode !== "high_probability_strategy_2") return "other";
   if (["DAILY_TRADE_LIMIT", "ACTIVE_SETUP_CONFLICT_CLEAR", "NO_ACTIVE_TRADE_CONFLICT"].includes(code)) return "paperTracking";
   if (code === "CONFIRM_ENTRY_CANDLE") return "variant";
+  if (code === "PRODUCTION_CONFIRMATION_COUNT") return "mandatory";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
   if ([
@@ -1873,6 +1876,7 @@ function module2SignalLayer(moduleCode: string, ruleCode?: string) {
     "SWEEP_REJECTION_CONFIRMED",
     "SWEEP_ACCEPTANCE_BLOCK",
     "RISK_OK",
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED"
   ].includes(code)) return "mandatory";
   return "other";
@@ -3239,7 +3243,8 @@ function module2ReplayEvaluations(replayCase: Module2ReplayCase, direction: "LON
     ["CONFIRM_ENGULFING", "Confirmation: engulfing candle", "Engulfing candle confirmation matched."],
     ["CONFIRM_VOLUME_EXPANSION", "Confirmation: volume expansion", "Provider volume expansion was recorded."],
     ["CONFIRM_ENTRY_CANDLE", "Confirmation: entry candle", "Entry candle confirmation matched."],
-    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 of 7 confirmations matched."],
+    ["PRODUCTION_CONFIRMATION_COUNT", "Production confirmation floor", "At least 2 of 10 independent confirmations matched."],
+    ["CONFIRMATION_COUNT", "Confirmation layer passed", "At least 3 of 10 confirmations matched for full grade."],
     ["QUALITY_ATR_VOLATILITY", "Quality: ATR volatility", "ATR quality filter passed."],
     ["QUALITY_SPREAD", "Quality: spread", "Spread quality filter passed."],
     ["QUALITY_NEWS", "Quality: no high-impact news", "News quality filter passed."],

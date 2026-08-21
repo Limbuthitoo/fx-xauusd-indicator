@@ -6270,6 +6270,7 @@ function module2MissedSetupInstruction(row: any) {
   if (missing.has("BOS_CHOCH_CONFIRMED")) return "Wait for candle-body BOS/CHoCH beyond the protected structure point.";
   if (missing.has("ENTRY_ZONE_RETRACE")) return "Wait for price to retrace into the fresh FVG/order-block entry zone.";
   if (missing.has("CONFIRM_ENTRY_CANDLE")) return "Wait for a confirmation candle in the entry zone before BUY/SELL signal.";
+  if (missing.has("PRODUCTION_CONFIRMATION_COUNT")) return "At least two independent confirmations are required before Module 2 can publish BUY/SELL.";
   if (missing.has("CONFIRMATION_COUNT")) return "Require at least 3 confirmation rules before trusting this setup.";
   if (missing.has("QUALITY_FILTER_COUNT")) return "Require at least 3 quality filters, including RR/spread/news safety.";
   return "Review the missing checklist rules before allowing this variant into BUY/SELL output.";
@@ -7883,7 +7884,8 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
           "SWEEP_REJECTION_CONFIRMED",
           "SWEEP_ACCEPTANCE_BLOCK",
           "TRADE_GEOMETRY_VALID",
-          "RISK_OK"
+          "RISK_OK",
+          "PRODUCTION_CONFIRMATION_COUNT"
         ]
       },
       {
@@ -7902,7 +7904,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Selected Variant Profile",
-        description: "A-I are independent strategies after a sweep. One valid signal-approved profile is enough for Module 2 MVP output.",
+        description: "E/F/I are production signal profiles. Lower-confidence profiles remain visible for paper replay and research evidence only.",
         codes: [
           "VARIANT_SELECTED",
           "PROTECTED_POINT_CONFIDENCE",
@@ -7916,7 +7918,7 @@ function groupedChecklistSections(moduleCode: string, rows: any[]) {
       },
       {
         title: "Scored Evidence",
-        description: "These rows increase the setup score and grade. Missing optional evidence should explain caution, not block a selected signal-approved profile.",
+        description: "These rows increase the setup score and grade. At least two must pass for production, while three produce full-grade evidence.",
         codes: ["CONFIRM_EMA_200", "CONFIRM_VWAP", "CONFIRM_FRESH_FVG", "CONFIRM_ORDER_BLOCK_RETEST", "CONFIRMATION_COUNT"]
       },
       {
@@ -8000,7 +8002,8 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["CONFIRM_DOJI_REJECTION", "Confirmation: doji rejection", "Candle-pattern confirmation used for research and scoring."],
     ["CONFIRM_VOLUME_EXPANSION", "Confirmation: volume expansion", "Provider-volume evidence is recorded conservatively."],
     ["CONFIRM_ENTRY_CANDLE", "Entry confirmation candle", "Mandatory entry trigger and scored confirmation worth 10 points."],
-    ["CONFIRMATION_COUNT", "Confirmation layer score", "Confirmation count improves confidence. A selected signal-approved variant can still be valid without every optional confirmation row."],
+    ["PRODUCTION_CONFIRMATION_COUNT", "Production confirmation floor", "At least two independent confirmations are mandatory for a live Module 2 BUY/SELL signal."],
+    ["CONFIRMATION_COUNT", "Confirmation layer score", "Three confirmations produce full-grade evidence; at least two are mandatory for production."],
     ["QUALITY_ATR_VOLATILITY", "Quality: ATR volatility", "Optimization quality filter."],
     ["QUALITY_SPREAD", "Quality: spread", "Optimization quality filter."],
     ["QUALITY_NEWS", "Quality: no high-impact news", "Optimization quality filter."],
@@ -8010,7 +8013,7 @@ function liquiditySweepChecklistRows(evaluations: any[], setup?: any) {
     ["QUALITY_FILTER_COUNT", "Quality layer score", "Quality count improves confidence and learning. Hard risk controls still decide whether a signal can become actionable."],
     ["EMA_FILTER_MODE", "EMA filter mode", "OFF, record-only, warning, alignment-required, or countertrend-required mode is respected."],
     ["VOLUME_FILTER_MODE", "Volume filter mode", "OFF, record-only, warning, or expansion-required mode is respected."],
-    ["VARIANT_SELECTED", "Signal-approved variant selected", "Variants are independent. One signal-approved confirmation profile can produce BUY/SELL after risk approval."],
+    ["VARIANT_SELECTED", "Production variant selected", "Only a completed production-approved E/F/I profile can produce BUY/SELL after risk approval."],
     ["SIGNAL_SCORE", "Prediction confidence threshold", "A score of 80 or more publishes an upcoming prediction. Strategy-valid BUY/SELL output is decided independently by the selected variant and risk engine."]
   ];
   const rows = defaults.map(([code, name, explanation]) => checklistRow(byCode, code, name, hasTerminalSetup ? "NOT_APPLICABLE" : "WAITING", explanation));
@@ -9250,6 +9253,7 @@ function moduleShortName(moduleCode: string, name?: string) {
 function module2RuleLayer(code?: string) {
   if (!code) return "other";
   if (code === "CONFIRM_ENTRY_CANDLE") return "variant";
+  if (code === "PRODUCTION_CONFIRMATION_COUNT") return "mandatory";
   if (code.startsWith("CONFIRM_") || code === "CONFIRMATION_COUNT") return "confirmation";
   if (code.startsWith("QUALITY_") || code === "QUALITY_FILTER_COUNT" || code === "EMA_FILTER_MODE" || code === "VOLUME_FILTER_MODE" || code === "DISPLACEMENT_FILTER_MODE" || code === "DOUBLE_SWEEP_FILTER") return "quality";
   if ([

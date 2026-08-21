@@ -9,6 +9,7 @@ XAUUSD_PIP_SIZE = 0.01
 MINIMUM_SIGNAL_SCORE = 80
 MINIMUM_TP1_PIPS = 100
 MINIMUM_FINAL_RR = 2.0
+MINIMUM_PRODUCTION_CONFIRMATIONS = 2
 
 MANDATORY_RULES = [
     "DATA_HEALTHY",
@@ -25,6 +26,7 @@ MANDATORY_RULES = [
     "TRADE_GEOMETRY_VALID",
     "RISK_OK",
     "SIGNAL_SCORE",
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED",
 ]
 
@@ -47,6 +49,7 @@ CORE_SAFETY_RULES = [
 SIGNAL_BLOCKING_RULES = [
     *CORE_SETUP_RULES,
     *CORE_SAFETY_RULES,
+    "PRODUCTION_CONFIRMATION_COUNT",
     "VARIANT_SELECTED",
 ]
 
@@ -60,6 +63,7 @@ CONFIRMATION_RULES = [
     "CONFIRM_INSIDE_BAR_BREAK",
     "CONFIRM_DOJI_REJECTION",
     "CONFIRM_VOLUME_EXPANSION",
+    "CONFIRM_ENTRY_CANDLE",
     "CONFIRMATION_COUNT",
 ]
 
@@ -161,6 +165,7 @@ def checklist_summary(evaluations: list[dict[str, Any]], flags: dict[str, Any] |
         bool(selected_variant.get("variantCode"))
         and selected_variant.get("variantCode") != "SWEEP_NO_CONFIRMATION"
         and selected_variant.get("variantPaperEligible") is not False
+        and selected_variant.get("variantStatus") == "PRODUCTION_APPROVED"
     )
     core_setup_passed = all(statuses.get(item) == "PASS" for item in CORE_SETUP_RULES)
     safety_passed = all(statuses.get(item) == "PASS" for item in CORE_SAFETY_RULES)
@@ -170,6 +175,11 @@ def checklist_summary(evaluations: list[dict[str, Any]], flags: dict[str, Any] |
     quality_rows = [statuses.get(item) == "PASS" for item in QUALITY_RULES if item != "QUALITY_FILTER_COUNT"]
     confirmation_count = sum(1 for item in confirmation_rows if item)
     quality_count = sum(1 for item in quality_rows if item)
+    production_confirmation_passed = (
+        confirmation_count >= MINIMUM_PRODUCTION_CONFIRMATIONS
+        and statuses.get("PRODUCTION_CONFIRMATION_COUNT") == "PASS"
+    )
+    mandatory = mandatory and production_confirmation_passed
     full = mandatory and (bool(flags.get("fullChecklistMatched")) or (confirmation_count >= 3 and quality_count >= 3))
     rows = []
     for row in evaluations:
@@ -196,6 +206,7 @@ def checklist_summary(evaluations: list[dict[str, Any]], flags: dict[str, Any] |
         "fullPassed": full,
         "confirmationPassed": confirmation_count,
         "confirmationRequired": 3,
+        "productionConfirmationRequired": MINIMUM_PRODUCTION_CONFIRMATIONS,
         "qualityPassed": quality_count,
         "qualityRequired": 3,
         "requiredPassed": sum(1 for row in rows if row["requiredForEntry"] and row["status"] == "PASS"),

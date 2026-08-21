@@ -324,6 +324,11 @@ assert.ok(["LONG SETUP READY", "SHORT SETUP READY"].includes(module2.status), `M
 assert.equal(module2.scenarioFlags.mandatoryChecklistMatched, true, "Module 2 mandatory sequence must be complete");
 assert.equal(Boolean((module2.scenarioFlags.sweep as any)?.level), true, "Module 2 must retain swept liquidity evidence");
 assert.equal(Boolean((module2.scenarioFlags.module2Variant as any)?.paperEligible), true, "Module 2 must select one paper-approved variant");
+assert.equal((module2.scenarioFlags.module2Variant as any)?.approvalStatus, "PRODUCTION_APPROVED", "Live Module 2 must select only a production-approved variant");
+assert.ok(
+  Number((module2.scenarioFlags.confirmationLayer as any)?.count) >= Number((module2.scenarioFlags.confirmationLayer as any)?.productionRequired),
+  "Live Module 2 must satisfy the production confirmation floor"
+);
 const module2Plan = module2.scenarioFlags.tradePlan as any;
 const module2PlanCandidates = module2.scenarioFlags.tradePlanCandidates as any[];
 assert.ok(module2Plan?.source, "Module 2 must expose the selected structural trade-plan source");

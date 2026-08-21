@@ -139,7 +139,7 @@ async function validateCatalog(tenantId: string | null) {
     checks.push({
       name: "Module 2 variant registry",
       status: Number(registry?.total ?? 0) === 10 && Number(registry?.paper_eligible ?? 0) === 9 && Number(registry?.no_confirmation_control ?? 0) === 1 && Number(registry?.legacy_displacement_retest ?? 0) === 0 ? "PASS" : "FAIL",
-      detail: `${registry?.total ?? 0} independent A-J profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. A-I can create signals after risk approval; J is research-only.`,
+      detail: `${registry?.total ?? 0} independent A-J profile(s), ${registry?.production_approved ?? 0} production-approved, ${registry?.paper_eligible ?? 0} paper-eligible. Only E/F/I can create production signals; A-D/G/H remain paper/replay evidence and J is research-only.`,
       evidence: registry
     });
     const exactProfiles = await client.query(
@@ -216,7 +216,8 @@ async function validateCatalog(tenantId: string | null) {
       maximumSwingLevelAgeDays: value.maximumSwingLevelAgeDays ?? null,
       countertrendResolutionMode: value.countertrendResolutionMode ?? null,
       positionManagementMode: value.positionManagementMode ?? null,
-      minimumTradesForInsight: value.minimumTradesForInsight ?? null
+      minimumTradesForInsight: value.minimumTradesForInsight ?? null,
+      minimumProductionConfirmations: value.minimumProductionConfirmations ?? null
     }
   });
 
@@ -365,6 +366,7 @@ async function validateLatestBacktest(tenantId: string | null) {
 
 async function validateSetupChain(tenantId: string | null) {
   const registryCreatedAt = await module2VariantRegistryCreatedAt();
+  const productionContractAppliedAt = await migrationAppliedAt("092_module2_production_confirmation_floor.sql");
   const params: unknown[] = [MODULE_CODE, VALIDATION_SINCE_HOURS];
   const tenantFilter = tenantId ? `AND sc.tenant_id = $${params.push(tenantId)}` : "";
   const rows = (await client.query(
@@ -390,10 +392,23 @@ async function validateSetupChain(tenantId: string | null) {
      FROM setup_candidates sc
      LEFT JOIN trade_plans tp ON tp.setup_candidate_id = sc.id
      LEFT JOIN trades t ON t.trade_plan_id = tp.id
-     LEFT JOIN notifications n ON n.tenant_id = sc.tenant_id
-       AND n.event_type LIKE 'MODULE2%'
-       AND n.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
-     LEFT JOIN journal_entries j ON j.setup_candidate_id = sc.id
+     LEFT JOIN LATERAL (
+       SELECT notification.id, notification.data
+       FROM notifications notification
+       WHERE notification.tenant_id = sc.tenant_id
+         AND notification.event_type LIKE 'MODULE2%'
+         AND notification.data->>'setupCandidateId' = sc.id::text
+         AND notification.created_at BETWEEN sc.detected_at - interval '2 minutes' AND sc.detected_at + interval '15 minutes'
+       ORDER BY notification.created_at DESC, notification.id DESC
+       LIMIT 1
+     ) n ON true
+     LEFT JOIN LATERAL (
+       SELECT journal.id
+       FROM journal_entries journal
+       WHERE journal.setup_candidate_id = sc.id
+       ORDER BY journal.created_at ASC, journal.id ASC
+       LIMIT 1
+     ) j ON true
      WHERE sc.module_code = $1
        AND sc.detected_at >= now() - ($2::int * interval '1 hour')
        AND sc.scenario <> 'QA_TEST_SIGNAL'
@@ -433,7 +448,8 @@ async function validateSetupChain(tenantId: string | null) {
 
   const legacyEntryReady = entryReady.filter((row) => !setupHasVariant(row) && isBeforeRegistry(row, registryCreatedAt));
   const postUpgradeMissingVariant = entryReady.filter((row) => !setupHasVariant(row) && !isBeforeRegistry(row, registryCreatedAt));
-  const productionEntryReady = entryReady.filter((row) => setupHasVariant(row));
+  const preContractEntryReady = entryReady.filter((row) => setupHasVariant(row) && isBefore(row, productionContractAppliedAt));
+  const productionEntryReady = entryReady.filter((row) => setupHasVariant(row) && !isBefore(row, productionContractAppliedAt));
 
   if (legacyEntryReady.length > 0) {
     checks.push({
@@ -453,13 +469,22 @@ async function validateSetupChain(tenantId: string | null) {
     evidence: postUpgradeMissingVariant.slice(0, 5).map(setupEvidence)
   });
 
+  if (preContractEntryReady.length > 0) {
+    checks.push({
+      name: "Pre-confirmation-floor setup rows",
+      status: "WARN",
+      detail: `${preContractEntryReady.length} entry-ready setup(s) predate migration 092. They remain historical evidence and do not prove the current E/F/I production contract.`,
+      evidence: preContractEntryReady.slice(0, 5).map(setupEvidence)
+    });
+  }
+
   if (productionEntryReady.length === 0) {
     checks.push({
       name: "Production paper-trade chain",
       status: legacyEntryReady.length > 0 ? "WARN" : "WARN",
       detail: legacyEntryReady.length > 0
         ? "Only legacy entry-ready rows were found. The next live Module 2 setup will validate the new paper-trade, notification, and journal chain."
-        : "No post-upgrade entry-ready Module 2 setup has occurred yet."
+        : "No post-migration-092 entry-ready Module 2 setup has occurred yet."
     });
     return;
   }
@@ -636,14 +661,19 @@ function hasUltimateConfigurationFields(value: any) {
     "maximumSwingLevelAgeDays",
     "countertrendResolutionMode",
     "positionManagementMode",
-    "minimumTradesForInsight"
+    "minimumTradesForInsight",
+    "minimumProductionConfirmations"
   ].every((key) => Object.prototype.hasOwnProperty.call(value ?? {}, key));
 }
 
 function isBeforeRegistry(row: any, registryCreatedAt: Date | null) {
-  if (!registryCreatedAt) return false;
+  return isBefore(row, registryCreatedAt);
+}
+
+function isBefore(row: any, boundary: Date | null) {
+  if (!boundary) return false;
   const detectedAt = row.detected_at ? new Date(row.detected_at).getTime() : Number.NaN;
-  return Number.isFinite(detectedAt) && detectedAt < registryCreatedAt.getTime();
+  return Number.isFinite(detectedAt) && detectedAt < boundary.getTime();
 }
 
 function setupEvidence(row: any) {
@@ -705,6 +735,18 @@ async function module2VariantRegistryCreatedAt() {
     [MODULE_CODE]
   );
   return row?.created_at ? new Date(row.created_at) : null;
+}
+
+async function migrationAppliedAt(filename: string) {
+  if (!(await hasTable("schema_migrations"))) return null;
+  const row = await one(
+    `SELECT applied_at
+     FROM schema_migrations
+     WHERE filename = $1
+     LIMIT 1`,
+    [filename]
+  );
+  return row?.applied_at ? new Date(row.applied_at) : null;
 }
 
 function summarize(items: Check[]) {
