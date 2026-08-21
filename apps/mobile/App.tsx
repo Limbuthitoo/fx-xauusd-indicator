@@ -444,7 +444,7 @@ function AppContent() {
 
   useEffect(() => {
     if (!token || authUser?.passwordChangeRequired) return;
-    loadDashboard(token, false, true).catch((error) => {
+    loadDashboard(token, false).catch((error) => {
       setLoading(false);
       setPushStatus((error as Error).message || "Dashboard sync failed");
     });
@@ -508,7 +508,7 @@ function AppContent() {
             return next;
           });
           if (payload.automation) {
-            loadDashboard(token, false, true).catch(() => undefined);
+            loadDashboard(token, false).catch(() => undefined);
           }
         } catch {
           setSocketStatus("Socket message error");
@@ -714,10 +714,10 @@ function AppContent() {
     });
   }
 
-  async function loadDashboard(authToken = token, showSpinner = true, syncChart = true) {
+  async function loadDashboard(authToken = token, showSpinner = true, syncChart = false, fresh = false) {
     if (!authToken) return;
     if (showSpinner) setLoading(true);
-    const response = await fetch(`${apiBaseUrl}/api/mobile/dashboard`, {
+    const response = await fetch(`${apiBaseUrl}/api/mobile/dashboard${fresh ? "?fresh=true" : ""}`, {
       headers: { authorization: `Bearer ${authToken}` }
     });
     if (!response.ok) throw new Error(await response.text());
@@ -770,11 +770,11 @@ function AppContent() {
     );
   }
 
-  async function loadChart(moduleCode: string, authToken = token) {
+  async function loadChart(moduleCode: string, authToken = token, fresh = false) {
     if (!authToken) return;
     setChartLoadingModule(moduleCode);
     try {
-      const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=180`, {
+      const response = await fetch(`${apiBaseUrl}/api/mobile/chart?moduleCode=${encodeURIComponent(moduleCode)}&limit=180${fresh ? "&fresh=true" : ""}`, {
         headers: { authorization: `Bearer ${authToken}` }
       });
       if (!response.ok) throw new Error(await response.text());
@@ -863,8 +863,8 @@ function AppContent() {
   async function refresh() {
     setRefreshing(true);
     try {
-      await loadDashboard(token, false);
-      if (selectedModuleCode) await loadChart(selectedModuleCode, token);
+      await loadDashboard(token, false, false, true);
+      if (selectedModuleCode) await loadChart(selectedModuleCode, token, true);
     } catch (error) {
       Alert.alert("Refresh failed", (error as Error).message);
     } finally {

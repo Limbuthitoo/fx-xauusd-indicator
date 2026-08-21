@@ -46,6 +46,7 @@ services:
       BACKUP_DIR: ${BACKUP_DIR:-backups/postgres}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
+      DATABASE_POOL_MAX: ${API_DATABASE_POOL_MAX:-20}
       MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
     ports:
       - "127.0.0.1:7073:7073"
@@ -92,6 +93,7 @@ services:
       BACKUP_DIR: ${BACKUP_DIR:-backups/postgres}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
       SLOW_REQUEST_THRESHOLD_MS: ${SLOW_REQUEST_THRESHOLD_MS:-1500}
+      DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-8}
       MARKET_CLOSED_DATES: ${MARKET_CLOSED_DATES:-}
     healthcheck:
       test: ["CMD-SHELL", "/opt/venv/bin/python3 -c 'import psycopg' && node -e \"const pg=require('pg'); const c=new pg.Client({connectionString:process.env.DATABASE_URL}); c.connect().then(()=>c.query(\\\"SELECT heartbeat_at FROM worker_heartbeats WHERE worker_name='market-data-worker' AND heartbeat_at > now() - interval '2 minutes' LIMIT 1\\\")).then(r=>{c.end();process.exit(r.rowCount?0:1)}).catch(()=>process.exit(1))\""]

@@ -41,8 +41,9 @@ app.addHook("onResponse", async (request, reply) => {
   const statusCode = reply.statusCode;
   const slow = durationMs >= config.slowRequestThresholdMs;
   const failed = statusCode >= 500;
-  if (slow || failed) {
-    await recordOperationalEvent({
+  const internalBundleRequest = request.headers["x-orb-internal-bundle"] === "1";
+  if (!internalBundleRequest && (slow || failed)) {
+    void recordOperationalEvent({
       severity: failed ? "ERROR" : "WARN",
       category: "API",
       eventType: failed ? "API_REQUEST_FAILED" : "API_REQUEST_SLOW",
@@ -56,7 +57,7 @@ app.addHook("onResponse", async (request, reply) => {
       metadata: { url: request.url }
     });
   }
-  void cleanupOperationalEvents();
+  if (!internalBundleRequest) void cleanupOperationalEvents();
 });
 
 await app.register(cors, {

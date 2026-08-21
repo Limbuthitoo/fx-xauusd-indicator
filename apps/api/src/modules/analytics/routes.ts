@@ -587,14 +587,15 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
       transitions: []
     };
   }
-  const variants = await query(
-    `SELECT code, name, category, approval_status, paper_eligible, sort_order
-     FROM module2_strategy_variants
-     WHERE module_code = 'high_probability_strategy_2'
-     ORDER BY sort_order`
-  );
-  const performance = await query(
-    `SELECT
+  const [variants, performance, blockers, transitions, resultsByVariant] = await Promise.all([
+    query(
+      `SELECT code, name, category, approval_status, paper_eligible, sort_order
+       FROM module2_strategy_variants
+       WHERE module_code = 'high_probability_strategy_2'
+       ORDER BY sort_order`
+    ),
+    query(
+      `SELECT
        COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode', 'UNCLASSIFIED_VARIANT') AS variant_code,
        COALESCE(sc.scenario_flags->'module2Variant'->>'name', sc.scenario_flags->>'variantName') AS variant_name,
        count(t.id)::int AS trades,
@@ -610,11 +611,11 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
        AND sc.module_code = 'high_probability_strategy_2'
        AND sc.scenario <> 'QA_TEST_SIGNAL'
        AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-     GROUP BY variant_code, variant_name`,
-    [tenantId]
-  );
-  const blockers = await query(
-    `SELECT
+       GROUP BY variant_code, variant_name`,
+      [tenantId]
+    ),
+    query(
+      `SELECT
        COALESCE(sc.scenario_flags->'module2Variant'->>'code', sc.scenario_flags->>'variantCode', 'UNCLASSIFIED_VARIANT') AS variant_code,
        sre.rule_code,
        count(*)::int AS count
@@ -633,19 +634,20 @@ async function buildModule2VariantMetrics(tenantId: string | null) {
          )
        )
      GROUP BY variant_code, sre.rule_code
-     ORDER BY count DESC`,
-    [tenantId]
-  );
-  const transitions = await query(
-    `SELECT variant_code, to_state, count(*)::int AS count, max(occurred_at) AS latest_at
-     FROM module2_state_transitions
-     WHERE tenant_id = $1
-     GROUP BY variant_code, to_state
-     ORDER BY max(occurred_at) DESC`,
-    [tenantId]
-  );
+       ORDER BY count DESC`,
+      [tenantId]
+    ),
+    query(
+      `SELECT variant_code, to_state, count(*)::int AS count, max(occurred_at) AS latest_at
+       FROM module2_state_transitions
+       WHERE tenant_id = $1
+       GROUP BY variant_code, to_state
+       ORDER BY max(occurred_at) DESC`,
+      [tenantId]
+    ),
+    module2LiveResultsByVariant(tenantId)
+  ]);
   const byVariant = new Map(performance.rows.map((row: any) => [row.variant_code, row]));
-  const resultsByVariant = await module2LiveResultsByVariant(tenantId);
   const blockerMap = new Map<string, any>();
   for (const row of blockers.rows as any[]) {
     if (!blockerMap.has(row.variant_code)) blockerMap.set(row.variant_code, row);

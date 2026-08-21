@@ -2,11 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { createReadStream } from "node:fs";
 import { clocks } from "../../infrastructure/time.js";
 import { query } from "../../infrastructure/db/client.js";
+import { redisClient } from "../../infrastructure/redis/client.js";
 import { requireAdmin } from "../auth/routes.js";
 import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from "../notifications/push.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { buildTargetPerformanceReport } from "../analytics/target-performance.js";
 import { buildProductionObservationReport } from "../observations/service.js";
+
+const MOBILE_READ_CACHE_SECONDS = 5;
 
 export async function mobileRoutes(app: FastifyInstance) {
   app.get("/api/mobile/app-update", async (request) => {
@@ -63,7 +66,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       error.statusCode = 403;
       throw error;
     }
-    const search = request.query as { moduleCode?: string; symbol?: string; limit?: string };
+    const search = request.query as { moduleCode?: string; symbol?: string; limit?: string; fresh?: string };
     const moduleCode = search.moduleCode ?? "orb_max_options";
     const symbol = search.symbol ?? "XAUUSD";
     const timeframe = 5;
@@ -80,6 +83,11 @@ export async function mobileRoutes(app: FastifyInstance) {
       const error = new Error("Module access denied.") as Error & { statusCode?: number };
       error.statusCode = 403;
       throw error;
+    }
+    const chartCacheKey = `mobile:chart:v2:${session.sub}:${session.tenantId}:${moduleCode}:${symbol}:${limit}`;
+    if (search.fresh !== "true") {
+      const cachedChart = await readMobileCache(chartCacheKey);
+      if (cachedChart) return cachedChart;
     }
     const [candles, setup, trade, openingRanges] = await Promise.all([
       query(
@@ -136,7 +144,7 @@ export async function mobileRoutes(app: FastifyInstance) {
         spread: row.spread == null ? null : Number(row.spread)
       }))
       .filter((row: any) => row.timestampUtc && [row.open, row.high, row.low, row.close].every(Number.isFinite));
-    return {
+    const payload = {
       symbol,
       moduleCode,
       timeframeMinutes: timeframe,
@@ -148,11 +156,20 @@ export async function mobileRoutes(app: FastifyInstance) {
       trade: trade.rows[0] ?? null,
       levels: mobileChartLevels(moduleCode, latestSetup, trade.rows[0] ?? null, openingRanges)
     };
+    await writeMobileCache(chartCacheKey, payload);
+    return payload;
   });
 
   app.get("/api/mobile/dashboard", async (request) => {
     const session = requireAdmin(request);
     if (!session.tenantId) return { user: session, tenant: null, modules: [], notifications: [], clocks: clocks() };
+    const tenantId = session.tenantId;
+    const search = request.query as { fresh?: string };
+    const dashboardCacheKey = `mobile:dashboard:v2:${session.sub}:${tenantId}`;
+    if (search.fresh !== "true") {
+      const cachedDashboard = await readMobileCache(dashboardCacheKey);
+      if (cachedDashboard) return cachedDashboard;
+    }
     const [tenant, modules, notifications, supportTickets, supportInfo] = await Promise.all([
       query(
         `SELECT t.*, s.status AS subscription_status, p.name AS plan_name
@@ -166,7 +183,7 @@ export async function mobileRoutes(app: FastifyInstance) {
          ) s ON true
          LEFT JOIN subscription_plans p ON p.id = s.plan_id
          WHERE t.id = $1`,
-        [session.tenantId]
+        [tenantId]
       ),
       query(
         `SELECT m.code, m.name, m.description, m.target_win_rate, tm.status AS tenant_module_status
@@ -174,7 +191,7 @@ export async function mobileRoutes(app: FastifyInstance) {
          JOIN platform_strategy_modules m ON m.id = tm.module_id
          WHERE tm.tenant_id = $1 AND tm.status = 'ENABLED' AND m.status = 'ACTIVE'
          ORDER BY m.sort_order`,
-        [session.tenantId]
+        [tenantId]
       ),
       query(
         `SELECT *
@@ -182,7 +199,7 @@ export async function mobileRoutes(app: FastifyInstance) {
          WHERE tenant_id = $1
          ORDER BY created_at DESC
          LIMIT 30`,
-        [session.tenantId]
+        [tenantId]
       ),
       query(
         `SELECT st.*, m.name AS requested_module_name
@@ -191,28 +208,31 @@ export async function mobileRoutes(app: FastifyInstance) {
          WHERE st.tenant_id = $1
          ORDER BY st.created_at DESC
          LIMIT 20`,
-        [session.tenantId]
+        [tenantId]
       ),
       query("SELECT value FROM app_settings WHERE key = 'platform.business' LIMIT 1")
     ]);
-    const moduleRows = [];
-    for (const module of modules.rows as any[]) {
+    const moduleRows = await Promise.all((modules.rows as any[]).map(async (module) => {
       const [setup, trade, weekly, monthly, targetWeek, targetMonth, observation, latestSession] = await Promise.all([
         query(
-          `SELECT
-             sc.id, sc.status, sc.scenario, sc.direction, sc.favorability_score, sc.favorability_grade,
-             sc.entry_price, sc.stop_price, sc.target_price, sc.final_reason, sc.detected_at, sc.scenario_flags,
+          `WITH latest_setup AS MATERIALIZED (
+             SELECT
+               id, status, scenario, direction, favorability_score, favorability_grade,
+               entry_price, stop_price, target_price, final_reason, detected_at, scenario_flags
+             FROM setup_candidates
+             WHERE tenant_id = $1 AND module_code = $2
+             ORDER BY detected_at DESC
+             LIMIT 1
+           )
+           SELECT sc.*,
              COALESCE(
-               json_agg(sre ORDER BY sre.evaluated_at) FILTER (WHERE sre.id IS NOT NULL),
+               (SELECT json_agg(sre ORDER BY sre.evaluated_at)
+                FROM setup_rule_evaluations sre
+                WHERE sre.setup_candidate_id = sc.id),
                '[]'::json
              ) AS evaluations
-           FROM setup_candidates sc
-           LEFT JOIN setup_rule_evaluations sre ON sre.setup_candidate_id = sc.id
-           WHERE sc.tenant_id = $1 AND sc.module_code = $2
-           GROUP BY sc.id
-           ORDER BY sc.detected_at DESC
-           LIMIT 1`,
-          [session.tenantId, module.code]
+           FROM latest_setup sc`,
+          [tenantId, module.code]
         ),
         query(
           `SELECT t.*, sc.direction, sc.scenario, sc.module_code, target_progress.targets
@@ -236,23 +256,23 @@ export async function mobileRoutes(app: FastifyInstance) {
            WHERE sc.tenant_id = $1 AND sc.module_code = $2
            ORDER BY CASE WHEN t.outcome = 'ACTIVE' THEN 0 ELSE 1 END, COALESCE(t.opened_at, t.closed_at) DESC
            LIMIT 1`,
-          [session.tenantId, module.code]
+          [tenantId, module.code]
         ),
-        modulePerformance(session.tenantId, module.code, "week"),
-        modulePerformance(session.tenantId, module.code, "month"),
-        buildTargetPerformanceReport(session.tenantId, module.code, "week"),
-        buildTargetPerformanceReport(session.tenantId, module.code, "month"),
-        buildProductionObservationReport({ tenantId: session.tenantId, moduleCode: module.code, days: 7 }),
+        modulePerformance(tenantId, module.code, "week"),
+        modulePerformance(tenantId, module.code, "month"),
+        buildTargetPerformanceReport(tenantId, module.code, "week"),
+        buildTargetPerformanceReport(tenantId, module.code, "month"),
+        buildProductionObservationReport({ tenantId, moduleCode: module.code, days: 7 }),
         query(
           `SELECT state, session_start_at, opening_range_end_at, signal_window_end_at
            FROM trading_sessions
            WHERE tenant_id = $1 AND module_code = $2
            ORDER BY session_date DESC, created_at DESC
            LIMIT 1`,
-          [session.tenantId, module.code]
+          [tenantId, module.code]
         )
       ]);
-      moduleRows.push({
+      return {
         ...module,
         shortName: moduleShortName(module.code),
         timeframeMinutes: 5,
@@ -263,9 +283,9 @@ export async function mobileRoutes(app: FastifyInstance) {
         targetPerformance: { week: targetWeek, month: targetMonth },
         productionObservation: observation,
         session: latestSession.rows[0] ?? null
-      });
-    }
-    return {
+      };
+    }));
+    const payload = {
       user: session,
       tenant: tenant.rows[0] ?? null,
       clocks: clocks(),
@@ -274,6 +294,8 @@ export async function mobileRoutes(app: FastifyInstance) {
       supportTickets: supportTickets.rows,
       supportInfo: normalizeSupportInfo(supportInfo.rows[0]?.value)
     };
+    await writeMobileCache(dashboardCacheKey, payload);
+    return payload;
   });
 
   app.post("/api/mobile/push-token", async (request) => {
@@ -421,6 +443,25 @@ export async function mobileRoutes(app: FastifyInstance) {
     );
     return { disabled: rows.length };
   });
+}
+
+async function readMobileCache(key: string) {
+  const redis = redisClient();
+  if (!redis) return null;
+  const cached = await redis.get(key).catch(() => null);
+  if (!cached) return null;
+  try {
+    return JSON.parse(cached);
+  } catch {
+    await redis.del(key).catch(() => undefined);
+    return null;
+  }
+}
+
+async function writeMobileCache(key: string, payload: unknown) {
+  const redis = redisClient();
+  if (!redis) return;
+  await redis.set(key, JSON.stringify(payload), "EX", MOBILE_READ_CACHE_SECONDS).catch(() => undefined);
 }
 
 function absoluteApiUrl(path: string, request?: { headers?: Record<string, string | string[] | undefined>; protocol?: string }) {
