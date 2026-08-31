@@ -124,6 +124,8 @@ export interface StrategyConfiguration {
     maximumDailyLossPercent: number;
     maximumWeeklyLossPercent: number;
     maximumTradesPerSession: number;
+    atrPeriod?: number;
+    minimumStopAtr?: number;
     maximumConsecutiveLosses: number;
     mandatoryStopLoss: boolean;
     minimumRewardToRisk: number;

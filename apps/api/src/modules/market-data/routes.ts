@@ -123,7 +123,6 @@ const ORB_SESSION_PRESETS = [
   { preset: "LONDON_ORB", label: "London", sessionStart: "03:00", tradeWindowEnd: "12:00" },
   { preset: "NEW_YORK_ORB", label: "New York", sessionStart: "09:15", tradeWindowEnd: "16:00" }
 ] as const;
-const MODULE1_ACTIVE_ORB_PRESET = "NEW_YORK_ORB";
 const DEFAULT_TWELVE_DATA_TIMEFRAME = twelveIntervalToTimeframe(config.twelveDataInterval) || SHARED_TWELVE_DATA_SOURCE_TIMEFRAME;
 const XAUUSD_PAPER_SPEC = {
   contractSize: 100,
@@ -1663,21 +1662,12 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
   const sharedFeedWindow = sharedNewYorkFeedWindow(newYorkDate());
   const sharedNyStart = new Date(sharedFeedWindow.startAt).getTime();
   const sharedNyEnd = new Date(sharedFeedWindow.endAt).getTime();
-  const insideSharedNyFeed = now >= sharedNyStart && now <= sharedNyEnd;
   const apiStart = tenant.module_code === "orb_max_options"
-    ? Math.max(sessionStart - settings.orb.apiStartLeadMinutes * 60_000, sharedNyStart)
+    ? sessionStart - settings.orb.apiStartLeadMinutes * 60_000
     : Math.max(sessionStart - settings.orb.apiStartLeadMinutes * 60_000, sharedNyStart);
-  const apiStop = Math.min(sessionEnd, sharedNyEnd);
+  const apiStop = tenant.module_code === "orb_max_options" ? sessionEnd : Math.min(sessionEnd, sharedNyEnd);
   state.apiStartAt = new Date(apiStart).toISOString();
   state.apiStopAt = new Date(apiStop).toISOString();
-
-  if (tenant.module_code === "orb_max_options" && now >= sessionStart && now <= sessionEnd && !insideSharedNyFeed) {
-    state.phase = "CATCH_UP";
-    state.nextActionAt = new Date(Date.now() + config.twelveDataCatchupSeconds * 1000).toISOString();
-    state.reason = `${state.moduleName} is tracking ${orbSessionLabel(session.session_preset)} with the shared 5-minute XAUUSD candle feed.`;
-    state.running = false;
-    return state;
-  }
 
   if (now < apiStart) {
     state.phase = "PRE_SESSION";
@@ -1691,10 +1681,10 @@ async function evaluateTenantSchedule(tenant: any, settings: RuntimeSettings) {
         : "MODULE2";
       await notifyTenantOnce(
         tenant.id,
-        `mobile-ny-pre-session-${tenant.module_code}-${session.id}`,
-        `${modulePrefix}_NY_PRE_SESSION`,
-        `${state.moduleName} starts soon`,
-        `XAUUSD live monitoring starts at ${new Date(apiStart).toISOString()}. Get ready for paper-trade alerts.`
+        `mobile-pre-session-${tenant.module_code}-${session.id}`,
+        tenant.module_code === "orb_max_options" ? `${modulePrefix}_PRE_SESSION` : `${modulePrefix}_NY_PRE_SESSION`,
+        `${tenant.module_code === "orb_max_options" ? orbSessionLabel(session.session_preset) : "New York"} session starts soon`,
+        `XAUUSD ${state.moduleName} live monitoring starts at ${new Date(apiStart).toISOString()}. Get ready for paper-trade alerts.`
       );
     }
     return state;
@@ -1739,7 +1729,7 @@ export function sharedNewYorkFeedWindow(sessionDate: string) {
 function currentOrNextOrbSessionWindow(settings: RuntimeSettings, now = new Date()) {
   const dates = [shiftIsoDate(newYorkDate(now), -1), newYorkDate(now), shiftIsoDate(newYorkDate(now), 1)];
   const candidates = dates.flatMap((sessionDate) =>
-    ORB_SESSION_PRESETS.filter((preset) => preset.preset === MODULE1_ACTIVE_ORB_PRESET).map((preset) => {
+    ORB_SESSION_PRESETS.filter((preset) => settings.orb.enabledSessionPresets.includes(preset.preset)).map((preset) => {
       const sessionStart = preset.preset === "NEW_YORK_ORB" ? settings.orb.sessionStart : preset.sessionStart;
       const tradeWindowEnd = preset.preset === "NEW_YORK_ORB" ? settings.orb.tradeWindowEnd : preset.tradeWindowEnd;
       const times = sessionTimesForDate(sessionDate, sessionStart, settings.orb.openingRangeMinutes, tradeWindowEnd);
@@ -1769,7 +1759,7 @@ function orbSessionLabel(sessionPreset?: string | null) {
 }
 
 export function isModule1ActiveOrbPreset(sessionPreset?: string | null) {
-  return sessionPreset === MODULE1_ACTIVE_ORB_PRESET || sessionPreset === "NY_0915" || sessionPreset === "NY_0930";
+  return ORB_SESSION_PRESETS.some((preset) => preset.preset === sessionPreset) || sessionPreset === "NY_0915" || sessionPreset === "NY_0930";
 }
 
 function nextNewYorkTradingApiStart(settings: RuntimeSettings) {
@@ -2712,6 +2702,9 @@ function normalizeToTimeframe(timestamp: string, timeframeMinutes: number) {
 async function processLiveSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const settings = await getRuntimeSettings(activeTenantId);
+  const enabledSessionPresets = settings.orb.enabledSessionPresets.includes("NEW_YORK_ORB")
+    ? [...settings.orb.enabledSessionPresets, "NY_0915", "NY_0930"]
+    : settings.orb.enabledSessionPresets;
   const sessionResult = await query(
     `SELECT ts.*, sv.configuration_json, sv.opening_range_minutes
      FROM trading_sessions ts
@@ -2719,7 +2712,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
      WHERE ts.symbol = $1
        AND ts.tenant_id = $2
        AND ts.module_code = 'orb_max_options'
-       AND ts.session_preset IN ('NEW_YORK_ORB', 'NY_0915', 'NY_0930')
+       AND ts.session_preset = ANY($4::text[])
        AND ts.state NOT IN ('SESSION_COMPLETED', 'TRADE_CLOSED')
      ORDER BY
        CASE
@@ -2730,7 +2723,7 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
        ts.session_start_at DESC,
        ts.created_at DESC
      LIMIT 1`,
-    [symbol, activeTenantId, new Date().toISOString()]
+    [symbol, activeTenantId, new Date().toISOString(), enabledSessionPresets]
   );
   const session = sessionResult.rows[0] as any;
   if (!session) return { sessionFound: false };
@@ -4160,13 +4153,22 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
     [session.tenant_id, session.session_date ?? newYorkDate()]
   );
   const strategyProfile = releaseGateProfileCode(moduleCode, setup) ?? String(setup.scenario ?? "UNCLASSIFIED");
+  const moduleConfiguration = moduleCode === "orb_max_options"
+    ? await getTenantOrbStrategyConfiguration(session.tenant_id, session.configuration_json)
+    : {};
+  const subscriberDailyMaximum = moduleCode === "orb_max_options"
+    ? Math.min(
+        PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate,
+        Math.max(1, Math.round(Number((moduleConfiguration as any)?.tradeSetup?.maximumSignalsPerDay ?? PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate)))
+      )
+    : PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate;
   const profilePlans = plans.rows.filter((row: any) =>
     row.module_code === moduleCode
     && (releaseGateProfileCode(row.module_code, row) ?? String(row.scenario ?? "UNCLASSIFIED")) === strategyProfile
   );
   const reasons: string[] = [];
-  if (plans.rows.length >= PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate) {
-    reasons.push(`Daily quality-signal limit of ${PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate} has been reached.`);
+  if (plans.rows.length >= subscriberDailyMaximum) {
+    reasons.push(`Your daily quality-signal limit of ${subscriberDailyMaximum} has been reached.`);
   }
   if (profilePlans.length >= PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile) {
     reasons.push(`${strategyProfile} has reached its daily limit of ${PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile} quality signals.`);
@@ -4180,7 +4182,7 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
   const result = {
     passed: reasons.length === 0,
     dailySignals: plans.rows.length,
-    dailyMaximum: PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate,
+    dailyMaximum: subscriberDailyMaximum,
     strategyProfile,
     profileSignals: profilePlans.length,
     profileMaximum: PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile,
@@ -4420,17 +4422,6 @@ async function attemptProductionPaperTrade({
       message: "The BUY/SELL notification already exists; resuming secondary paper-tracking artifacts idempotently.",
       metadata: { moduleCode, setupId: setup.id, signalThesisKey, notificationId: duplicateThesis.rows[0].id }
     });
-  } else {
-    await notifyTenantOnce(
-      session.tenant_id,
-      `signal-ready-${signalThesisKey}`,
-      moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
-      `${alert.title} signal ready`,
-      `${alert.body} | ${setup.final_reason ?? "Valid signal profile matched."}`,
-      "HIGH",
-      { ...alert.data, signalThesisKey },
-      "validEntries"
-    );
   }
   const paperTrackingEligible = effectiveDecision.scenarioFlags?.paperTrackingEligible !== false;
   const paperTrade = settings.paperTradingEnabled && paperTrackingEligible
@@ -4438,6 +4429,19 @@ async function attemptProductionPaperTrade({
     : settings.paperTradingEnabled
       ? { skipped: true, reason: "PAPER_TRACKING_LIMIT", blockers: effectiveDecision.scenarioFlags?.paperTrackingBlockers ?? [] }
       : { skipped: true, reason: "PAPER_TRADING_DISABLED_BY_SETTINGS" };
+  if (!duplicateThesis.rows[0]) {
+    const paperOpened = Boolean((paperTrade as any)?.trade?.id);
+    await notifyTenantOnce(
+      session.tenant_id,
+      `signal-ready-${signalThesisKey}`,
+      moduleCode === "high_probability_strategy_2" ? "MODULE2_SETUP_READY" : "SETUP_READY",
+      `${alert.title} signal ready`,
+      `${alert.body} | ${paperOpened ? "One automatic paper trade is now tracking this signal." : setup.final_reason ?? "Valid signal profile matched."}`,
+      "HIGH",
+      { ...alert.data, signalThesisKey, paperTradeId: (paperTrade as any)?.trade?.id ?? null, paperTradeOpened: paperOpened },
+      "validEntries"
+    );
+  }
   return paperTrade;
 }
 
@@ -4960,17 +4964,6 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
     ) VALUES ($5,$1,$2,$3,'PAPER_TRADE_OPENED','AUTO','NONE',$4,'A','PAPER_ACTIVE')
     ON CONFLICT (setup_candidate_id) WHERE decision = 'PAPER_TRADE_OPENED' DO NOTHING`,
     [setup.id, trade.id, session.id, `Automatic paper ${setup.direction} opened from ${setup.scenario}. ${setup.final_reason ?? ""}`.trim(), session.tenant_id]
-  );
-  const alert = entryAlertDetails(moduleCode, setup, trade, rewardToRisk);
-  await notifyTenantOnce(
-    session.tenant_id,
-    `paper-entry-${trade.id}`,
-    "PAPER_TRADE_OPENED",
-    alert.title,
-    alert.body,
-    "HIGH",
-    alert.data,
-    "paperTradeOpened"
   );
   return { trade, plan, position };
 }
@@ -5705,6 +5698,8 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
     behaviorPreserved: true,
     horizontalObservationOnly: false,
     activeSessionPreset: range.module1RangeSessionPreset ?? session.session_preset,
+    atr5m: context.atr5m,
+    minimumStopAtr: Math.max(1.5, Number(configuration?.risk?.minimumStopAtr ?? 1.5)),
     nyOnly: true,
     breakout,
     falseBreakout,
@@ -5751,9 +5746,15 @@ function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCand
   const estimatedAtr = Number(range.widthAtr) && Number(range.widthAtr) > 0 ? Number(range.width) / Number(range.widthAtr) : Number(range.width);
   const atrBuffer = Math.max(estimatedAtr * 0.08, buffer * 0.25, 0.05);
   const retestSwing = direction === "LONG" ? currentCandle.low : currentCandle.high;
-  const stop = direction === "LONG"
+  const structuralStop = direction === "LONG"
     ? Math.min(retestSwing, Number(range.high)) - atrBuffer
     : Math.max(retestSwing, Number(range.low)) + atrBuffer;
+  const minimumStopAtr = Math.max(1.5, Number(rangeEngineMetadata?.minimumStopAtr ?? 1.5));
+  const atr = Number(rangeEngineMetadata?.atr5m ?? estimatedAtr);
+  const minimumRiskDistance = Number.isFinite(atr) && atr > 0 ? atr * minimumStopAtr : 0;
+  const stop = direction === "LONG"
+    ? Math.min(structuralStop, entry - minimumRiskDistance)
+    : Math.max(structuralStop, entry + minimumRiskDistance);
   const riskDistance = Math.max(Math.abs(entry - stop), 0.00001);
   const target = direction === "LONG" ? entry + riskDistance * 2 : entry - riskDistance * 2;
   const score = Math.min(95, Math.max(70, Math.round(Number(range.qualityScore ?? 70) + (retest?.confirmed ? 10 : 0) + (breakout?.confirmed ? 8 : 0))));
@@ -5791,7 +5792,12 @@ function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCand
           rewardToRisk: 2,
           entryLogic: "Entry uses the completed horizontal range breakout/retest confirmation candle.",
           stopLogic: "Stop is placed beyond the retest swing with an ATR buffer.",
-          targetLogic: "Target is fixed at 2R from the horizontal range risk distance."
+          targetLogic: "Target is fixed at 2R from the horizontal range risk distance.",
+          structuralStop: Number(structuralStop.toFixed(5)),
+          atr: Number.isFinite(atr) ? Number(atr.toFixed(5)) : null,
+          atrPeriod: 14,
+          minimumStopAtr,
+          stopDistanceAtr: Number.isFinite(atr) && atr > 0 ? Number((riskDistance / atr).toFixed(3)) : null
         }
       },
       matrix: {
@@ -6925,7 +6931,7 @@ function tenantStateKey(tenantId: string, moduleCode: string) {
 
 function moduleDisplayName(moduleCode: string) {
   if (moduleCode === "high_probability_strategy_2") return "Module 2 NY Ultimate Liquidity Sweep";
-  return "Module 1 NY ORB MAX";
+  return "Module 1 ORB MAX";
 }
 
 function moduleTimeframeMinutes(moduleCode: string, settings: RuntimeSettings) {

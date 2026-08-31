@@ -91,6 +91,7 @@ type Dashboard = {
   notifications: any[];
   supportTickets?: any[];
   supportInfo?: any;
+  orbStrategy?: any;
 };
 
 type AuthUser = {
@@ -723,8 +724,9 @@ function AppContent() {
     if (!response.ok) throw new Error(await response.text());
     const data = await response.json() as Dashboard;
     setDashboard(data);
-    const nextModuleCode = selectedModuleCode ?? data.modules[0]?.code ?? null;
-    if (!selectedModuleCode && nextModuleCode) setSelectedModuleCode(nextModuleCode);
+    const selectedStillAssigned = data.modules.some((module) => module.code === selectedModuleCode);
+    const nextModuleCode = selectedStillAssigned ? selectedModuleCode : data.modules[0]?.code ?? null;
+    if (nextModuleCode !== selectedModuleCode) setSelectedModuleCode(nextModuleCode);
     loadAssignedModuleLearning(data.modules, authToken).catch(() => undefined);
     loadAssignedJournalTrades(data.modules, authToken).catch(() => undefined);
     if (syncChart && nextModuleCode) await loadChart(nextModuleCode, authToken);
@@ -965,6 +967,32 @@ function AppContent() {
     setPushPreferences(normalizePushPreferences(result.preferences));
   }
 
+  async function saveTradeSetup(input: { sessionPreset: string; maximumSignalsPerDay: number }) {
+    if (!token) return;
+    const current = dashboard?.orbStrategy ?? {};
+    const maximumSignalsPerDay = Math.min(3, Math.max(1, Math.round(input.maximumSignalsPerDay)));
+    const value = {
+      ...current,
+      tradeSetup: {
+        ...(current.tradeSetup ?? {}),
+        enabledSessionPresets: [input.sessionPreset],
+        maximumSignalsPerDay
+      },
+      risk: { ...(current.risk ?? {}), maximumTradesPerSession: maximumSignalsPerDay },
+      paperTrading: { ...(current.paperTrading ?? {}), maximumTradesPerSession: maximumSignalsPerDay }
+    };
+    const response = await fetch(`${apiBaseUrl}/api/tenant/modules/orb_max_options/settings/orb.strategy`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ value })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    await loadDashboard(token, false, false, true);
+  }
+
   async function submitSupportTicket(input: { ticketType: string; title: string; description: string; requestedModuleCode?: string | null }) {
     if (!token) return;
     const response = await fetch(`${apiBaseUrl}/api/tenant/support-tickets`, {
@@ -1044,6 +1072,12 @@ function AppContent() {
   const trackingCount = dashboard?.modules.filter(hasTrackedSignal).length ?? 0;
   const unreadAlerts = dashboard?.notifications?.filter((item: any) => !item.acknowledged_at).length ?? 0;
   const latestAlert = homeLatestAlert(dashboard?.notifications ?? []);
+  const activeSessionDesk = ({
+    SYDNEY_ORB: "Sydney",
+    TOKYO_ORB: "Tokyo",
+    LONDON_ORB: "London",
+    NEW_YORK_ORB: "New York"
+  } as Record<string, string>)[String(dashboard?.orbStrategy?.tradeSetup?.enabledSessionPresets?.[0] ?? "NEW_YORK_ORB")] ?? "New York";
   if (selectedNotificationDetail) {
     return (
       <NotificationDetailScreen
@@ -1079,7 +1113,7 @@ function AppContent() {
             <Image source={BRAND_MARK} style={styles.headerMark} resizeMode="contain" />
             <View style={styles.brandCopy}>
               <Text style={styles.brandTitle}>XAUUSD SIGNAL</Text>
-              <Text style={styles.brandSubtitle}>New York desk</Text>
+              <Text style={styles.brandSubtitle}>{activeSessionDesk} desk</Text>
             </View>
           </View>
           <Pressable
@@ -1179,6 +1213,7 @@ function AppContent() {
             onTestPush={() => sendTestPush().catch((error) => Alert.alert("Test push failed", error.message))}
             onDisablePushDevice={(deviceId) => disablePushDevice(deviceId).catch((error) => Alert.alert("Disable failed", error.message))}
             onSavePushPreferences={(preferences) => savePushPreferences(preferences).catch((error) => Alert.alert("Save failed", error.message))}
+            onSaveTradeSetup={(input) => saveTradeSetup(input).then(() => Alert.alert("Trade setup saved", "Module 1 will use this session and daily signal limit from the next evaluation.")).catch((error) => Alert.alert("Save failed", error.message))}
             onStartMfa={startMfaSetup}
             onEnableMfa={(otp) => enableMfa(otp).then((nextToken) => loadDashboard(nextToken, false, false)).then(() => Alert.alert("2FA enabled", "Your next login will require a 6-digit code.")).catch((error) => Alert.alert("2FA failed", error.message))}
             onDisableMfa={(otp) => disableMfa(otp).then((nextToken) => loadDashboard(nextToken, false, false)).then(() => Alert.alert("2FA disabled", "Two-factor authentication is now disabled.")).catch((error) => Alert.alert("2FA failed", error.message))}
@@ -1261,7 +1296,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string, o
         <Image source={BRAND_LOGO} style={styles.loginLogo} resizeMode="contain" />
         <Text style={styles.eyebrow}>PAPER TRADING ONLY</Text>
         <Text style={styles.loginTitle}>XAUUSD Signal</Text>
-        <Text style={styles.loginCopy}>Tenant mobile companion for NY session indicators, module alerts, and paper-trade entry details.</Text>
+        <Text style={styles.loginCopy}>Tenant mobile companion for session indicators, module alerts, and paper-trade entry details.</Text>
         <TextInput style={styles.input} autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} placeholder="Tenant email" placeholderTextColor="#6f7b75" />
         <TextInput style={styles.input} secureTextEntry value={password} onChangeText={setPassword} placeholder="Password" placeholderTextColor="#6f7b75" />
         {showOtp ? <TextInput style={styles.input} keyboardType="number-pad" value={otp} onChangeText={(value) => setOtp(value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit two-factor code" placeholderTextColor="#6f7b75" /> : null}
@@ -1339,6 +1374,11 @@ function RequiredPasswordChangeScreen({
       </View>
     </SafeAreaView>
   );
+}
+
+function tradeSessionLabel(dashboard: Dashboard | null) {
+  const preset = String(dashboard?.orbStrategy?.tradeSetup?.enabledSessionPresets?.[0] ?? "NEW_YORK_ORB");
+  return ({ SYDNEY_ORB: "Sydney", TOKYO_ORB: "Tokyo", LONDON_ORB: "London", NEW_YORK_ORB: "New York" } as Record<string, string>)[preset] ?? "New York";
 }
 
 function HomeScreen({
@@ -1476,7 +1516,7 @@ function HomeScreen({
 
       <View style={styles.sectionHeadingRow}>
         <SectionTitle title="Strategy Watch" />
-        <Text style={styles.sectionMeta}>NY session</Text>
+        <Text style={styles.sectionMeta}>{tradeSessionLabel(dashboard)} session</Text>
       </View>
       <View style={styles.strategyList}>
         {modules.slice(0, 3).map((module) => {
@@ -2415,6 +2455,7 @@ function MoreScreen({
   onTestPush,
   onDisablePushDevice,
   onSavePushPreferences,
+  onSaveTradeSetup,
   onStartMfa,
   onEnableMfa,
   onDisableMfa,
@@ -2437,6 +2478,7 @@ function MoreScreen({
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
   onSavePushPreferences: (preferences: PushPreferences) => void;
+  onSaveTradeSetup: (input: { sessionPreset: string; maximumSignalsPerDay: number }) => void;
   onStartMfa: () => Promise<{ secret: string; otpAuthUrl: string }>;
   onEnableMfa: (otp: string) => void;
   onDisableMfa: (otp: string) => void;
@@ -2452,6 +2494,13 @@ function MoreScreen({
   const [requestedModuleCode, setRequestedModuleCode] = useState("");
   const [mfaSetup, setMfaSetup] = useState<{ secret: string; otpAuthUrl: string } | null>(null);
   const [mfaCode, setMfaCode] = useState("");
+  const [sessionPreset, setSessionPreset] = useState("NEW_YORK_ORB");
+  const [maximumSignalsPerDay, setMaximumSignalsPerDay] = useState(3);
+
+  useEffect(() => {
+    setSessionPreset(String(dashboard?.orbStrategy?.tradeSetup?.enabledSessionPresets?.[0] ?? "NEW_YORK_ORB"));
+    setMaximumSignalsPerDay(Math.min(3, Math.max(1, Number(dashboard?.orbStrategy?.tradeSetup?.maximumSignalsPerDay ?? 3))));
+  }, [dashboard?.orbStrategy]);
 
   function submitTicket() {
     onCreateTicket({
@@ -2542,17 +2591,47 @@ function MoreScreen({
     );
   }
   if (view === "session-settings") {
+    const sessions = [
+      { preset: "SYDNEY_ORB", label: "Sydney", window: "17:00-02:00 New York" },
+      { preset: "TOKYO_ORB", label: "Tokyo", window: "20:00-05:00 New York" },
+      { preset: "LONDON_ORB", label: "London", window: "03:00-12:00 New York" },
+      { preset: "NEW_YORK_ORB", label: "New York", window: "09:15-16:00 New York" }
+    ];
+    const selectedSession = sessions.find((session) => session.preset === sessionPreset) ?? sessions[3];
     return (
       <>
-        <MoreHeader title="Session Settings" onBack={() => setView("menu")} />
+        <MoreHeader title="Trade Setup" onBack={() => setView("menu")} />
         <View style={styles.moreDiagnosticsCard}>
           <Metric label="New York" value={dashboard?.clocks.newYork ?? "--"} />
           <Metric label="Nepal" value={dashboard?.clocks.nepal ?? "--"} />
-          <Metric label="UTC" value={dashboard?.clocks.utc ?? "--"} />
-          <Metric label="Session" value="NY Monday-Friday" />
+          <Metric label="Session" value={selectedSession.label} />
+          <Metric label="Daily signals" value={maximumSignalsPerDay} />
         </View>
         <View style={styles.moreMenuGroup}>
-          <MoreMenuRow icon="time" title="Trading window" subtitle="Modules evaluate during the New York session." value="Auto" />
+          <Text style={styles.sectionMini}>Trading Session</Text>
+          <View style={styles.ticketTypeGrid}>
+            {sessions.map((session) => (
+              <Pressable key={session.preset} style={[styles.ticketTypeButton, sessionPreset === session.preset && styles.ticketTypeButtonActive]} onPress={() => setSessionPreset(session.preset)}>
+                <Text style={[styles.ticketTypeText, sessionPreset === session.preset && styles.ticketTypeTextActive]}>{session.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.reason}>{selectedSession.window}</Text>
+        </View>
+        <View style={styles.moreMenuGroup}>
+          <Text style={styles.sectionMini}>Signals Per Day</Text>
+          <View style={styles.tradeLimitControl}>
+            <Pressable accessibilityLabel="Decrease daily signals" style={styles.tradeLimitButton} onPress={() => setMaximumSignalsPerDay((value) => Math.max(1, value - 1))}>
+              <Text style={styles.tradeLimitButtonText}>-</Text>
+            </Pressable>
+            <Text style={styles.tradeLimitValue}>{maximumSignalsPerDay}</Text>
+            <Pressable accessibilityLabel="Increase daily signals" style={styles.tradeLimitButton} onPress={() => setMaximumSignalsPerDay((value) => Math.min(3, value + 1))}>
+              <Text style={styles.tradeLimitButtonText}>+</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.fullButton} onPress={() => onSaveTradeSetup({ sessionPreset, maximumSignalsPerDay })}>
+            <Text style={styles.fullButtonText}>Save Trade Setup</Text>
+          </Pressable>
           <MoreMenuRow icon="alerts" title="Pre-session alert" subtitle="Controlled from Push Notification Settings." value={pushPreferences.nyPreSession ? "On" : "Off"} onPress={() => setView("push-settings")} />
         </View>
       </>
@@ -2692,7 +2771,7 @@ function MoreScreen({
       </View>
 
       <View style={styles.moreMenuGroup}>
-        <MoreMenuRow icon="time" title="Session Settings" subtitle="New York session and Nepal time display" value="NY" onPress={() => setView("session-settings")} />
+        <MoreMenuRow icon="time" title="Trade Setup" subtitle="Trading session and daily signal limit" value="Open" onPress={() => setView("session-settings")} />
         <MoreMenuRow icon="alerts" title="Notification History" subtitle="Signal, report, and paper-trade alerts" value="Open" onPress={() => setView("notification-history")} />
         <MoreMenuRow icon="account" title="Support" subtitle={supportInfo.supportEmail ?? "Help, feedback, and issue reports"} value="Help" onPress={() => setView("support")} />
         <MoreMenuRow icon="chart" title="App Updates" subtitle={appUpdate.updateAvailable ? `Version ${appUpdate.latest?.version_name ?? ""} available` : "Latest APK and changelog"} value={appUpdate.updateAvailable ? "Update" : "Open"} onPress={() => setView("app-updates")} />
@@ -2805,9 +2884,8 @@ function PushSettingsScreen({
       </View>
 
       <View style={styles.moreMenuGroup}>
-        <PushToggleRow title="NY pre-session reminder" subtitle="Notify before New York monitoring starts." value={preferences.nyPreSession} onValueChange={(value) => update("nyPreSession", value)} />
+        <PushToggleRow title="Pre-session reminder" subtitle="Notify before your selected trading session starts." value={preferences.nyPreSession} onValueChange={(value) => update("nyPreSession", value)} />
         <PushToggleRow title="Valid buy/sell entries" subtitle="Notify only when a module has a valid setup." value={preferences.validEntries} onValueChange={(value) => update("validEntries", value)} />
-        <PushToggleRow title="Signal tracking started" subtitle="Notify when paper tracking starts for a valid BUY/SELL signal." value={preferences.paperTradeOpened} onValueChange={(value) => update("paperTradeOpened", value)} />
         <PushToggleRow title="TP / SL closeouts" subtitle="Notify when paper trades close by target or stop." value={preferences.takeProfitStopLoss} onValueChange={(value) => update("takeProfitStopLoss", value)} />
         <PushToggleRow title="Daily reports" subtitle="Daily module summary after session close." value={preferences.dailyReports} onValueChange={(value) => update("dailyReports", value)} />
         <PushToggleRow title="Weekly / monthly reports" subtitle="Win-rate and performance summaries." value={preferences.weeklyMonthlyReports} onValueChange={(value) => update("weeklyMonthlyReports", value)} />
@@ -4631,6 +4709,10 @@ const styles = StyleSheet.create({
   fullButtonText: { color: "#04100b", fontWeight: "900" },
   disabledButton: { opacity: 0.45 },
   ticketTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, marginBottom: 10 },
+  tradeLimitControl: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 22, marginTop: 14 },
+  tradeLimitButton: { width: 46, height: 46, borderRadius: 6, borderWidth: 1, borderColor: "#38443e", backgroundColor: "#171b19", alignItems: "center", justifyContent: "center" },
+  tradeLimitButtonText: { color: "#edf5f0", fontSize: 24, fontWeight: "900" },
+  tradeLimitValue: { minWidth: 42, color: "#2fe6a8", fontSize: 30, fontWeight: "900", textAlign: "center" },
   ticketTypeButton: { backgroundColor: "#171a18", borderWidth: 1, borderColor: "#2a302d", borderRadius: 6, paddingHorizontal: 12, paddingVertical: 9 },
   ticketTypeButtonActive: { backgroundColor: "#173328", borderColor: "#2fbf8b" },
   ticketTypeText: { color: "#8d9791", fontSize: 11, fontWeight: "900" },

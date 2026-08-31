@@ -283,6 +283,20 @@ function buildTradePlan(
     stopLogic = "Fallback stop forced above entry because the scenario stop was invalid.";
   }
 
+  const structuralStop = stop;
+  const atrPeriod = Math.max(2, Math.round(Number(context.configuration.risk.atrPeriod ?? 14)));
+  const atr = averageTrueRange([...context.previousCandles, currentCandle], atrPeriod);
+  const minimumStopAtr = Math.max(1.5, Number(context.configuration.risk.minimumStopAtr ?? 1.5));
+  const minimumRiskDistance = atr == null ? 0 : atr * minimumStopAtr;
+  if (minimumRiskDistance > 0) {
+    stop = direction === "LONG"
+      ? Math.min(stop, entry - minimumRiskDistance)
+      : Math.max(stop, entry + minimumRiskDistance);
+    if (stop !== structuralStop) {
+      stopLogic = `${stopLogic} Expanded to the ${minimumStopAtr.toFixed(2)} ATR volatility floor.`;
+    }
+  }
+
   const riskDistance = Math.abs(entry - stop);
   const rewardToRisk = 2;
   const target = direction === "LONG" ? entry + riskDistance * rewardToRisk : entry - riskDistance * rewardToRisk;
@@ -298,7 +312,12 @@ function buildTradePlan(
           ? "Entry uses the completed candle that retested and reclaimed the ORB boundary."
           : "Entry uses the completed breakout candle close beyond the ORB boundary.",
     stopLogic,
-    targetLogic: "Target is fixed at 2R from the scenario stop."
+    targetLogic: "Target is fixed at 2R from the scenario stop.",
+    structuralStop: roundPrice(structuralStop),
+    atr: atr == null ? null : roundPrice(atr),
+    atrPeriod,
+    minimumStopAtr,
+    stopDistanceAtr: atr && atr > 0 ? Number((riskDistance / atr).toFixed(3)) : null
   };
 }
 

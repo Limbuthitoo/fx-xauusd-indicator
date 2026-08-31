@@ -18,6 +18,15 @@ import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/m
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
+import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js";
+
+const subscriberTradeSetup = validateModuleSetting("orb_max_options", "orb.strategy", {
+  tradeSetup: { enabledSessionPresets: ["TOKYO_ORB", "LONDON_ORB"], maximumSignalsPerDay: 9 },
+  risk: { minimumStopAtr: 0.5 }
+}) as any;
+assert.deepEqual(subscriberTradeSetup.tradeSetup.enabledSessionPresets, ["TOKYO_ORB"], "Subscriber automation must use one explicit session preset");
+assert.equal(subscriberTradeSetup.tradeSetup.maximumSignalsPerDay, 3, "Subscriber daily signals must stay inside the production cap");
+assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 1.5, "Module 1 settings must preserve the volatility stop floor");
 
 const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
 const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
@@ -118,7 +127,10 @@ const module1 = evaluateSetup({
 });
 assert.equal(module1Range.status, "LOCKED", "Module 1 opening range must lock from three 5m candles");
 assert.equal(isModule1ActiveOrbPreset("NEW_YORK_ORB"), true, "Module 1 must actively evaluate New York ORB");
-assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), false, "Module 1 must not actively evaluate London ORB");
+assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), true, "Module 1 must support subscriber-selected London ORB");
+assert.equal(isModule1ActiveOrbPreset("TOKYO_ORB"), true, "Module 1 must support subscriber-selected Tokyo ORB");
+assert.equal(isModule1ActiveOrbPreset("SYDNEY_ORB"), true, "Module 1 must support subscriber-selected Sydney ORB");
+assert.equal(isModule1ActiveOrbPreset("UNSUPPORTED_ORB"), false, "Module 1 must reject unsupported session presets");
 assert.equal(module1.status, "LONG SETUP READY", `Module 1 should produce a long setup, got ${module1.scenario}: ${module1.finalReason}`);
 assert.ok(module1.favorabilityScore < 100, "Module 1 regression setup must remain below the legacy confidence threshold");
 assert.equal(module1.scenario.includes("LOW_FAVORABILITY"), false, "Module 1 confidence must not veto a valid strategy profile");

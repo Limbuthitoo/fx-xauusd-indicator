@@ -371,8 +371,8 @@ function App() {
   const hasModule = (moduleCode: string) => subscriptionActive && Boolean(state.tenantContext?.modules?.some((module: any) => module.code === moduleCode && module.tenant_module_status === "ENABLED"));
   const enabledModules = (state.tenantContext?.modules ?? []).filter((module: any) => module.tenant_module_status === "ENABLED" && STRATEGY_MODULE_CODES.includes(module.code));
   const enabledModuleCodes = enabledModules.map((module: any) => module.code).join("|");
-  const activeModule = enabledModules.find((module: any) => module.code === activeModuleCode) ?? (enabledModules.length === 0 ? null : { code: activeModuleCode, name: moduleShortName(activeModuleCode) });
-  const selectedModuleCode = activeModuleCode;
+  const activeModule = enabledModules.find((module: any) => module.code === activeModuleCode) ?? enabledModules[0] ?? null;
+  const selectedModuleCode = activeModule?.code ?? activeModuleCode;
   const activeCommandSnapshot = (state.moduleCommand ?? []).find((item: any) => item.moduleCode === selectedModuleCode) ?? {};
   const activeNewYorkDate = state.session?.session_date
     ? String(state.session.session_date).slice(0, 10)
@@ -7271,9 +7271,8 @@ function TenantPushSettingsPanel({ status, onSave, onDisableDevice }: { status: 
     setPreferences({ ...DEFAULT_PUSH_PREFERENCES, ...(status?.preferences ?? {}) });
   }, [status?.preferences]);
   const rows = [
-    ["nyPreSession", "NY pre-session reminder"],
+    ["nyPreSession", "Selected-session reminder"],
     ["validEntries", "Valid buy/sell entries"],
-    ["paperTradeOpened", "Paper trade opened"],
     ["takeProfitStopLoss", "TP / SL closeouts"],
     ["dailyReports", "Daily reports"],
     ["weeklyMonthlyReports", "Weekly / monthly reports"],
@@ -7404,12 +7403,25 @@ function OrbStrategySettings({ settings, onUpdate }: { settings: any[]; onUpdate
           <em>{setting?.updated_at ? `Updated ${formatNepalTime(setting.updated_at)}` : "Using strategy defaults"}</em>
         </div>
         <div className="setting-fields strategy-fields">
+          <label>Trading session<select value={draft?.tradeSetup?.enabledSessionPresets?.[0] ?? "NEW_YORK_ORB"} onChange={(event) => patch("tradeSetup.enabledSessionPresets", [event.target.value])}>
+            <option value="SYDNEY_ORB">Sydney</option>
+            <option value="TOKYO_ORB">Tokyo</option>
+            <option value="LONDON_ORB">London</option>
+            <option value="NEW_YORK_ORB">New York</option>
+          </select></label>
+          <label>Signals per day<input type="number" min="1" max="3" value={draft?.tradeSetup?.maximumSignalsPerDay ?? 3} onChange={(event) => {
+            const value = Number(event.target.value);
+            patch("tradeSetup.maximumSignalsPerDay", value);
+            patch("risk.maximumTradesPerSession", value);
+            patch("paperTrading.maximumTradesPerSession", value);
+          }} /></label>
           <label>Minimum body ratio<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.minimumBodyRatio ?? 0.45} onChange={(event) => patch("breakout.minimumBodyRatio", Number(event.target.value))} /></label>
           <label>Close location ratio<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.minimumCloseLocationRatio ?? 0.6} onChange={(event) => patch("breakout.minimumCloseLocationRatio", Number(event.target.value))} /></label>
           <label>Max extension<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.maximumEntryExtensionPercentOfRange ?? 0.25} onChange={(event) => patch("breakout.maximumEntryExtensionPercentOfRange", Number(event.target.value))} /></label>
           <label>Retest zone<input type="number" min="0" max="1" step="0.01" value={draft?.retest?.zonePercentOfRange ?? 0.1} onChange={(event) => patch("retest.zonePercentOfRange", Number(event.target.value))} /></label>
           <label>Retest candles<input type="number" min="1" max="50" value={draft?.retest?.maximumCandles ?? 4} onChange={(event) => patch("retest.maximumCandles", Number(event.target.value))} /></label>
           <label>Minimum R:R<input type="number" min="0.1" max="10" step="0.1" value={draft?.risk?.minimumRewardToRisk ?? 2} onChange={(event) => patch("risk.minimumRewardToRisk", Number(event.target.value))} /></label>
+          <label>Minimum stop ATR<input type="number" min="1.5" max="3" step="0.1" value={draft?.risk?.minimumStopAtr ?? 1.5} onChange={(event) => patch("risk.minimumStopAtr", Number(event.target.value))} /></label>
           <label>Max session trades<input type="number" min="1" max="20" value={draft?.risk?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("risk.maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.retest?.enabled !== false} onChange={(event) => patch("retest.enabled", event.target.checked)} /> Retest scenarios</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>

@@ -1,15 +1,31 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
+import { requireAdmin } from "../auth/routes.js";
 
 export async function strategyRoutes(app: FastifyInstance) {
-  app.get("/api/strategies", async () => {
+  app.get("/api/strategies", async (request) => {
+    const session = requireAdmin(request);
+    const params: unknown[] = [];
+    const tenantFilter = session.platformSuperAdmin
+      ? ""
+      : `WHERE EXISTS (
+           SELECT 1
+           FROM strategy_versions access_version
+           JOIN tenant_modules tenant_module ON tenant_module.tenant_id = $1 AND tenant_module.status = 'ENABLED'
+           JOIN platform_strategy_modules module ON module.id = tenant_module.module_id AND module.status = 'ACTIVE'
+           LEFT JOIN strategy_sources source ON source.id = s.source_id
+           WHERE access_version.strategy_id = s.id
+             AND COALESCE(access_version.configuration_json->>'moduleCode', source.metadata->>'moduleCode', 'orb_max_options') = module.code
+         )`;
+    if (!session.platformSuperAdmin) params.push(session.tenantId);
     const { rows } = await query(`
       SELECT s.*, COALESCE(json_agg(sv.*) FILTER (WHERE sv.id IS NOT NULL), '[]') AS versions
       FROM strategies s
       LEFT JOIN strategy_versions sv ON sv.strategy_id = s.id AND sv.status <> 'RETIRED'
+      ${tenantFilter}
       GROUP BY s.id
       ORDER BY s.created_at DESC
-    `);
+    `, params);
     return rows;
   });
 

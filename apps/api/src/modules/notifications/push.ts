@@ -60,7 +60,10 @@ export async function registerMobilePushToken(input: {
        RETURNING id, expo_push_token, fcm_token, push_provider, platform, device_name, enabled, preferences, last_seen_at`,
       [input.tenantId, input.fcmToken, input.adminUserId, input.expoPushToken ?? null, input.platform ?? null, input.deviceName ?? null]
     );
-    if (existing.rows[0]) return existing.rows[0];
+    if (existing.rows[0]) {
+      await disableSupersededDeviceTokens(input, existing.rows[0].id);
+      return existing.rows[0];
+    }
   }
   const { rows } = await query(
     `INSERT INTO mobile_push_tokens (
@@ -78,6 +81,7 @@ export async function registerMobilePushToken(input: {
      RETURNING id, expo_push_token, fcm_token, push_provider, platform, device_name, enabled, preferences, last_seen_at`,
     [input.tenantId, input.adminUserId, input.expoPushToken ?? `fcm:${input.fcmToken}`, input.fcmToken ?? null, provider, input.platform ?? null, input.deviceName ?? null]
   );
+  await disableSupersededDeviceTokens(input, rows[0].id);
   return rows[0];
 }
 
@@ -101,9 +105,18 @@ export async function sendTenantPush(input: PushInput) {
     `SELECT id, expo_push_token, fcm_token, push_provider, preferences
      FROM mobile_push_tokens
      WHERE tenant_id = $1 AND enabled = true
+       AND (
+         $2 = '' OR NOT EXISTS (
+           SELECT 1
+           FROM mobile_push_delivery_logs delivery
+           WHERE delivery.mobile_push_token_id = mobile_push_tokens.id
+             AND delivery.event_key = $2
+             AND delivery.status IN ('SENT', 'FIREBASE_SENT')
+         )
+       )
      ORDER BY last_seen_at DESC
      LIMIT 25`,
-    [input.tenantId]
+    [input.tenantId, eventKey]
   );
   const eligibleRows = rows.filter((row: any) => {
     const token = String(row.expo_push_token ?? "");
@@ -182,6 +195,23 @@ export async function sendTenantPush(input: PushInput) {
     });
     return { sent: Number(firebaseResult.sent ?? 0), error: (error as Error).message, preferenceKey, skippedByPreference, firebase: firebaseResult };
   }
+}
+
+async function disableSupersededDeviceTokens(
+  input: { tenantId: string; adminUserId: string; platform?: string | null; deviceName?: string | null },
+  activeTokenId: string
+) {
+  await query(
+    `UPDATE mobile_push_tokens
+     SET enabled = false
+     WHERE tenant_id = $1
+       AND admin_user_id = $2
+       AND platform IS NOT DISTINCT FROM $3
+       AND device_name IS NOT DISTINCT FROM $4
+       AND id <> $5
+       AND enabled = true`,
+    [input.tenantId, input.adminUserId, input.platform ?? null, input.deviceName ?? null, activeTokenId]
+  );
 }
 
 export function pushProviderHealth() {
@@ -327,7 +357,7 @@ function normalizePushPreferences(input: unknown): PushPreferences {
 }
 
 function pushPreferenceForEvent(eventType: string): keyof PushPreferences | null {
-  if (/NY_PRE_SESSION/.test(eventType)) return "nyPreSession";
+  if (/PRE_SESSION/.test(eventType)) return "nyPreSession";
   if (/SETUP_READY|SIGNAL|ENTRY_ZONE_READY|ENTRY_CONFIRMATION/.test(eventType)) return "validEntries";
   if (/PAPER_TRADE_OPENED|PAPER_ENTRY/.test(eventType)) return "paperTradeOpened";
   if (/PAPER_TRADE_CLOSED|TP_HIT|SL_HIT|TARGET|STOP/.test(eventType)) return "takeProfitStopLoss";

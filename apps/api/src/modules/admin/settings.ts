@@ -3,6 +3,9 @@ import { query } from "../../infrastructure/db/client.js";
 import { defaultLiquiditySweepConfiguration } from "@orb-guide/liquidity-sweep-engine";
 
 const SEVEN_DAY_FIVE_MINUTE_CANDLES = 7 * 24 * 12;
+const ORB_SESSION_PRESETS = ["SYDNEY_ORB", "TOKYO_ORB", "LONDON_ORB", "NEW_YORK_ORB"] as const;
+const DEFAULT_ORB_SESSION_PRESETS = ["NEW_YORK_ORB"];
+const MAXIMUM_DAILY_SIGNALS = 3;
 
 export type RuntimeSettings = {
   symbol: string;
@@ -15,6 +18,8 @@ export type RuntimeSettings = {
     tradeWindowEnd: string;
     openingRangeMinutes: number;
     apiStartLeadMinutes: number;
+    enabledSessionPresets: string[];
+    maximumSignalsPerDay: number;
   };
   feed: {
     name: "TWELVE_DATA";
@@ -37,7 +42,9 @@ const defaults: RuntimeSettings = {
     sessionStart: "09:15",
     tradeWindowEnd: "16:00",
     openingRangeMinutes: 15,
-    apiStartLeadMinutes: 15
+    apiStartLeadMinutes: 15,
+    enabledSessionPresets: DEFAULT_ORB_SESSION_PRESETS,
+    maximumSignalsPerDay: MAXIMUM_DAILY_SIGNALS
   },
   feed: {
     name: "TWELVE_DATA",
@@ -55,6 +62,8 @@ export async function getRuntimeSettings(tenantId?: string | null): Promise<Runt
   const tradingPaper = objectValue(byKey.get("trading.paperTrading"));
   const orbSession = objectValue(byKey.get("orb.session"));
   const feedProvider = objectValue(byKey.get("feed.provider"));
+  const orbStrategy = tenantId ? await getTenantOrbStrategyConfiguration(tenantId) : {};
+  const tradeSetup = objectValue(orbStrategy.tradeSetup);
 
   return {
     symbol: stringValue(byKey.get("trading.symbol"), defaults.symbol),
@@ -66,7 +75,9 @@ export async function getRuntimeSettings(tenantId?: string | null): Promise<Runt
       sessionStart: timeValue(orbSession.sessionStart, defaults.orb.sessionStart),
       tradeWindowEnd: timeValue(orbSession.tradeWindowEnd, defaults.orb.tradeWindowEnd),
       openingRangeMinutes: positiveInteger(orbSession.openingRangeMinutes, defaults.orb.openingRangeMinutes, 240),
-      apiStartLeadMinutes: positiveInteger(orbSession.apiStartLeadMinutes, defaults.orb.apiStartLeadMinutes, 240)
+      apiStartLeadMinutes: positiveInteger(orbSession.apiStartLeadMinutes, defaults.orb.apiStartLeadMinutes, 240),
+      enabledSessionPresets: sessionPresetsValue(tradeSetup.enabledSessionPresets),
+      maximumSignalsPerDay: positiveInteger(tradeSetup.maximumSignalsPerDay, defaults.orb.maximumSignalsPerDay, MAXIMUM_DAILY_SIGNALS)
     },
     feed: {
       name: "TWELVE_DATA",
@@ -357,6 +368,8 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const horizontalRange = objectValue(rangeEngine.horizontalRange);
   const horizontalSignalMode = String(horizontalRange.signalMode ?? "ACTIVE_SIGNAL") === "DISABLED" ? "DISABLED" : "ACTIVE_SIGNAL";
   const chart = objectValue(base.chart);
+  const tradeSetup = objectValue(base.tradeSetup);
+  const maximumSignalsPerDay = positiveInteger(tradeSetup.maximumSignalsPerDay, MAXIMUM_DAILY_SIGNALS, MAXIMUM_DAILY_SIGNALS);
 
   return {
     ...base,
@@ -366,6 +379,11 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
     tradeWindowEnd: timeValue(base.tradeWindowEnd, defaults.orb.tradeWindowEnd),
     openingRangeMinutes: positiveInteger(base.openingRangeMinutes, defaults.orb.openingRangeMinutes, 240),
     signalTimeframeMinutes: supportedTimeframe(numberValue(base.signalTimeframeMinutes, defaults.timeframeMinutes)),
+    tradeSetup: {
+      ...tradeSetup,
+      enabledSessionPresets: sessionPresetsValue(tradeSetup.enabledSessionPresets),
+      maximumSignalsPerDay
+    },
     breakout: {
       ...breakout,
       requireCompletedCandle: booleanValue(breakout.requireCompletedCandle, true),
@@ -388,6 +406,8 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       maximumDailyLossPercent: positiveNumber(risk.maximumDailyLossPercent, 2, 25),
       maximumWeeklyLossPercent: positiveNumber(risk.maximumWeeklyLossPercent, 5, 50),
       maximumTradesPerSession: positiveInteger(risk.maximumTradesPerSession, 1, 20),
+      atrPeriod: 14,
+      minimumStopAtr: Math.max(1.5, positiveNumber(risk.minimumStopAtr, 1.5, 3)),
       mandatoryStopLoss: true,
       minimumRewardToRisk: positiveNumber(risk.minimumRewardToRisk, 2, 10),
       allowMartingale: false,
@@ -497,6 +517,12 @@ function positiveNumber(value: unknown, fallback: number, max: number) {
   const number = numberValue(value, fallback);
   if (number <= 0) return fallback;
   return Math.min(number, max);
+}
+
+function sessionPresetsValue(value: unknown) {
+  if (!Array.isArray(value)) return [...DEFAULT_ORB_SESSION_PRESETS];
+  const selected = [...new Set(value.map(String))].filter((preset) => ORB_SESSION_PRESETS.includes(preset as typeof ORB_SESSION_PRESETS[number]));
+  return selected.length > 0 ? selected.slice(0, 1) : [...DEFAULT_ORB_SESSION_PRESETS];
 }
 
 function ratioValue(value: unknown, fallback: number) {

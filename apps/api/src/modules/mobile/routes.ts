@@ -8,6 +8,7 @@ import { disableMobilePushToken, registerMobilePushToken, sendTenantPush } from 
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { buildTargetPerformanceReport } from "../analytics/target-performance.js";
 import { buildProductionObservationReport } from "../observations/service.js";
+import { getTenantOrbStrategyConfiguration } from "../admin/settings.js";
 
 const MOBILE_READ_CACHE_SECONDS = 5;
 
@@ -170,7 +171,7 @@ export async function mobileRoutes(app: FastifyInstance) {
       const cachedDashboard = await readMobileCache(dashboardCacheKey);
       if (cachedDashboard) return cachedDashboard;
     }
-    const [tenant, modules, notifications, supportTickets, supportInfo] = await Promise.all([
+    const [tenant, modules, notifications, supportTickets, supportInfo, orbStrategy] = await Promise.all([
       query(
         `SELECT t.*, s.status AS subscription_status, p.name AS plan_name
          FROM platform_tenants t
@@ -210,7 +211,8 @@ export async function mobileRoutes(app: FastifyInstance) {
          LIMIT 20`,
         [tenantId]
       ),
-      query("SELECT value FROM app_settings WHERE key = 'platform.business' LIMIT 1")
+      query("SELECT value FROM app_settings WHERE key = 'platform.business' LIMIT 1"),
+      getTenantOrbStrategyConfiguration(tenantId)
     ]);
     const moduleRows = await Promise.all((modules.rows as any[]).map(async (module) => {
       const [setup, trade, weekly, monthly, targetWeek, targetMonth, observation, latestSession] = await Promise.all([
@@ -292,7 +294,8 @@ export async function mobileRoutes(app: FastifyInstance) {
       modules: moduleRows,
       notifications: notifications.rows,
       supportTickets: supportTickets.rows,
-      supportInfo: normalizeSupportInfo(supportInfo.rows[0]?.value)
+      supportInfo: normalizeSupportInfo(supportInfo.rows[0]?.value),
+      orbStrategy
     };
     await writeMobileCache(dashboardCacheKey, payload);
     return payload;
