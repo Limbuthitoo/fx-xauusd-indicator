@@ -4,8 +4,8 @@ set -euo pipefail
 ENV_FILE="${1:-.env.production}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml -f docker-compose.prod.yml)
 VALIDATION_TIMEOUT_SECONDS="${VALIDATION_TIMEOUT_SECONDS:-2400}"
-declare -A PREVIOUS_IMAGE_IDS=()
 declare -A PREVIOUS_IMAGE_REFS=()
+declare -A ROLLBACK_IMAGE_REFS=()
 ROLLOUT_STARTED=false
 DEPLOY_SUCCEEDED=false
 CANARY_CONTAINERS=()
@@ -22,8 +22,9 @@ capture_previous_images() {
   for service in api worker web quant ops-monitor; do
     container_id="$("${COMPOSE[@]}" ps -q "$service" 2>/dev/null || true)"
     if [[ -n "$container_id" ]]; then
-      PREVIOUS_IMAGE_IDS["$service"]="$(docker inspect --format '{{.Image}}' "$container_id")"
       PREVIOUS_IMAGE_REFS["$service"]="$(docker inspect --format '{{.Config.Image}}' "$container_id")"
+      ROLLBACK_IMAGE_REFS["$service"]="fx-xauusd-indicator-rollback-${service}:previous"
+      docker image tag "$(docker inspect --format '{{.Image}}' "$container_id")" "${ROLLBACK_IMAGE_REFS[$service]}"
     fi
   done
 }
@@ -40,8 +41,8 @@ rollback_on_failure() {
     local service
     local restore_services=()
     for service in api worker web quant ops-monitor; do
-      if [[ -n "${PREVIOUS_IMAGE_IDS[$service]:-}" && -n "${PREVIOUS_IMAGE_REFS[$service]:-}" ]]; then
-        docker image tag "${PREVIOUS_IMAGE_IDS[$service]}" "${PREVIOUS_IMAGE_REFS[$service]}"
+      if [[ -n "${ROLLBACK_IMAGE_REFS[$service]:-}" && -n "${PREVIOUS_IMAGE_REFS[$service]:-}" ]]; then
+        docker image tag "${ROLLBACK_IMAGE_REFS[$service]}" "${PREVIOUS_IMAGE_REFS[$service]}"
         restore_services+=("$service")
       fi
     done

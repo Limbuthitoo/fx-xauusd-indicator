@@ -74,7 +74,7 @@ try {
   checks.push({
     name: "Tenant paper risk profiles",
     status: missingRisk.length === 0 ? "PASS" : "FAIL",
-    detail: missingRisk.length === 0 ? "Every active subscriber has an active paper risk profile." : `${missingRisk.length} subscriber(s) are missing a paper risk profile. Run migration 076.`,
+    detail: missingRisk.length === 0 ? "Every active subscriber has an active paper risk profile." : `${missingRisk.length} subscriber(s) are missing a paper risk profile. Run migration 099.`,
     evidence: missingRisk
   });
 
