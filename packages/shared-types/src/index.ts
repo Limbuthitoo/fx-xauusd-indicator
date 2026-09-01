@@ -126,6 +126,7 @@ export interface StrategyConfiguration {
     maximumTradesPerSession: number;
     atrPeriod?: number;
     minimumStopAtr?: number;
+    liquidityBufferAtr?: number;
     maximumConsecutiveLosses: number;
     mandatoryStopLoss: boolean;
     minimumRewardToRisk: number;

@@ -14,7 +14,7 @@ import {
 } from "@orb-guide/range-engine";
 import { calculateRisk, evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
 import type { Candle, RuleContext } from "@orb-guide/shared-types";
-import { buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
+import { buildLiquidityAwareStop, buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
 import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
@@ -5691,6 +5691,8 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
       })
     : null;
 
+  const configuredMinimumStopAtr = Number(configuration?.risk?.minimumStopAtr ?? 2);
+  const configuredLiquidityBufferAtr = Number(configuration?.risk?.liquidityBufferAtr ?? 0.25);
   return {
     version: "GENERIC_RANGE_ENGINE_V1",
     authoritativeDetector: "MAX_OPTIONS_NY_ORB",
@@ -5699,7 +5701,8 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
     horizontalObservationOnly: false,
     activeSessionPreset: range.module1RangeSessionPreset ?? session.session_preset,
     atr5m: context.atr5m,
-    minimumStopAtr: Math.max(1.5, Number(configuration?.risk?.minimumStopAtr ?? 1.5)),
+    minimumStopAtr: Number.isFinite(configuredMinimumStopAtr) ? Math.max(2, configuredMinimumStopAtr) : 2,
+    liquidityBufferAtr: Number.isFinite(configuredLiquidityBufferAtr) ? Math.max(0.25, configuredLiquidityBufferAtr) : 0.25,
     nyOnly: true,
     breakout,
     falseBreakout,
@@ -5733,7 +5736,7 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
   };
 }
 
-function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCandle: Candle, session: any) {
+export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCandle: Candle, session: any) {
   const horizontal = rangeEngineMetadata?.horizontal;
   const range = horizontal?.range;
   const breakout = horizontal?.breakout;
@@ -5742,19 +5745,25 @@ function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCand
   if (!horizontal?.enabled || !range || !["BUY_READY", "SELL_READY"].includes(String(decision?.status))) return null;
   const direction = decision.status === "BUY_READY" ? "LONG" : "SHORT";
   const entry = currentCandle.close;
-  const buffer = Math.max(Number(range.width ?? 0) * 0.08, 0.1);
   const estimatedAtr = Number(range.widthAtr) && Number(range.widthAtr) > 0 ? Number(range.width) / Number(range.widthAtr) : Number(range.width);
-  const atrBuffer = Math.max(estimatedAtr * 0.08, buffer * 0.25, 0.05);
   const retestSwing = direction === "LONG" ? currentCandle.low : currentCandle.high;
-  const structuralStop = direction === "LONG"
-    ? Math.min(retestSwing, Number(range.high)) - atrBuffer
-    : Math.max(retestSwing, Number(range.low)) + atrBuffer;
-  const minimumStopAtr = Math.max(1.5, Number(rangeEngineMetadata?.minimumStopAtr ?? 1.5));
+  const retestBoundary = direction === "LONG"
+    ? Number(range.upperZone?.lowerBound ?? range.high)
+    : Number(range.lowerZone?.upperBound ?? range.low);
+  const structuralInvalidation = direction === "LONG"
+    ? Math.min(retestSwing, retestBoundary)
+    : Math.max(retestSwing, retestBoundary);
   const atr = Number(rangeEngineMetadata?.atr5m ?? estimatedAtr);
-  const minimumRiskDistance = Number.isFinite(atr) && atr > 0 ? atr * minimumStopAtr : 0;
-  const stop = direction === "LONG"
-    ? Math.min(structuralStop, entry - minimumRiskDistance)
-    : Math.max(structuralStop, entry + minimumRiskDistance);
+  const stopPlan = buildLiquidityAwareStop({
+    direction,
+    entry,
+    structuralInvalidation,
+    atr,
+    spread: currentCandle.spread,
+    minimumStopAtr: rangeEngineMetadata?.minimumStopAtr,
+    liquidityBufferAtr: rangeEngineMetadata?.liquidityBufferAtr
+  });
+  const stop = stopPlan.stop;
   const riskDistance = Math.max(Math.abs(entry - stop), 0.00001);
   const target = direction === "LONG" ? entry + riskDistance * 2 : entry - riskDistance * 2;
   const score = Math.min(95, Math.max(70, Math.round(Number(range.qualityScore ?? 70) + (retest?.confirmed ? 10 : 0) + (breakout?.confirmed ? 8 : 0))));
@@ -5791,13 +5800,16 @@ function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCand
           target: Number(target.toFixed(5)),
           rewardToRisk: 2,
           entryLogic: "Entry uses the completed horizontal range breakout/retest confirmation candle.",
-          stopLogic: "Stop is placed beyond the retest swing with an ATR buffer.",
+          stopLogic: `Stop is placed beyond the retest liquidity zone with a ${stopPlan.liquidityBufferAtr.toFixed(2)} ATR buffer and a ${stopPlan.minimumStopAtr.toFixed(2)} ATR volatility floor.`,
           targetLogic: "Target is fixed at 2R from the horizontal range risk distance.",
-          structuralStop: Number(structuralStop.toFixed(5)),
+          structuralInvalidation: Number(structuralInvalidation.toFixed(5)),
+          structuralStop: Number(stopPlan.bufferedStructuralStop.toFixed(5)),
           atr: Number.isFinite(atr) ? Number(atr.toFixed(5)) : null,
           atrPeriod: 14,
-          minimumStopAtr,
-          stopDistanceAtr: Number.isFinite(atr) && atr > 0 ? Number((riskDistance / atr).toFixed(3)) : null
+          minimumStopAtr: stopPlan.minimumStopAtr,
+          liquidityBufferAtr: stopPlan.liquidityBufferAtr,
+          liquidityBuffer: Number(stopPlan.liquidityBuffer.toFixed(5)),
+          stopDistanceAtr: stopPlan.stopDistanceAtr == null ? null : Number(stopPlan.stopDistanceAtr.toFixed(3))
         }
       },
       matrix: {

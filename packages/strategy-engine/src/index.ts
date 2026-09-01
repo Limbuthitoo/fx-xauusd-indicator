@@ -242,6 +242,45 @@ function roundPrice(value: number) {
   return Number(value.toFixed(5));
 }
 
+export function buildLiquidityAwareStop(input: {
+  direction: Direction;
+  entry: number;
+  structuralInvalidation: number;
+  atr: number | null;
+  spread?: number | null;
+  minimumStopAtr?: number;
+  liquidityBufferAtr?: number;
+}) {
+  const configuredMinimumStopAtr = Number(input.minimumStopAtr ?? 2);
+  const configuredLiquidityBufferAtr = Number(input.liquidityBufferAtr ?? 0.25);
+  const minimumStopAtr = Number.isFinite(configuredMinimumStopAtr) ? Math.max(2, configuredMinimumStopAtr) : 2;
+  const liquidityBufferAtr = Number.isFinite(configuredLiquidityBufferAtr) ? Math.max(0.25, configuredLiquidityBufferAtr) : 0.25;
+  const atr = Number.isFinite(input.atr) && Number(input.atr) > 0 ? Number(input.atr) : null;
+  const spread = Number.isFinite(input.spread) && Number(input.spread) > 0 ? Number(input.spread) : 0;
+  const liquidityBuffer = Math.max(atr == null ? 0 : atr * liquidityBufferAtr, spread * 2, 0.1);
+  const bufferedStructuralStop = input.direction === "LONG"
+    ? input.structuralInvalidation - liquidityBuffer
+    : input.structuralInvalidation + liquidityBuffer;
+  const volatilityStop = atr == null
+    ? bufferedStructuralStop
+    : input.direction === "LONG"
+      ? input.entry - atr * minimumStopAtr
+      : input.entry + atr * minimumStopAtr;
+  const stop = input.direction === "LONG"
+    ? Math.min(bufferedStructuralStop, volatilityStop)
+    : Math.max(bufferedStructuralStop, volatilityStop);
+
+  return {
+    stop,
+    bufferedStructuralStop,
+    volatilityStop,
+    liquidityBuffer,
+    liquidityBufferAtr,
+    minimumStopAtr,
+    stopDistanceAtr: atr == null ? null : Math.max(minimumStopAtr, Math.abs(input.entry - stop) / atr)
+  };
+}
+
 function buildTradePlan(
   context: RuleContext,
   direction: Direction,
@@ -252,50 +291,49 @@ function buildTradePlan(
   const { currentCandle, openingRange } = context;
   const entry = currentCandle.close;
   const width = openingRange.width ?? Math.abs((openingRange.high ?? entry) - (openingRange.low ?? entry));
-  const buffer = Math.max(width * 0.05, 0.1);
-  let stop = direction === "LONG" ? (openingRange.low ?? currentCandle.low) : (openingRange.high ?? currentCandle.high);
+  let structuralInvalidation = direction === "LONG" ? (openingRange.low ?? currentCandle.low) : (openingRange.high ?? currentCandle.high);
   let stopLogic = direction === "LONG" ? "Default stop below the ORB low." : "Default stop above the ORB high.";
 
   if (selection.scenario === "LIQUIDITY_SWEEP_REVERSAL_CONFIRMED" && priorFailedBreakout?.candle) {
     if (direction === "LONG") {
-      stop = Math.min(priorFailedBreakout.candle.low, openingRange.low ?? priorFailedBreakout.candle.low) - buffer;
+      structuralInvalidation = Math.min(priorFailedBreakout.candle.low, openingRange.low ?? priorFailedBreakout.candle.low);
       stopLogic = "Fakeout reversal stop is placed beyond the failed low-side sweep.";
     } else {
-      stop = Math.max(priorFailedBreakout.candle.high, openingRange.high ?? priorFailedBreakout.candle.high) + buffer;
+      structuralInvalidation = Math.max(priorFailedBreakout.candle.high, openingRange.high ?? priorFailedBreakout.candle.high);
       stopLogic = "Fakeout reversal stop is placed beyond the failed high-side sweep.";
     }
   } else if (retest?.status === "RETEST_CONFIRMED") {
     if (direction === "LONG") {
-      stop = Math.min(retest.candle.low, retest.boundary - buffer);
+      structuralInvalidation = Math.min(retest.candle.low, retest.boundary);
       stopLogic = "Retest setup stop is placed beyond the reclaimed ORB high retest candle.";
     } else {
-      stop = Math.max(retest.candle.high, retest.boundary + buffer);
+      structuralInvalidation = Math.max(retest.candle.high, retest.boundary);
       stopLogic = "Retest setup stop is placed beyond the reclaimed ORB low retest candle.";
     }
   }
 
-  if (direction === "LONG" && stop >= entry) {
-    stop = Math.min(openingRange.low ?? currentCandle.low, currentCandle.low) - buffer;
+  if (direction === "LONG" && structuralInvalidation >= entry) {
+    structuralInvalidation = Math.min(openingRange.low ?? currentCandle.low, currentCandle.low);
     stopLogic = "Fallback stop forced below entry because the scenario stop was invalid.";
   }
-  if (direction === "SHORT" && stop <= entry) {
-    stop = Math.max(openingRange.high ?? currentCandle.high, currentCandle.high) + buffer;
+  if (direction === "SHORT" && structuralInvalidation <= entry) {
+    structuralInvalidation = Math.max(openingRange.high ?? currentCandle.high, currentCandle.high);
     stopLogic = "Fallback stop forced above entry because the scenario stop was invalid.";
   }
 
-  const structuralStop = stop;
   const atrPeriod = Math.max(2, Math.round(Number(context.configuration.risk.atrPeriod ?? 14)));
   const atr = averageTrueRange([...context.previousCandles, currentCandle], atrPeriod);
-  const minimumStopAtr = Math.max(1.5, Number(context.configuration.risk.minimumStopAtr ?? 1.5));
-  const minimumRiskDistance = atr == null ? 0 : atr * minimumStopAtr;
-  if (minimumRiskDistance > 0) {
-    stop = direction === "LONG"
-      ? Math.min(stop, entry - minimumRiskDistance)
-      : Math.max(stop, entry + minimumRiskDistance);
-    if (stop !== structuralStop) {
-      stopLogic = `${stopLogic} Expanded to the ${minimumStopAtr.toFixed(2)} ATR volatility floor.`;
-    }
-  }
+  const stopPlan = buildLiquidityAwareStop({
+    direction,
+    entry,
+    structuralInvalidation,
+    atr,
+    spread: context.spread ?? currentCandle.spread,
+    minimumStopAtr: context.configuration.risk.minimumStopAtr,
+    liquidityBufferAtr: context.configuration.risk.liquidityBufferAtr
+  });
+  const stop = stopPlan.stop;
+  stopLogic = `${stopLogic} Buffered beyond structural liquidity by ${stopPlan.liquidityBufferAtr.toFixed(2)} ATR and protected by a ${stopPlan.minimumStopAtr.toFixed(2)} ATR volatility floor.`;
 
   const riskDistance = Math.abs(entry - stop);
   const rewardToRisk = 2;
@@ -313,11 +351,14 @@ function buildTradePlan(
           : "Entry uses the completed breakout candle close beyond the ORB boundary.",
     stopLogic,
     targetLogic: "Target is fixed at 2R from the scenario stop.",
-    structuralStop: roundPrice(structuralStop),
+    structuralInvalidation: roundPrice(structuralInvalidation),
+    structuralStop: roundPrice(stopPlan.bufferedStructuralStop),
     atr: atr == null ? null : roundPrice(atr),
     atrPeriod,
-    minimumStopAtr,
-    stopDistanceAtr: atr && atr > 0 ? Number((riskDistance / atr).toFixed(3)) : null
+    minimumStopAtr: stopPlan.minimumStopAtr,
+    liquidityBufferAtr: stopPlan.liquidityBufferAtr,
+    liquidityBuffer: roundPrice(stopPlan.liquidityBuffer),
+    stopDistanceAtr: stopPlan.stopDistanceAtr == null ? null : Number(stopPlan.stopDistanceAtr.toFixed(3))
   };
 }
 

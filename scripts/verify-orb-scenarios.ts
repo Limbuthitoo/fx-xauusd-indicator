@@ -37,7 +37,8 @@ const configuration: StrategyConfiguration = {
     maximumWeeklyLossPercent: 2,
     maximumTradesPerSession: 1,
     atrPeriod: 14,
-    minimumStopAtr: 1.5,
+    minimumStopAtr: 2,
+    liquidityBufferAtr: 0.25,
     maximumConsecutiveLosses: 3,
     mandatoryStopLoss: true,
     minimumRewardToRisk: 1.5,
@@ -174,7 +175,8 @@ for (const testCase of cases) {
     assert.equal((decision.scenarioFlags as any).tradePlan?.rewardToRisk, 2, `${testCase.name}: 2R plan`);
     const stopDistanceAtr = (decision.scenarioFlags as any).tradePlan?.stopDistanceAtr;
     if (stopDistanceAtr != null) {
-      assert.equal(stopDistanceAtr >= 1.5, true, `${testCase.name}: stop must respect the 1.5 ATR floor`);
+      assert.equal(stopDistanceAtr >= 2, true, `${testCase.name}: stop must respect the 2 ATR floor`);
+      assert.equal((decision.scenarioFlags as any).tradePlan?.liquidityBufferAtr >= 0.25, true, `${testCase.name}: stop must include the liquidity buffer`);
     }
     if (decision.direction === "LONG") {
       assert.equal((decision.stopPrice ?? 0) < (decision.entryPrice ?? 0), true, `${testCase.name}: long stop below entry`);

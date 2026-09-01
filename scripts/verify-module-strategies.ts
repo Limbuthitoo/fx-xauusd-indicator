@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
+import { buildLiquidityAwareStop, buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
 import { evaluateLiquiditySweepSetup, validTradeGeometry } from "../packages/liquidity-sweep-engine/src/index.js";
 import {
   FalseBreakoutEngine,
@@ -13,7 +13,7 @@ import {
   evaluateRangeBreakout
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { buildModule1RangeEngineMetadata, calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
@@ -22,11 +22,28 @@ import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js
 
 const subscriberTradeSetup = validateModuleSetting("orb_max_options", "orb.strategy", {
   tradeSetup: { enabledSessionPresets: ["TOKYO_ORB", "LONDON_ORB"], maximumSignalsPerDay: 9 },
-  risk: { minimumStopAtr: 0.5 }
+  risk: { minimumStopAtr: 0.5, liquidityBufferAtr: 0.05 }
 }) as any;
 assert.deepEqual(subscriberTradeSetup.tradeSetup.enabledSessionPresets, ["TOKYO_ORB"], "Subscriber automation must use one explicit session preset");
 assert.equal(subscriberTradeSetup.tradeSetup.maximumSignalsPerDay, 3, "Subscriber daily signals must stay inside the production cap");
-assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 1.5, "Module 1 settings must preserve the volatility stop floor");
+assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 2, "Module 1 settings must preserve the volatility stop floor");
+assert.equal(subscriberTradeSetup.risk.liquidityBufferAtr, 0.25, "Module 1 settings must preserve the structural liquidity buffer");
+
+const liquidityAwareLongStop = buildLiquidityAwareStop({
+  direction: "LONG",
+  entry: 4445.40598,
+  structuralInvalidation: 4439.288862,
+  atr: 3.50548,
+  spread: 0,
+  minimumStopAtr: 2,
+  liquidityBufferAtr: 0.25
+});
+assert.equal(liquidityAwareLongStop.stop < 4439.252, true, "Module 1 stop must survive the observed shallow horizontal liquidity sweep");
+assert.equal((liquidityAwareLongStop.stopDistanceAtr ?? 0) >= 2, true, "Module 1 stop must stay at least 2 ATR from entry");
+assert.equal(liquidityAwareLongStop.bufferedStructuralStop < 4439.288862, true, "Module 1 stop must sit beyond structural invalidation, not on the visible boundary");
+const liquidityAwareShortStop = buildLiquidityAwareStop({ direction: "SHORT", entry: 4500, structuralInvalidation: 4505, atr: 2, spread: 0.2 });
+assert.equal(liquidityAwareShortStop.stop > 4505, true, "Module 1 short stop must sit above structural invalidation");
+assert.equal((liquidityAwareShortStop.stopDistanceAtr ?? 0) >= 2, true, "Module 1 short stop must enforce the same volatility floor");
 
 const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
 const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
@@ -285,6 +302,11 @@ const module1HorizontalRuntime = buildModule1RangeEngineMetadata(
 );
 assert.equal(module1HorizontalRuntime.horizontal.signalMode, "ACTIVE_SIGNAL", "Module 1 runtime must expose the horizontal profile as active");
 assert.equal(module1HorizontalRuntime.horizontal.decision.status, "BUY_READY", "Module 1 worker wiring must promote a recovered horizontal breakout/retest");
+const horizontalSetup = buildHorizontalRangeSetupDecision(module1HorizontalRuntime, lifecycleRetest, { id: "module1-horizontal-session" }) as any;
+assert.equal(horizontalSetup.status, "LONG SETUP READY", "Horizontal runtime must produce a complete long setup");
+assert.equal(horizontalSetup.scenarioFlags.horizontalRangeSignal.tradePlan.stopDistanceAtr >= 2, true, "Horizontal setup must enforce the shared 2 ATR floor");
+assert.equal(horizontalSetup.scenarioFlags.horizontalRangeSignal.tradePlan.liquidityBufferAtr >= 0.25, true, "Horizontal setup must enforce the shared liquidity buffer");
+assert.equal(horizontalSetup.stopPrice < horizontalSetup.scenarioFlags.horizontalRangeSignal.tradePlan.structuralInvalidation, true, "Horizontal long stop must sit beyond structural invalidation");
 const sellBreakout = candle("2026-08-10T10:00:00Z", horizontal.range!.low + 0.1, horizontal.range!.low + 0.2, horizontal.range!.low - 0.8, horizontal.range!.low - 0.5);
 const sellRetest = candle("2026-08-10T10:05:00Z", horizontal.range!.low + 0.05, horizontal.range!.low + 0.15, horizontal.range!.low - 0.7, horizontal.range!.low - 0.55);
 const sellLifecycle = evaluateBreakoutRetestLifecycle(horizontal.range!, [...horizontalCandles, sellBreakout, sellRetest], RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION);
