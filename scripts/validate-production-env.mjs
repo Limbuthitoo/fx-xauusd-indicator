@@ -18,8 +18,14 @@ required("ADMIN_SESSION_SECRET");
 required("PUBLIC_API_BASE_URL");
 required("TWELVE_DATA_API_KEY");
 
+const calendarProvider = (env.ECONOMIC_CALENDAR_PROVIDER ?? "manual").toLowerCase();
+if (!["manual", "trading_economics"].includes(calendarProvider)) errors.push("ECONOMIC_CALENDAR_PROVIDER must be manual or trading_economics.");
+if (calendarProvider === "trading_economics") required("TRADING_ECONOMICS_API_KEY");
+
 if (!allowPlaceholders) {
-  for (const key of ["POSTGRES_PASSWORD", "LOCAL_PIN", "ADMIN_PASSWORD", "ADMIN_SESSION_SECRET", "TWELVE_DATA_API_KEY"]) {
+  const sensitiveKeys = ["POSTGRES_PASSWORD", "LOCAL_PIN", "ADMIN_PASSWORD", "ADMIN_SESSION_SECRET", "TWELVE_DATA_API_KEY"];
+  if (calendarProvider === "trading_economics") sensitiveKeys.push("TRADING_ECONOMICS_API_KEY");
+  for (const key of sensitiveKeys) {
     if (isPlaceholder(env[key])) errors.push(`${key} still contains a placeholder value.`);
   }
   const passwordError = validateStrongPassword(env.ADMIN_PASSWORD ?? "");
@@ -54,6 +60,7 @@ console.log(JSON.stringify({
   envFile,
   redisRequired: env.REDIS_REQUIRED,
   twelveData: { daily, minute, warn, danger, stop, interval, pollSeconds, catchupSeconds },
+  economicCalendar: { provider: calendarProvider, automated: calendarProvider !== "manual" },
   workerFirst: env.EMBEDDED_MARKET_DATA_WORKER !== "true",
   pushProvider: env.PUSH_PROVIDER ?? "auto"
 }, null, 2));

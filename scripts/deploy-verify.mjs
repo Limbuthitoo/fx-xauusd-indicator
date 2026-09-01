@@ -29,7 +29,7 @@ async function main() {
     json("/api/platform/usage/twelve-data", { headers }),
     json("/api/platform/push/overview", { headers })
   ]);
-  const requiredServices = ["API", "PostgreSQL", "Redis", "Market-data worker", "Twelve Data guardrail", "Production configuration"];
+  const requiredServices = ["API", "PostgreSQL", "Redis", "Market-data worker", "Twelve Data guardrail", "Economic calendar", "Production configuration"];
   const services = new Map((system.services ?? []).map((service) => [service.name, service]));
   const failed = requiredServices
     .map((name) => services.get(name))
@@ -41,6 +41,7 @@ async function main() {
     worker: services.get("Market-data worker")?.status ?? "UNKNOWN",
     redis: services.get("Redis")?.status ?? "UNKNOWN",
     postgres: services.get("PostgreSQL")?.status ?? "UNKNOWN",
+    economicCalendar: services.get("Economic calendar")?.status ?? "UNKNOWN",
     pushProvider: push.health?.provider ?? "UNKNOWN",
     firebase: push.health?.firebase?.status ?? "UNKNOWN",
     activePushDevices: push.devices?.active_devices ?? 0,

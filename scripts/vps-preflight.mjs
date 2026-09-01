@@ -15,6 +15,9 @@ if (!existsSync(envFile)) {
   required(env, "ADMIN_SESSION_SECRET");
   required(env, "PUBLIC_API_BASE_URL");
   required(env, "TWELVE_DATA_API_KEY");
+  const calendarProvider = (env.ECONOMIC_CALENDAR_PROVIDER ?? "manual").toLowerCase();
+  if (!["manual", "trading_economics"].includes(calendarProvider)) errors.push("ECONOMIC_CALENDAR_PROVIDER must be manual or trading_economics.");
+  if (calendarProvider === "trading_economics") required(env, "TRADING_ECONOMICS_API_KEY");
   for (const [key, value] of Object.entries(env)) {
     if (isPlaceholder(value)) errors.push(`${key} still contains a placeholder value.`);
   }

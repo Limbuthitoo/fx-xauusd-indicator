@@ -14,6 +14,7 @@ cp .env.production.example .env.production
 - `ADMIN_SESSION_SECRET`
 - `PUBLIC_API_BASE_URL=https://fx.bijaysubbalimbu.com.np`
 - `TWELVE_DATA_API_KEY`
+- `ECONOMIC_CALENDAR_PROVIDER=trading_economics` and `TRADING_ECONOMICS_API_KEY` for automated high-impact US event protection
 - `REDIS_REQUIRED=true`
 - `PUSH_PROVIDER=firebase`
 - Firebase service-account credentials
@@ -21,6 +22,8 @@ cp .env.production.example .env.production
 - `EXPO_PUBLIC_EAS_PROJECT_ID`
 
 Keep `EMBEDDED_MARKET_DATA_WORKER=false`. Production must run API and market-data worker as separate services.
+
+Use `ECONOMIC_CALENDAR_PROVIDER=manual` only when an operator will maintain high-impact USD events through the authenticated API. Automated mode synchronizes exact-time, importance-3 United States events every six hours, keeps 14 days of forward coverage, and blocks new news-sensitive entries if successful synchronization or 24-hour-ahead coverage becomes stale.
 
 Run the VPS preflight before building:
 

@@ -8,6 +8,7 @@ import { redisClient, redisHealth } from "../../infrastructure/redis/client.js";
 import { hashPassword, requireAdmin, requirePermission, requireTenantModule, writeAudit } from "../auth/routes.js";
 import { handleBillingWebhook } from "../billing/provider.js";
 import { pushProviderHealth, sendTenantPush } from "../notifications/push.js";
+import { economicCalendarAutomationStatus } from "../news/service.js";
 import { runOrbLearningPython } from "./learning.js";
 import { listTenantModuleSettings, listTenantSettings, updateTenantModuleSetting, updateTenantSetting, validateSetting } from "./settings.js";
 
@@ -1456,6 +1457,7 @@ async function platformSystemHealth() {
   const database = await databaseHealth();
   const worker = await workerHealth();
   const feed = await feedHealth();
+  const calendar = await economicCalendarHealth();
   const configuration = configurationHealth();
   const backups = await backupStatus();
   const redis = await redisHealth();
@@ -1465,6 +1467,7 @@ async function platformSystemHealth() {
     healthItem("Redis", redis.status, redis.message, redis),
     healthItem("Market-data worker", worker.status, worker.message, worker),
     healthItem("Twelve Data guardrail", feed.status, feed.message, feed),
+    healthItem("Economic calendar", calendar.status, calendar.message, calendar),
     healthItem("Production configuration", configuration.status, configuration.message, configuration),
     healthItem("PostgreSQL backups", backups.status, backupHealthMessage(backups), backups)
   ];
@@ -1656,6 +1659,30 @@ async function feedHealth() {
   }
 }
 
+async function economicCalendarHealth() {
+  try {
+    const state = await economicCalendarAutomationStatus();
+    const status = state.status === "HEALTHY"
+      ? "HEALTHY"
+      : state.status === "WARN" || state.status === "MANUAL"
+        ? "WARN"
+        : state.status === "STALE" || state.status === "NOT_READY"
+          ? "STALE"
+          : "CRITICAL";
+    return {
+      ...state,
+      status,
+      message: `${state.reason} ${state.upcomingHighImpactEvents} high-impact event(s) are scheduled in the next 14 days.`
+    };
+  } catch (error) {
+    return {
+      status: "CRITICAL",
+      message: "Economic calendar health could not be read.",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 function healthItem(name: string, status: string, message: string, detail: Record<string, unknown>) {
   return { name, status, message, detail };
 }
@@ -1665,7 +1692,8 @@ function configurationHealth() {
     config.nodeEnv === "production" && !config.adminSessionSecret ? "ADMIN_SESSION_SECRET is required in production." : null,
     config.nodeEnv === "production" && ["1234", "change-this-password"].includes(config.adminPassword) ? "ADMIN_PASSWORD must be changed in production." : null,
     config.nodeEnv === "production" && config.billingProvider !== "manual" && !config.billingWebhookSecret ? "BILLING_WEBHOOK_SECRET is required when billing provider is external." : null,
-    config.twelveDataStopCredits >= config.twelveDataDailyCreditLimit ? "TWELVE_DATA_STOP_CREDITS should be below the daily limit." : null
+    config.twelveDataStopCredits >= config.twelveDataDailyCreditLimit ? "TWELVE_DATA_STOP_CREDITS should be below the daily limit." : null,
+    config.economicCalendarProvider === "trading_economics" && !config.tradingEconomicsApiKey ? "TRADING_ECONOMICS_API_KEY is required for automated economic calendar mode." : null
   ].filter(Boolean);
   return {
     status: issues.length > 0 ? (config.nodeEnv === "production" ? "CRITICAL" : "WARN") : "HEALTHY",
@@ -1694,6 +1722,9 @@ function recoveryGuidance(services: Array<{ name: string; status: string; messag
   }
   if (services.some((service) => service.name === "Twelve Data guardrail" && service.status !== "HEALTHY")) {
     guidance.push("Review Twelve Data usage before forcing sync. The guardrail is protecting daily credits.");
+  }
+  if (services.some((service) => service.name === "Economic calendar" && service.status !== "HEALTHY")) {
+    guidance.push("Restore economic calendar synchronization before allowing new news-sensitive entries.");
   }
   if (services.some((service) => service.name === "Production configuration" && service.status !== "HEALTHY")) {
     guidance.push("Review environment variables before production deployment.");

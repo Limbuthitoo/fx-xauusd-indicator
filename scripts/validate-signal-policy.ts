@@ -13,6 +13,47 @@ const checks: Array<{ name: string; status: "PASS" | "WARN" | "FAIL"; detail: st
 
 try {
   await client.connect();
+  const calendarProvider = (process.env.ECONOMIC_CALENDAR_PROVIDER ?? "manual").toLowerCase();
+  const calendarMigration = (await client.query(
+    `SELECT filename, applied_at FROM schema_migrations WHERE filename = '097_economic_calendar_automation.sql'`
+  )).rows[0] ?? null;
+  checks.push({
+    name: "Economic calendar schema",
+    status: calendarMigration ? "PASS" : "FAIL",
+    detail: calendarMigration ? "Migration 097 is applied." : "Migration 097 is missing.",
+    evidence: calendarMigration
+  });
+  if (calendarProvider === "trading_economics") {
+    const calendar = (await client.query(
+      `SELECT provider, status, last_attempt_at, last_success_at, coverage_start_at, coverage_end_at,
+              events_upserted, last_error,
+              last_success_at >= now() - ($1::text || ' hours')::interval AS success_is_fresh,
+              coverage_end_at >= now() + interval '24 hours' AS coverage_is_fresh,
+              (SELECT count(*)::int FROM economic_events
+               WHERE provider = 'TRADING_ECONOMICS'
+                 AND upper(impact) IN ('HIGH', 'CRITICAL')
+                 AND event_time_utc BETWEEN now() AND now() + interval '14 days') AS upcoming_events
+       FROM economic_calendar_sync_state
+       WHERE provider = 'TRADING_ECONOMICS'
+       LIMIT 1`,
+      [String(Math.max(Number(process.env.ECONOMIC_CALENDAR_STALE_HOURS ?? 30), 6))]
+    )).rows[0] ?? null;
+    const ready = calendar?.success_is_fresh === true && calendar?.coverage_is_fresh === true && Number(calendar?.upcoming_events ?? 0) > 0;
+    checks.push({
+      name: "Automated economic calendar coverage",
+      status: ready ? "PASS" : "FAIL",
+      detail: ready
+        ? "Trading Economics synchronization is recent and covers at least the next 24 hours."
+        : "Automated calendar coverage is stale or has not completed; news-sensitive entries must remain blocked.",
+      evidence: calendar
+    });
+  } else {
+    checks.push({
+      name: "Economic calendar operating mode",
+      status: "WARN",
+      detail: "Calendar is in manual mode. Maintain high-impact USD events through the authenticated event API before each session."
+    });
+  }
   const horizontalConfigs = (await client.query(
     `SELECT id,
             configuration_json #>> '{rangeEngine,horizontalRange,enabled}' AS enabled,

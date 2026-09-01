@@ -14,7 +14,7 @@ import {
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, calculatePostStopShadowObservation, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
-import { classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
+import { calendarFreshness, classifyEconomicEvents, normalizeTradingEconomicsEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
@@ -31,6 +31,25 @@ assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 2, "Module 1 settings mus
 assert.equal(subscriberTradeSetup.risk.liquidityBufferAtr, 0.25, "Module 1 settings must preserve the structural liquidity buffer");
 assert.equal(subscriberTradeSetup.newsFilter.enabled, true, "Module 1 economic-event protection must default on");
 assert.equal(subscriberTradeSetup.newsFilter.mode, "BLOCK", "Legacy high-impact news mode must normalize to a real blocking mode");
+const normalizedCalendar = normalizeTradingEconomicsEvents([
+  { CalendarId: "us-cpi-1", Date: "2026-08-12T12:30:00", Country: "United States", Event: "CPI", Importance: 3, DateSpan: 0 },
+  { CalendarId: "us-cpi-1", Date: "2026-08-12T12:30:00", Country: "United States", Event: "CPI revised", Importance: 3, DateSpan: 0 },
+  { CalendarId: "estimated", Date: "2026-08-13T00:00:00", Country: "United States", Event: "Estimated", Importance: 3, DateSpan: 1 },
+  { CalendarId: "medium", Date: "2026-08-14T12:30:00", Country: "United States", Event: "Medium", Importance: 2, DateSpan: 0 }
+]);
+assert.equal(normalizedCalendar.length, 1, "Calendar normalization must keep only unique, exact-time, high-impact US events");
+assert.equal(normalizedCalendar[0].title, "CPI revised", "Calendar reschedules must retain the latest provider record for a stable event ID");
+assert.equal(normalizedCalendar[0].eventTimeUtc, "2026-08-12T12:30:00.000Z", "Provider timestamps without offsets must normalize as documented UTC");
+assert.deepEqual(
+  calendarFreshness({ evaluatedAt: "2026-08-10T12:00:00Z", lastSuccessAt: "2026-08-10T11:00:00Z", coverageEndAt: "2026-08-12T00:00:00Z", staleHours: 30 }),
+  { stale: false, staleByAge: false, staleByCoverage: false },
+  "Fresh calendar coverage must remain tradable"
+);
+assert.equal(
+  calendarFreshness({ evaluatedAt: "2026-08-10T12:00:00Z", lastSuccessAt: "2026-08-08T00:00:00Z", coverageEndAt: "2026-08-12T00:00:00Z", staleHours: 30 }).stale,
+  true,
+  "A stale automated calendar must trigger the fail-safe"
+);
 
 const liquidityAwareLongStop = buildLiquidityAwareStop({
   direction: "LONG",

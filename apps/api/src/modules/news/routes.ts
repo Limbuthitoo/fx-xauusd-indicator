@@ -1,12 +1,22 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { requirePermission } from "../auth/routes.js";
-import { economicEventStatus } from "./service.js";
+import { economicCalendarAutomationStatus, economicEventStatus, invalidateEconomicEventStatusCache, syncEconomicCalendar } from "./service.js";
 
 export async function newsRoutes(app: FastifyInstance) {
   app.get("/api/news/events", async () => {
     const { rows } = await query("SELECT * FROM economic_events ORDER BY event_time_utc DESC LIMIT 100");
     return rows;
+  });
+
+  app.get("/api/news/automation", async (request) => {
+    requirePermission(request, "signals.view");
+    return economicCalendarAutomationStatus();
+  });
+
+  app.post("/api/news/sync", async (request) => {
+    requirePermission(request, "settings.manage");
+    return syncEconomicCalendar();
   });
 
   app.post("/api/news/events", async (request) => {
@@ -34,6 +44,7 @@ export async function newsRoutes(app: FastifyInstance) {
         body.notes ?? null
       ]
     );
+    invalidateEconomicEventStatusCache();
     return rows[0];
   });
 

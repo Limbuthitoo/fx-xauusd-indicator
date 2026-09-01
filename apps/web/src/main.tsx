@@ -3217,6 +3217,7 @@ function AutoEnginePanel({ state, setup, activeVersion, feedHealth, message }: {
       <Metric label="Scenario" value={setup?.scenario ?? "WAITING"} />
       <Metric label="Favorability" value={setup?.favorability_score == null ? "--" : `${setup.favorability_score}/100 ${setup.favorability_grade ?? ""}`} />
       <Metric label="News" value={state.newsStatus?.status ?? "CLEAR"} />
+      <Metric label="Calendar" value={state.newsStatus?.automation?.status ?? "MANUAL"} />
       <Metric label="Latest candle" value={formatNepalTime(state.feedStatus?.latestCandle?.timestampUtc)} />
       <p className="reason">{message}</p>
     </Panel>
@@ -3318,6 +3319,7 @@ function LiveSystemStatusPanel({ state, moduleCode, setup, trade, feedHealth }: 
         <Metric label="Latest candle" value={formatNepalTime(latestCandle)} />
         {module2FeedReady ? <Metric label="M2 5M candles" value={module2FeedReady} /> : null}
         <Metric label="News" value={state.newsStatus?.status ?? "CLEAR"} />
+        <Metric label="Calendar" value={state.newsStatus?.automation?.status ?? "MANUAL"} />
       </div>
       <p className="reason">{setup?.final_reason ?? "Waiting for the module to produce a valid New York-session setup."}</p>
     </Panel>
@@ -4347,11 +4349,15 @@ function productionDiagnostics(state: PanelState) {
     {
       name: "News guard",
       status: state.newsStatus?.status ?? "UNKNOWN",
-      tone: state.newsStatus?.status === "BLOCKED" ? "bad" : "good",
+      tone: isNewsBlocked(state.newsStatus?.status) ? "bad" : state.newsStatus?.automation?.status === "WARN" ? "warn" : "good",
       evidence: state.newsStatus?.reason ?? "No high-impact block reported.",
-      action: state.newsStatus?.status === "BLOCKED" ? "Wait until news guard clears." : "None"
+      action: isNewsBlocked(state.newsStatus?.status) ? "Wait until news guard clears or restore calendar synchronization." : "None"
     }
   ];
+}
+
+function isNewsBlocked(status: unknown) {
+  return ["BLOCKED_BEFORE_EVENT", "BLOCKED_AFTER_EVENT", "MANUAL_OVERRIDE"].includes(String(status));
 }
 
 function postgresHealthLabel(state: PanelState) {
