@@ -31,6 +31,7 @@ async function main() {
   ]);
   const requiredServices = ["API", "PostgreSQL", "Redis", "Market-data worker", "Twelve Data guardrail", "Economic calendar", "Production configuration"];
   const services = new Map((system.services ?? []).map((service) => [service.name, service]));
+  const calendar = services.get("Economic calendar")?.detail ?? {};
   const failed = requiredServices
     .map((name) => services.get(name))
     .filter((service) => !service || ["CRITICAL", "DOWN", "STALE"].includes(service.status));
@@ -42,6 +43,9 @@ async function main() {
     redis: services.get("Redis")?.status ?? "UNKNOWN",
     postgres: services.get("PostgreSQL")?.status ?? "UNKNOWN",
     economicCalendar: services.get("Economic calendar")?.status ?? "UNKNOWN",
+    economicCalendarProvider: calendar.provider ?? "UNKNOWN",
+    economicCalendarSources: (calendar.sources ?? []).map((source) => `${source.sourceCode}:${source.status}`),
+    nextProtectedEvent: calendar.nextProtectedEvent?.title ?? null,
     pushProvider: push.health?.provider ?? "UNKNOWN",
     firebase: push.health?.firebase?.status ?? "UNKNOWN",
     activePushDevices: push.devices?.active_devices ?? 0,
@@ -52,6 +56,9 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
   if (push.health?.provider === "firebase" && push.health?.firebase?.status !== "CONFIGURED") {
     result.failed.push("Firebase push");
+  }
+  if (calendar.provider === "OFFICIAL_US" && ((calendar.sources ?? []).length !== 4 || (calendar.sources ?? []).some((source) => source.status !== "HEALTHY"))) {
+    result.failed.push("Official economic calendar sources");
   }
   if (failed.length > 0 || usage.worker?.embeddedApiWorker === true || result.failed.length > failed.length) process.exit(1);
 }

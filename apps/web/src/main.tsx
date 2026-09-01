@@ -2616,6 +2616,7 @@ function PlatformSystemPanel({ user, message, health, lifecycle, observation, au
   const redis = services.find((service: any) => service.name === "Redis")?.detail ?? {};
   const worker = services.find((service: any) => service.name === "Market-data worker")?.detail ?? {};
   const apiService = services.find((service: any) => service.name === "API")?.detail ?? {};
+  const calendar = services.find((service: any) => service.name === "Economic calendar")?.detail ?? {};
   const securityEvents = audit?.security ?? [];
   const actionEvents = audit?.actions ?? [];
   const activeSessions = (audit?.sessions ?? []).filter((session: any) => !session.revoked_at);
@@ -2638,6 +2639,9 @@ function PlatformSystemPanel({ user, message, health, lifecycle, observation, au
         <Metric label="Slow routes" value={requestLoad?.summary?.slow_requests ?? 0} />
         <Metric label="Paper lifecycle" value={lifecycle?.status ?? "UNKNOWN"} />
         <Metric label="Signal observer" value={observation?.status ?? "UNKNOWN"} />
+        <Metric label="Calendar" value={calendar.status ?? "UNKNOWN"} />
+        <Metric label="Calendar sources" value={`${(calendar.sources ?? []).filter((source: any) => source.status === "HEALTHY").length}/4 healthy`} />
+        <Metric label="Next news block" value={calendar.nextProtectedEvent ? formatNepalTime(calendar.nextProtectedEvent.protectionStartsAt) : "NONE"} />
       </div>
       <p className="reason">{message}</p>
       <div className="platform-list">
@@ -2667,6 +2671,26 @@ function PlatformSystemPanel({ user, message, health, lifecycle, observation, au
             <span className={`pill ${systemStatusTone(service.status)}`}>{service.status}</span>
           </div>
         ))}
+        {(calendar.sources ?? []).map((source: any) => (
+          <div className="platform-row" key={`calendar-${source.sourceCode}`}>
+            <div>
+              <strong>{calendarSourceName(source.sourceCode)}</strong>
+              <span>{source.events ?? 0} curated event(s) · coverage through {formatNepalTime(source.coverageEndAt)}</span>
+              <em>{source.error ?? `Fetched ${formatNepalTime(source.fetchedAt)} from ${source.sourceUrl ?? "official schedule"}.`}</em>
+            </div>
+            <span className={`pill ${systemStatusTone(source.status)}`}>{source.status}</span>
+          </div>
+        ))}
+        {calendar.nextProtectedEvent ? (
+          <div className="platform-row">
+            <div>
+              <strong>Next protected release · {calendar.nextProtectedEvent.title}</strong>
+              <span>{calendar.nextProtectedEvent.sourceCode ?? "OFFICIAL"} · release {formatNepalTime(calendar.nextProtectedEvent.event_time_utc)}</span>
+              <em>New entries blocked from {formatNepalTime(calendar.nextProtectedEvent.protectionStartsAt)} through {formatNepalTime(calendar.nextProtectedEvent.protectionEndsAt)}.</em>
+            </div>
+            <span className="pill warn">SCHEDULED</span>
+          </div>
+        ) : null}
         {services.length === 0 ? (
           <div className="platform-row">
             <div>
@@ -2832,7 +2856,7 @@ function formatBytes(value: number) {
 
 function systemStatusTone(status: string) {
   if (status === "HEALTHY") return "good";
-  if (status === "CRITICAL" || status === "DOWN") return "bad";
+  if (status === "CRITICAL" || status === "DOWN" || status === "ERROR") return "bad";
   return "warn";
 }
 
@@ -2842,8 +2866,17 @@ function systemDetailLine(detail: any) {
   if (detail.connectionStatus || detail.memory) return `Connection ${detail.connectionStatus ?? "--"} · latency ${detail.latencyMs ?? "--"}ms · memory ${detail.memory?.used ?? "--"}.`;
   if (detail.heartbeatAt) return `Heartbeat ${formatNepalTime(detail.heartbeatAt)} · PID ${detail.pid ?? "--"}.`;
   if (detail.creditsToday != null) return `Credits ${detail.creditsToday}/${detail.dailyLimit}, minute ${detail.creditsLastMinute}/${detail.minuteLimit}.`;
+  if (Array.isArray(detail.sources)) return `${detail.sources.filter((source: any) => source.status === "HEALTHY").length}/4 official sources healthy · next release ${detail.nextProtectedEvent ? formatNepalTime(detail.nextProtectedEvent.event_time_utc) : "not scheduled"}.`;
   if (detail.uptimeSeconds != null) return `PID ${detail.pid ?? "--"} · port ${detail.port ?? "--"}.`;
   return detail.error ?? "No detail available.";
+}
+
+function calendarSourceName(sourceCode: string) {
+  if (sourceCode === "BLS") return "BLS labor and inflation schedule";
+  if (sourceCode === "BEA") return "BEA GDP and PCE schedule";
+  if (sourceCode === "CENSUS") return "Census retail and durable-goods schedule";
+  if (sourceCode === "FED") return "Federal Reserve FOMC schedule";
+  return `${sourceCode} economic schedule`;
 }
 
 function PlatformSubscribersPanel({

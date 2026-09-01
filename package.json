@@ -54,6 +54,7 @@
     "validate:mvp-runtime": "node --import tsx scripts/validate-mvp-runtime.ts",
     "validate:paper-lifecycle": "node --import tsx scripts/validate-paper-target-lifecycle.ts",
     "validate:production-observation": "node --import tsx scripts/validate-production-observation.ts",
+    "calendar:sync": "node --import tsx scripts/sync-economic-calendar.ts",
     "verify:mobile-release": "node scripts/verify-mobile-release.mjs",
     "validate:signal-policy": "node --import tsx scripts/validate-signal-policy.ts",
     "validation:history": "node --import tsx scripts/historical-strategy-validation.ts",

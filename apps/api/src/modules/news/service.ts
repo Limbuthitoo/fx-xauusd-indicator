@@ -42,6 +42,24 @@ export type EconomicCalendarAutomationState = {
   coverageEndAt: string | null;
   eventsUpserted: number;
   upcomingHighImpactEvents: number;
+  sources: EconomicCalendarSourceState[];
+  nextProtectedEvent: EconomicCalendarNextEvent | null;
+};
+
+export type EconomicCalendarSourceState = {
+  sourceCode: string;
+  sourceUrl: string | null;
+  status: "HEALTHY" | "STALE" | "ERROR" | "NOT_READY";
+  fetchedAt: string | null;
+  coverageEndAt: string | null;
+  events: number;
+  error: string | null;
+};
+
+export type EconomicCalendarNextEvent = EconomicEvent & {
+  protectionStartsAt: string;
+  protectionEndsAt: string;
+  sourceCode: string | null;
 };
 
 export function classifyEconomicEvents(events: EconomicEvent[], evaluatedAt: string | Date = new Date()): EconomicEventState {
@@ -107,7 +125,7 @@ export async function economicCalendarAutomationStatus(evaluatedAt: string | Dat
   const configured = true;
   const at = new Date(evaluatedAt);
   if (!automated) {
-    const count = await upcomingEventCount(at);
+    const [count, nextProtectedEvent] = await Promise.all([upcomingEventCount(at), nextEconomicEvent(at)]);
     return {
       provider,
       automated,
@@ -120,15 +138,17 @@ export async function economicCalendarAutomationStatus(evaluatedAt: string | Dat
       coverageStartAt: null,
       coverageEndAt: null,
       eventsUpserted: 0,
-      upcomingHighImpactEvents: count
+      upcomingHighImpactEvents: count,
+      sources: [],
+      nextProtectedEvent
     };
   }
-  const { rows } = await query(
-    `SELECT * FROM economic_calendar_sync_state WHERE provider = $1 LIMIT 1`,
-    [provider]
-  );
+  const [{ rows }, count, nextProtectedEvent] = await Promise.all([
+    query(`SELECT * FROM economic_calendar_sync_state WHERE provider = $1 LIMIT 1`, [provider]),
+    upcomingEventCount(at, provider),
+    nextEconomicEvent(at, provider)
+  ]);
   const row = rows[0] as any;
-  const count = await upcomingEventCount(at);
   const lastSuccessAt = row?.last_success_at ? new Date(row.last_success_at) : null;
   const coverageEndAt = row?.coverage_end_at ? new Date(row.coverage_end_at) : null;
   const freshness = calendarFreshness({
@@ -162,7 +182,9 @@ export async function economicCalendarAutomationStatus(evaluatedAt: string | Dat
     coverageStartAt: row?.coverage_start_at ?? null,
     coverageEndAt: row?.coverage_end_at ?? null,
     eventsUpserted: Number(row?.events_upserted ?? 0),
-    upcomingHighImpactEvents: count
+    upcomingHighImpactEvents: count,
+    sources: officialSourceStates(row?.metadata, at),
+    nextProtectedEvent
   };
 }
 
@@ -360,17 +382,63 @@ function configuredCalendarProvider() {
   return config.economicCalendarProvider === "official_us" ? OFFICIAL_US_PROVIDER : "MANUAL";
 }
 
-async function upcomingEventCount(at: Date) {
+async function upcomingEventCount(at: Date, provider?: string) {
   const { rows } = await query(
     `SELECT count(*)::int AS count
      FROM economic_events
      WHERE affected_currency IN ('USD', 'XAU', 'ALL')
        AND upper(impact) IN ('HIGH', 'CRITICAL')
+       AND ($2::text IS NULL OR provider = $2)
        AND event_time_utc >= $1
        AND event_time_utc <= $1::timestamptz + interval '14 days'`,
-    [at.toISOString()]
+    [at.toISOString(), provider ?? null]
   );
   return Number(rows[0]?.count ?? 0);
+}
+
+async function nextEconomicEvent(at: Date, provider?: string): Promise<EconomicCalendarNextEvent | null> {
+  const { rows } = await query(
+    `SELECT *, metadata->>'sourceCode' AS source_code,
+            event_time_utc - (block_before_minutes || ' minutes')::interval AS protection_starts_at,
+            event_time_utc + (block_after_minutes || ' minutes')::interval AS protection_ends_at
+     FROM economic_events
+     WHERE affected_currency IN ('USD', 'XAU', 'ALL')
+       AND upper(impact) IN ('HIGH', 'CRITICAL')
+       AND ($2::text IS NULL OR provider = $2)
+       AND event_time_utc >= $1
+     ORDER BY event_time_utc ASC
+     LIMIT 1`,
+    [at.toISOString(), provider ?? null]
+  );
+  const row = rows[0] as any;
+  if (!row) return null;
+  return {
+    ...row,
+    sourceCode: row.source_code ?? null,
+    protectionStartsAt: row.protection_starts_at,
+    protectionEndsAt: row.protection_ends_at
+  };
+}
+
+function officialSourceStates(metadata: unknown, evaluatedAt: Date): EconomicCalendarSourceState[] {
+  const value = metadata && typeof metadata === "object" ? metadata as any : {};
+  const synchronized = Array.isArray(value.officialSources) ? value.officialSources : [];
+  const failures = Array.isArray(value.failures) ? value.failures : [];
+  return ["BLS", "BEA", "CENSUS", "FED"].map((sourceCode) => {
+    const source = synchronized.find((item: any) => item?.sourceCode === sourceCode);
+    const failure = failures.find((item: any) => item?.sourceCode === sourceCode);
+    const coverageEnd = source?.coverageEndAt ? new Date(source.coverageEndAt) : null;
+    const stale = !coverageEnd || coverageEnd.getTime() < evaluatedAt.getTime() + 24 * 60 * 60_000;
+    return {
+      sourceCode,
+      sourceUrl: source?.sourceUrl ?? failure?.sourceUrl ?? null,
+      status: failure ? "ERROR" : !source ? "NOT_READY" : stale ? "STALE" : "HEALTHY",
+      fetchedAt: source?.fetchedAt ?? null,
+      coverageEndAt: source?.coverageEndAt ?? null,
+      events: Number(source?.events ?? 0),
+      error: failure?.error ?? null
+    };
+  });
 }
 
 async function markSyncAttempt(provider: string) {
