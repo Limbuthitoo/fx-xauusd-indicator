@@ -60,12 +60,22 @@ run_validation validate:signal-policy
 run_validation validate:production-observation
 
 echo "[9/9] Verifying public API, WebSocket, and optional authenticated tenant flow"
+PROMPTED_ADMIN_OTP=false
+if [[ -z "${ADMIN_OTP:-}" && -z "${ADMIN_MFA_CODE:-}" && -t 0 ]]; then
+  read -rsp "Current admin OTP (press Enter if MFA is disabled): " ADMIN_OTP
+  echo
+  export ADMIN_OTP
+  PROMPTED_ADMIN_OTP=true
+fi
 npm run deploy:verify -- "$ENV_FILE"
 npm run deploy:verify-websocket -- "$ENV_FILE"
 if [[ -n "${TENANT_TOKEN:-}" || ( -n "${TENANT_EMAIL:-}" && -n "${TENANT_PASSWORD:-}" ) ]]; then
   npm run validate:modules-flow
 else
   echo "Tenant flow proof skipped. Set TENANT_TOKEN, or TENANT_EMAIL and TENANT_PASSWORD, to run it."
+fi
+if [[ "$PROMPTED_ADMIN_OTP" == "true" ]]; then
+  unset ADMIN_OTP
 fi
 
 echo "Production deployment and lifecycle verification complete."
