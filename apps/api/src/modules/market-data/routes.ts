@@ -13,8 +13,8 @@ import {
   evaluateRangeBreakout
 } from "@orb-guide/range-engine";
 import { calculateRisk, evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated, XAUUSD_PRODUCTION_SIGNAL_POLICY } from "@orb-guide/risk-engine";
-import type { Candle, RuleContext } from "@orb-guide/shared-types";
-import { buildLiquidityAwareStop, buildOpeningRange, evaluateSetup } from "@orb-guide/strategy-engine";
+import type { Candle, Direction, NewsStatus, RuleContext, RuleEvaluation, SetupDecision } from "@orb-guide/shared-types";
+import { buildLiquidityAwareStop, buildOpeningRange, evaluateModule1MarketChallenger, evaluateSetup } from "@orb-guide/strategy-engine";
 import { config } from "../../infrastructure/config.js";
 import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
@@ -27,6 +27,7 @@ import { requireAdmin, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
+import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
 import { buildPaperTargetPlan } from "../trades/paper-target-plan.js";
@@ -2936,19 +2937,21 @@ async function processLiquiditySweepSession(symbol: string, timeframe: number, l
   const tradesTaken = await tradesTakenForSession(session.id, moduleCode);
   const configuration = await getTenantModuleStrategyConfiguration(activeTenantId, moduleCode, "liquiditySweep.strategy", session.configuration_json);
   const configVersion = await module2ConfigSnapshot(activeTenantId);
+  const news = await economicEventStatus(current.timestamp_utc);
   const decision = evaluateLiquiditySweepSetup({
     now: current.timestamp_utc,
     symbol,
     setupCandles: fallbackSetupRows.map(toCandle),
     biasCandles: biasRows.map(toCandle),
     spread: current.spread == null ? null : Number(current.spread),
-    newsStatus: "CLEAR",
+    newsStatus: news.status,
     tradesTakenThisSession: tradesTaken,
     configuration: configuration as any
   });
   decision.scenarioFlags = {
     ...(decision.scenarioFlags ?? {}),
-    configSnapshot: configVersion
+    configSnapshot: configVersion,
+    economicEventGuard: news
   };
   const saved = await saveModuleDecision(session, moduleCode, decision, current);
   const brainDecision = await runProductionBrainSweep(session.tenant_id, moduleCode, saved?.setup?.id);
@@ -3080,13 +3083,14 @@ async function runModule2DryRunFromSavedCandles(tenantId: string | null, session
   const baseConfiguration = session?.configuration_json ?? version?.configuration_json ?? {};
   const configuration = await getTenantModuleStrategyConfiguration(tenantId, "high_probability_strategy_2", "liquiditySweep.strategy", baseConfiguration);
   const tradesTaken = session?.id ? await tradesTakenForSession(session.id, "high_probability_strategy_2") : 0;
+  const news = await economicEventStatus(rowTimestamp(current));
   const decision = evaluateLiquiditySweepSetup({
     now: rowTimestamp(current),
     symbol,
     setupCandles: uniqueCandleRows(setupRows).map(toCandle),
     biasCandles: uniqueCandleRows(biasRows.length > 0 ? biasRows : setupRows).map(toCandle),
     spread: current.spread == null ? null : Number(current.spread),
-    newsStatus: "CLEAR",
+    newsStatus: news.status,
     tradesTakenThisSession: tradesTaken,
     configuration: configuration as any
   });
@@ -4659,7 +4663,7 @@ function moduleRuleLayer(moduleCode: string, ruleCode: string) {
     if (horizontalConfirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
     if (mandatory.includes(ruleCode) || breakoutRule) return { ruleLayer: "MANDATORY", requiredForEntry: true };
     if (module1Confirmation.has(ruleCode)) return { ruleLayer: "CONFIRMATION", requiredForEntry: false };
-    if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: false };
+    if (module1Quality.has(ruleCode)) return { ruleLayer: "QUALITY", requiredForEntry: true };
   }
   if (module2Mandatory.has(ruleCode)) return { ruleLayer: "MANDATORY", requiredForEntry: true };
   if (module2PaperTracking.has(ruleCode)) return { ruleLayer: "PAPER_TRACKING", requiredForEntry: false };
@@ -4678,8 +4682,8 @@ function withChecklistMetadata(moduleCode: string, decision: any) {
   const blockingEvaluations = evaluations.filter((evaluation: any) => evaluation.blocking);
   const fullMatched = blockingEvaluations.length > 0 && blockingEvaluations.every((evaluation: any) => evaluation.status === "PASS");
   const currentFlags = decision.scenarioFlags ?? {};
-  const fullChecklistMatched = blockingEvaluations.length > 0 ? (currentFlags.fullChecklistMatched ?? fullMatched) : false;
-  const setupTier = blockingEvaluations.length > 0 ? (currentFlags.setupTier ?? (fullMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH")) : "WATCH";
+  const fullChecklistMatched = blockingEvaluations.length > 0 ? fullMatched : false;
+  const setupTier = blockingEvaluations.length > 0 ? (fullMatched ? "FULL" : mandatoryMatched ? "MANDATORY" : "WATCH") : "WATCH";
   return {
     ...decision,
     evaluations,
@@ -5054,10 +5058,12 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
   const latest = toCandle(latestRow);
   const activeTenantId = tenantId ?? (await defaultTenantId());
   const openTrades = await query(
-    `SELECT t.*, tp.id AS trade_plan_id, tp.setup_candidate_id, sc.session_id, sc.tenant_id, sc.symbol, sc.direction, sc.scenario, sc.module_code
+    `SELECT t.*, tp.id AS trade_plan_id, tp.setup_candidate_id, sc.session_id, sc.tenant_id, sc.symbol, sc.direction, sc.scenario, sc.module_code,
+            ts.signal_window_end_at
      FROM trades t
      JOIN trade_plans tp ON tp.id = t.trade_plan_id
      JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     JOIN trading_sessions ts ON ts.id = sc.session_id
      WHERE sc.symbol = $1
        AND sc.tenant_id = $3
        AND sc.module_code = $4
@@ -5139,10 +5145,12 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         result_r = $3,
         outcome = $4,
         closed_at = $5,
-        remaining_fraction = 0
+        remaining_fraction = 0,
+        shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
+        shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
        RETURNING *`,
-      [trade.id, exit.price, resultR, outcome, latest.timestampUtc]
+      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, exit.reason === "STOP", trade.signal_window_end_at]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
@@ -5195,7 +5203,92 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
     );
     closed.push(updated.rows[0]);
   }
-  return { checked: openTrades.rows.length, closed };
+  const shadow = await processClosedPaperTradeShadows(symbol, latestRow, activeTenantId, moduleCode);
+  return { checked: openTrades.rows.length, closed, shadow };
+}
+
+async function processClosedPaperTradeShadows(symbol: string, latestRow: any, tenantId: string, moduleCode: string) {
+  const latest = toCandle(latestRow);
+  const observations = await query(
+    `SELECT t.*, sc.direction, sc.scenario
+     FROM trades t
+     JOIN trade_plans tp ON tp.id = t.trade_plan_id
+     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     WHERE sc.symbol = $1
+       AND sc.tenant_id = $2
+       AND sc.module_code = $3
+       AND t.shadow_observation_started_at IS NOT NULL
+       AND t.shadow_observation_completed_at IS NULL
+       AND t.shadow_observation_started_at < $4::timestamptz
+     ORDER BY t.shadow_observation_started_at ASC`,
+    [symbol, tenantId, moduleCode, latest.timestampUtc]
+  );
+  let recovered = 0;
+  let completed = 0;
+  for (const trade of observations.rows as any[]) {
+    const observationUntil = new Date(trade.shadow_observation_until).getTime();
+    if (Number.isFinite(observationUntil) && new Date(latest.timestampUtc).getTime() > observationUntil) {
+      await query(
+        `UPDATE trades
+         SET shadow_observation_completed_at = shadow_observation_until
+         WHERE id = $1
+           AND shadow_observation_completed_at IS NULL`,
+        [trade.id]
+      );
+      completed += 1;
+      continue;
+    }
+    const next = calculatePostStopShadowObservation(trade, latest);
+    if (!next) continue;
+    const observationEnded = Number.isFinite(observationUntil) && new Date(latest.timestampUtc).getTime() >= observationUntil;
+    const result = await query(
+      `UPDATE trades SET
+         shadow_max_favorable_price = CASE
+           WHEN shadow_max_favorable_price IS NULL THEN $2
+           WHEN $10 THEN LEAST(shadow_max_favorable_price, $2)
+           ELSE GREATEST(shadow_max_favorable_price, $2) END,
+         shadow_max_adverse_price = CASE
+           WHEN shadow_max_adverse_price IS NULL THEN $3
+           WHEN $10 THEN GREATEST(shadow_max_adverse_price, $3)
+           ELSE LEAST(shadow_max_adverse_price, $3) END,
+         shadow_max_favorable_excursion_r = GREATEST(shadow_max_favorable_excursion_r, $4),
+         shadow_max_adverse_before_tp1_r = CASE
+           WHEN shadow_tp1_hit_at IS NULL THEN GREATEST(shadow_max_adverse_before_tp1_r, $5)
+           ELSE shadow_max_adverse_before_tp1_r END,
+         shadow_tp1_hit_at = COALESCE(shadow_tp1_hit_at, $6::timestamptz),
+         shadow_tp2_hit_at = COALESCE(shadow_tp2_hit_at, $7::timestamptz),
+         shadow_tp3_hit_at = COALESCE(shadow_tp3_hit_at, $8::timestamptz),
+         shadow_recovered_after_stop = shadow_recovered_after_stop OR $6::timestamptz IS NOT NULL,
+         shadow_observation_completed_at = CASE WHEN $9 THEN $1::timestamptz ELSE shadow_observation_completed_at END
+       WHERE id = $11
+       RETURNING shadow_recovered_after_stop, shadow_observation_completed_at`,
+      [latest.timestampUtc, next.favorablePrice, next.adversePrice, next.favorableR, next.adverseR, next.tp1At, next.tp2At, next.tp3At, observationEnded, next.short, trade.id]
+    );
+    if (result.rows[0]?.shadow_recovered_after_stop) recovered += 1;
+    if (result.rows[0]?.shadow_observation_completed_at) completed += 1;
+  }
+  return { checked: observations.rows.length, recovered, completed };
+}
+
+export function calculatePostStopShadowObservation(trade: any, candle: Candle) {
+  const entry = Number(trade.actual_entry);
+  const risk = Number(trade.initial_risk_distance ?? Math.abs(entry - Number(trade.actual_stop)));
+  if (!Number.isFinite(entry) || !Number.isFinite(risk) || risk <= 0) return null;
+  const short = trade.direction === "SHORT";
+  const favorablePrice = short ? candle.low : candle.high;
+  const adversePrice = short ? candle.high : candle.low;
+  const favorableR = Math.max(0, ((favorablePrice - entry) * (short ? -1 : 1)) / risk);
+  const adverseR = Math.max(0, ((adversePrice - entry) * (short ? 1 : -1)) / risk);
+  return {
+    short,
+    favorablePrice,
+    adversePrice,
+    favorableR,
+    adverseR,
+    tp1At: trade.shadow_tp1_hit_at ?? (favorableR >= 1 ? candle.timestampUtc : null),
+    tp2At: trade.shadow_tp2_hit_at ?? (favorableR >= 1.5 ? candle.timestampUtc : null),
+    tp3At: trade.shadow_tp3_hit_at ?? (favorableR >= 2 ? candle.timestampUtc : null)
+  };
 }
 
 async function closeModule2PositionFromPaperTrade(trade: any, closedTrade: any, exit: any, resultR: number, closedAt: string) {
@@ -5470,6 +5563,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
   });
   const configuration = await getTenantOrbStrategyConfiguration(session.tenant_id, session.configuration_json);
+  const news = await economicEventStatus(currentCandle.timestampUtc);
   const ruleContext: RuleContext = {
     now: currentCandle.timestampUtc,
     symbol: session.symbol,
@@ -5490,7 +5584,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     currentCandle,
     previousCandles: previousRows.map(toCandle),
     spread: currentCandle.spread ?? undefined,
-    newsStatus: "CLEAR",
+    newsStatus: news.status,
     riskStatus: initialRisk.status,
     configuration: configuration as any
   };
@@ -5505,23 +5599,50 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   if (horizontalDecision && !["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status))) {
     decision = withModule1RangeMetadata(range, withChecklistMetadata("orb_max_options", horizontalDecision), rangeEngineMetadata);
   }
+  decision = withChecklistMetadata(
+    "orb_max_options",
+    applyModule1NewsGate(decision, news.status, configuration?.newsFilter, news.reason, news.activeEvent)
+  );
   let risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? initialRisk;
   if (risk.status !== initialRisk.status) {
     decision = withModule1RangeMetadata(
       range,
-      withChecklistMetadata("orb_max_options", usingHorizontalDecision && horizontalDecision
-        ? horizontalDecision
-        : evaluateSetup({ ...ruleContext, riskStatus: risk.status })),
+      withChecklistMetadata("orb_max_options", applyModule1NewsGate(
+        usingHorizontalDecision && horizontalDecision
+          ? horizontalDecision
+          : evaluateSetup({ ...ruleContext, riskStatus: risk.status }),
+        news.status,
+        configuration?.newsFilter,
+        news.reason,
+        news.activeEvent
+      )),
       rangeEngineMetadata
     );
     risk = (await calculateDecisionRisk(session, decision, currentRow)) ?? risk;
   }
-	  const saved = await query(
-	    `INSERT INTO setup_candidates (
-	      tenant_id, module_code, session_id, strategy_version_id, symbol, scenario, direction, status, detected_at,
-	      expires_at, entry_price, stop_price, target_price, final_reason,
-	      favorability_score, favorability_grade, favorability_reasons, scenario_flags
-	    ) VALUES ($17,'orb_max_options',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+  decision = {
+    ...decision,
+    scenarioFlags: {
+      ...(decision.scenarioFlags ?? {}),
+      marketRegimeChallenger: evaluateModule1MarketChallenger({
+        direction: decision.direction,
+        scenario: decision.scenario,
+        entry: decision.entryPrice,
+        target: decision.targetPrice,
+        openingRangeWidth: openingRange.width,
+        openingRangeMidpoint: openingRange.midpoint,
+        candles: [...previousRows.map(toCandle), currentCandle],
+        signalWindowEndAt: session.signal_window_end_at,
+        timeframeMinutes: Number(configuration.signalTimeframeMinutes ?? 5)
+      })
+    }
+  };
+  const saved = await query(
+    `INSERT INTO setup_candidates (
+      tenant_id, module_code, session_id, strategy_version_id, symbol, scenario, direction, status, detected_at,
+      expires_at, entry_price, stop_price, target_price, final_reason,
+      favorability_score, favorability_grade, favorability_reasons, scenario_flags
+    ) VALUES ($17,'orb_max_options',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
     [
       session.id,
       session.strategy_version_id,
@@ -5736,14 +5857,14 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
   };
 }
 
-export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCandle: Candle, session: any) {
+export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, currentCandle: Candle, session: any): SetupDecision | null {
   const horizontal = rangeEngineMetadata?.horizontal;
   const range = horizontal?.range;
   const breakout = horizontal?.breakout;
   const retest = horizontal?.retest;
   const decision = horizontal?.decision;
   if (!horizontal?.enabled || !range || !["BUY_READY", "SELL_READY"].includes(String(decision?.status))) return null;
-  const direction = decision.status === "BUY_READY" ? "LONG" : "SHORT";
+  const direction: Direction = decision.status === "BUY_READY" ? "LONG" : "SHORT";
   const entry = currentCandle.close;
   const estimatedAtr = Number(range.widthAtr) && Number(range.widthAtr) > 0 ? Number(range.width) / Number(range.widthAtr) : Number(range.width);
   const retestSwing = direction === "LONG" ? currentCandle.low : currentCandle.high;
@@ -5833,17 +5954,64 @@ export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, curr
   };
 }
 
-function module1RangeRule(ruleCode: string, name: string, passed: boolean, blocking: boolean, actualValue: unknown, requiredValue: unknown, explanation: string) {
+export function applyModule1NewsGate(
+  decision: SetupDecision,
+  newsStatus: NewsStatus,
+  newsFilter: any,
+  reason: string,
+  activeEvent: any = null
+): SetupDecision {
+  const enabled = newsFilter?.enabled !== false && String(newsFilter?.mode ?? "BLOCK") !== "OFF";
+  const blocking = enabled && String(newsFilter?.mode ?? "BLOCK").startsWith("BLOCK");
+  const blocked = ["BLOCKED_BEFORE_EVENT", "BLOCKED_AFTER_EVENT", "MANUAL_OVERRIDE"].includes(newsStatus);
+  const evaluation = {
+    ruleCode: "NEWS_FILTER",
+    name: "No blocked USD news",
+    status: enabled ? (blocked ? "FAIL" as const : "PASS" as const) : "NOT_APPLICABLE" as const,
+    blocking,
+    source: "AUTOMATIC" as const,
+    ruleLayer: "QUALITY" as const,
+    requiredForEntry: blocking,
+    actualValue: newsStatus,
+    requiredValue: enabled ? "CLEAR_OR_WARNING" : "FILTER_ENABLED",
+    explanation: reason
+  };
+  const evaluations = [...decision.evaluations.filter((item) => item.ruleCode !== "NEWS_FILTER"), evaluation];
+  const ready = ["LONG SETUP READY", "SHORT SETUP READY"].includes(decision.status);
+  return {
+    ...decision,
+    status: blocked && blocking && ready ? "BLOCKED" : decision.status,
+    finalReason: blocked && blocking && ready ? `High-impact economic-event protection blocked this entry. ${reason}` : decision.finalReason,
+    evaluations,
+    scenarioFlags: {
+      ...decision.scenarioFlags,
+      economicEventGuard: {
+        status: newsStatus,
+        blocked: blocked && blocking,
+        reason,
+        activeEventId: activeEvent?.id ?? null,
+        activeEventTitle: activeEvent?.title ?? null,
+        eventTimeUtc: activeEvent?.event_time_utc ?? null
+      }
+    }
+  };
+}
+
+function module1RangeRule(ruleCode: string, name: string, passed: boolean, blocking: boolean, actualValue: unknown, requiredValue: unknown, explanation: string): RuleEvaluation {
   return {
     ruleCode,
     name,
     status: passed ? "PASS" : "FAIL",
     blocking,
     source: "AUTOMATIC",
-    actualValue,
-    requiredValue,
+    actualValue: primitiveRuleValue(actualValue),
+    requiredValue: primitiveRuleValue(requiredValue),
     explanation
   };
+}
+
+function primitiveRuleValue(value: unknown): string | number | boolean | null {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : value == null ? null : String(value);
 }
 
 async function persistGenericRangeEngineEvidence(session: any, setup: any, metadata: any, currentCandle: Candle, previousCandles: Candle[]) {

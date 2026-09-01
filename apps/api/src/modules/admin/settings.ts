@@ -361,6 +361,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const base = objectValue(input);
   const breakout = objectValue(base.breakout);
   const retest = objectValue(base.retest);
+  const newsFilter = objectValue(base.newsFilter);
   const risk = objectValue(base.risk);
   const favorability = objectValue(base.favorability);
   const paperTrading = objectValue(base.paperTrading);
@@ -399,6 +400,12 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       zonePercentOfRange: ratioValue(retest.zonePercentOfRange, 0.1),
       maximumCandles: positiveInteger(retest.maximumCandles, 4, 50),
       confirmationRequired: booleanValue(retest.confirmationRequired, true)
+    },
+    newsFilter: {
+      ...newsFilter,
+      enabled: booleanValue(newsFilter.enabled, true),
+      mode: String(newsFilter.mode ?? "BLOCK").startsWith("BLOCK") ? "BLOCK" : String(newsFilter.mode ?? "BLOCK") === "WARN_ONLY" ? "WARN_ONLY" : "OFF",
+      manualEvents: booleanValue(newsFilter.manualEvents, true)
     },
     risk: {
       ...risk,

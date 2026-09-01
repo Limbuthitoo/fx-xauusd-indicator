@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
+import { requirePermission } from "../auth/routes.js";
+import { economicEventStatus } from "./service.js";
 
 export async function newsRoutes(app: FastifyInstance) {
   app.get("/api/news/events", async () => {
@@ -8,6 +10,7 @@ export async function newsRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/news/events", async (request) => {
+    requirePermission(request, "settings.manage");
     const body = request.body as {
       title: string;
       affectedCurrency?: string;
@@ -26,8 +29,8 @@ export async function newsRoutes(app: FastifyInstance) {
         body.affectedCurrency ?? "USD",
         body.impact ?? "HIGH",
         body.eventTimeUtc,
-        body.blockBeforeMinutes ?? 30,
-        body.blockAfterMinutes ?? 30,
+        Math.max(0, Math.min(Number(body.blockBeforeMinutes ?? 30), 240)),
+        Math.max(0, Math.min(Number(body.blockAfterMinutes ?? 30), 240)),
         body.notes ?? null
       ]
     );
@@ -35,36 +38,6 @@ export async function newsRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/news/status", async () => {
-    const now = new Date();
-    const { rows } = await query(
-      `SELECT *
-       FROM economic_events
-       WHERE affected_currency IN ('USD', 'XAU', 'ALL')
-         AND event_time_utc >= now() - interval '4 hours'
-         AND event_time_utc <= now() + interval '24 hours'
-       ORDER BY event_time_utc ASC`
-    );
-    let status = "CLEAR";
-    let activeEvent = null;
-    for (const event of rows as any[]) {
-      const eventTime = new Date(event.event_time_utc);
-      const before = new Date(eventTime.getTime() - Number(event.block_before_minutes) * 60_000);
-      const after = new Date(eventTime.getTime() + Number(event.block_after_minutes) * 60_000);
-      if (now >= before && now < eventTime) {
-        status = "BLOCKED_BEFORE_EVENT";
-        activeEvent = event;
-        break;
-      }
-      if (now >= eventTime && now <= after) {
-        status = "BLOCKED_AFTER_EVENT";
-        activeEvent = event;
-        break;
-      }
-      if (eventTime.getTime() - now.getTime() <= 60 * 60_000 && eventTime > now) {
-        status = "UPCOMING_WARNING";
-        activeEvent = event;
-      }
-    }
-    return { status, activeEvent, events: rows };
+    return economicEventStatus();
   });
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildLiquidityAwareStop, buildOpeningRange, evaluateSetup } from "../packages/strategy-engine/src/index.js";
+import { buildLiquidityAwareStop, buildOpeningRange, evaluateModule1MarketChallenger, evaluateSetup } from "../packages/strategy-engine/src/index.js";
 import { evaluateLiquiditySweepSetup, validTradeGeometry } from "../packages/liquidity-sweep-engine/src/index.js";
 import {
   FalseBreakoutEngine,
@@ -13,7 +13,8 @@ import {
   evaluateRangeBreakout
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
-import { buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, calculatePostStopShadowObservation, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
@@ -28,6 +29,8 @@ assert.deepEqual(subscriberTradeSetup.tradeSetup.enabledSessionPresets, ["TOKYO_
 assert.equal(subscriberTradeSetup.tradeSetup.maximumSignalsPerDay, 3, "Subscriber daily signals must stay inside the production cap");
 assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 2, "Module 1 settings must preserve the volatility stop floor");
 assert.equal(subscriberTradeSetup.risk.liquidityBufferAtr, 0.25, "Module 1 settings must preserve the structural liquidity buffer");
+assert.equal(subscriberTradeSetup.newsFilter.enabled, true, "Module 1 economic-event protection must default on");
+assert.equal(subscriberTradeSetup.newsFilter.mode, "BLOCK", "Legacy high-impact news mode must normalize to a real blocking mode");
 
 const liquidityAwareLongStop = buildLiquidityAwareStop({
   direction: "LONG",
@@ -44,6 +47,19 @@ assert.equal(liquidityAwareLongStop.bufferedStructuralStop < 4439.288862, true, 
 const liquidityAwareShortStop = buildLiquidityAwareStop({ direction: "SHORT", entry: 4500, structuralInvalidation: 4505, atr: 2, spread: 0.2 });
 assert.equal(liquidityAwareShortStop.stop > 4505, true, "Module 1 short stop must sit above structural invalidation");
 assert.equal((liquidityAwareShortStop.stopDistanceAtr ?? 0) >= 2, true, "Module 1 short stop must enforce the same volatility floor");
+const longShadow = calculatePostStopShadowObservation(
+  { direction: "LONG", actual_entry: 100, actual_stop: 95, initial_risk_distance: 5 },
+  candle("2026-08-10T10:05:00Z", 99, 110, 94, 108)
+)!;
+assert.equal(longShadow.favorableR, 2, "Post-stop LONG shadow must measure favorable excursion in original R");
+assert.equal(longShadow.adverseR, 1.2, "Post-stop LONG shadow must measure adverse excursion before recovery");
+assert.equal(Boolean(longShadow.tp1At && longShadow.tp2At && longShadow.tp3At), true, "Post-stop LONG shadow must detect the complete original target ladder");
+const shortShadow = calculatePostStopShadowObservation(
+  { direction: "SHORT", actual_entry: 100, actual_stop: 105, initial_risk_distance: 5 },
+  candle("2026-08-10T10:05:00Z", 101, 106, 90, 92)
+)!;
+assert.equal(shortShadow.favorableR, 2, "Post-stop SHORT shadow must measure favorable excursion symmetrically");
+assert.equal(shortShadow.adverseR, 1.2, "Post-stop SHORT shadow must measure adverse excursion symmetrically");
 
 const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
 const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
@@ -142,6 +158,46 @@ const module1 = evaluateSetup({
     }
   }
 });
+const blockedNews = classifyEconomicEvents([
+  {
+    id: "event-cpi",
+    title: "US CPI",
+    affected_currency: "USD",
+    impact: "HIGH",
+    event_time_utc: "2026-08-10T14:00:00Z",
+    block_before_minutes: 15,
+    block_after_minutes: 15
+  }
+], "2026-08-10T13:50:00Z");
+assert.equal(blockedNews.status, "BLOCKED_BEFORE_EVENT", "High-impact USD events must block inside their pre-event window");
+const newsBlockedModule1 = applyModule1NewsGate(module1, blockedNews.status, { enabled: true, mode: "BLOCK" }, blockedNews.reason, blockedNews.activeEvent);
+assert.equal(newsBlockedModule1.status, "BLOCKED", "Automatic Module 1 entries must obey the economic-event gate");
+assert.equal((newsBlockedModule1.scenarioFlags as any).economicEventGuard.activeEventId, "event-cpi", "Blocked setup must retain event evidence");
+const warningNews = classifyEconomicEvents([
+  {
+    title: "FOMC",
+    affected_currency: "USD",
+    impact: "HIGH",
+    event_time_utc: "2026-08-10T14:40:00Z",
+    block_before_minutes: 15,
+    block_after_minutes: 15
+  }
+], "2026-08-10T13:50:00Z");
+assert.equal(warningNews.status, "UPCOMING_WARNING", "Events outside the block window but within one hour must warn");
+assert.equal(applyModule1NewsGate(module1, warningNews.status, { enabled: true, mode: "BLOCK" }, warningNews.reason).status, module1.status, "Upcoming warnings must not suppress an otherwise valid setup");
+const marketChallenger = evaluateModule1MarketChallenger({
+  direction: module1.direction,
+  scenario: module1.scenario,
+  entry: module1.entryPrice,
+  target: module1.targetPrice,
+  openingRangeWidth: module1Range.width,
+  openingRangeMidpoint: module1Range.midpoint,
+  candles: [...module1OpeningCandles, module1Signal],
+  signalWindowEndAt: "2026-08-10T20:00:00Z",
+  timeframeMinutes: 5
+});
+assert.equal(marketChallenger.mode, "OBSERVE", "Regime challenger must not silently change production entries");
+assert.equal(typeof marketChallenger.wouldPass, "boolean", "Regime challenger must emit a deterministic recommendation");
 assert.equal(module1Range.status, "LOCKED", "Module 1 opening range must lock from three 5m candles");
 assert.equal(isModule1ActiveOrbPreset("NEW_YORK_ORB"), true, "Module 1 must actively evaluate New York ORB");
 assert.equal(isModule1ActiveOrbPreset("LONDON_ORB"), true, "Module 1 must support subscriber-selected London ORB");

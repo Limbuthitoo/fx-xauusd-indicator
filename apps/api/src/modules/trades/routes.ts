@@ -40,6 +40,15 @@ export async function tradeRoutes(app: FastifyInstance) {
          t.breakeven_activated_at,
          t.max_favorable_excursion_r,
          t.max_adverse_excursion_r,
+         t.shadow_observation_started_at,
+         t.shadow_observation_until,
+         t.shadow_observation_completed_at,
+         t.shadow_max_favorable_excursion_r,
+         t.shadow_max_adverse_before_tp1_r,
+         t.shadow_tp1_hit_at,
+         t.shadow_tp2_hit_at,
+         t.shadow_tp3_hit_at,
+         t.shadow_recovered_after_stop,
          t.result_money,
          t.opened_at,
          t.closed_at,
@@ -97,6 +106,20 @@ export async function tradeRoutes(app: FastifyInstance) {
     );
     const trades = rows.map(paperTradeView);
     return { summary: summarizePaperTrades(trades), trades };
+  });
+
+  app.get("/api/trades/module1/stop-calibration", async (request) => {
+    requirePermission(request, "signals.view");
+    const { rows } = await query(
+      `SELECT *
+       FROM module1_stop_calibration
+       ORDER BY calibration_eligible DESC, observed_signals DESC, scenario, direction`
+    );
+    return {
+      mode: "OBSERVE_ONLY",
+      minimumIndependentSignals: 30,
+      profiles: rows
+    };
   });
 
   app.post("/api/trades/recover-stale", async (request) => {
@@ -768,10 +791,12 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
        sc.symbol,
        sc.direction,
        sc.scenario,
-       sc.module_code
+       sc.module_code,
+       ts.signal_window_end_at
      FROM trades t
      JOIN trade_plans tp ON tp.id = t.trade_plan_id
      JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
+     JOIN trading_sessions ts ON ts.id = sc.session_id
      WHERE sc.tenant_id = $1
        AND t.outcome = 'ACTIVE'
        AND t.opened_at IS NOT NULL
@@ -813,10 +838,12 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
          result_r = $3,
          outcome = $4,
          closed_at = $5,
-         remaining_fraction = 0
+         remaining_fraction = 0,
+         shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
+         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
          AND outcome = 'ACTIVE'`,
-      [trade.id, exit.price, resultR, outcome, exit.timestampUtc]
+      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, exit.reason === "STOP", trade.signal_window_end_at]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
@@ -892,6 +919,18 @@ function paperTradeView(row: any) {
     breakevenActivatedAt: row.breakeven_activated_at,
     maxFavorableExcursionR: Number(row.max_favorable_excursion_r ?? 0),
     maxAdverseExcursionR: Number(row.max_adverse_excursion_r ?? 0),
+    shadowObservation: row.shadow_observation_started_at == null ? null : {
+      status: row.shadow_observation_completed_at == null ? "ACTIVE" : "COMPLETED",
+      startedAt: row.shadow_observation_started_at,
+      until: row.shadow_observation_until,
+      completedAt: row.shadow_observation_completed_at,
+      recoveredAfterStop: row.shadow_recovered_after_stop === true,
+      maxFavorableExcursionR: Number(row.shadow_max_favorable_excursion_r ?? 0),
+      maxAdverseBeforeTp1R: Number(row.shadow_max_adverse_before_tp1_r ?? 0),
+      tp1HitAt: row.shadow_tp1_hit_at,
+      tp2HitAt: row.shadow_tp2_hit_at,
+      tp3HitAt: row.shadow_tp3_hit_at
+    },
     exit: row.actual_exit == null ? null : Number(row.actual_exit),
     resultR: row.result_r == null ? null : Number(row.result_r),
     resultMoney: row.result_money == null ? null : Number(row.result_money),

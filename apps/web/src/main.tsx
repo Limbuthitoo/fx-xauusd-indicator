@@ -7423,6 +7423,11 @@ function OrbStrategySettings({ settings, onUpdate }: { settings: any[]; onUpdate
           <label>Minimum R:R<input type="number" min="0.1" max="10" step="0.1" value={draft?.risk?.minimumRewardToRisk ?? 2} onChange={(event) => patch("risk.minimumRewardToRisk", Number(event.target.value))} /></label>
           <label>Minimum stop ATR<input type="number" min="2" max="4" step="0.1" value={draft?.risk?.minimumStopAtr ?? 2} onChange={(event) => patch("risk.minimumStopAtr", Number(event.target.value))} /></label>
           <label>Liquidity buffer ATR<input type="number" min="0.25" max="1" step="0.05" value={draft?.risk?.liquidityBufferAtr ?? 0.25} onChange={(event) => patch("risk.liquidityBufferAtr", Number(event.target.value))} /></label>
+          <label>News guard<select value={draft?.newsFilter?.mode ?? "BLOCK"} onChange={(event) => { patch("newsFilter.mode", event.target.value); patch("newsFilter.enabled", event.target.value !== "OFF"); }}>
+            <option value="BLOCK">Block high impact</option>
+            <option value="WARN_ONLY">Warning only</option>
+            <option value="OFF">Off</option>
+          </select></label>
           <label>Max session trades<input type="number" min="1" max="20" value={draft?.risk?.maximumTradesPerSession ?? 1} onChange={(event) => { patch("risk.maximumTradesPerSession", Number(event.target.value)); patch("paperTrading.maximumTradesPerSession", Number(event.target.value)); }} /></label>
           <label><input type="checkbox" checked={draft?.retest?.enabled !== false} onChange={(event) => patch("retest.enabled", event.target.checked)} /> Retest scenarios</label>
           <label><input type="checkbox" checked={draft?.paperTrading?.enabled !== false} onChange={(event) => patch("paperTrading.enabled", event.target.checked)} /> Automatic paper trades</label>
@@ -8864,6 +8869,8 @@ function PaperTradingWorkspace({
             <Metric label={selected.status === "ACTIVE" ? "Runner open" : "Runner closed"} value={`${Math.round(Number(selected.remainingFraction ?? 0) * 100)}%`} />
             <Metric label="MFE" value={`${formatR(selected.maxFavorableExcursionR)}R`} />
             <Metric label="MAE" value={`${formatR(selected.maxAdverseExcursionR)}R`} />
+            {selected.shadowObservation ? <Metric label="Post-stop study" value={selected.shadowObservation.status} /> : null}
+            {selected.shadowObservation ? <Metric label="Recovered after SL" value={selected.shadowObservation.recoveredAfterStop ? "YES · TP1" : "NO"} /> : null}
           </div>
           <div className="paper-target-progress" aria-label="Paper trade target progress">
             {(selected.targets ?? []).map((target: any) => (
@@ -8879,6 +8886,7 @@ function PaperTradingWorkspace({
               <p>{selected.reason ?? formatScenario(selected.scenario)}</p>
               {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after TP1 at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
               {selected.status === "ACTIVE" && selected.currentPriceAt ? <small>Current condition updated {formatNepalTime(selected.currentPriceAt)}.</small> : null}
+              {selected.shadowObservation?.recoveredAfterStop ? <small>Shadow tracking found that price reached the original TP1 after the initial stop. This is learning evidence only and does not rewrite the recorded loss.</small> : null}
             </div>
             <button onClick={() => onOpenChart(selected.moduleCode)}><LineChart size={16} />Open module chart</button>
           </div>

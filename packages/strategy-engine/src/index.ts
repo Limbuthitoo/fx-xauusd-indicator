@@ -281,6 +281,62 @@ export function buildLiquidityAwareStop(input: {
   };
 }
 
+export function evaluateModule1MarketChallenger(input: {
+  direction: Direction | null;
+  scenario: string;
+  entry: number | null | undefined;
+  target: number | null | undefined;
+  openingRangeWidth: number | null | undefined;
+  openingRangeMidpoint?: number | null;
+  candles: Candle[];
+  signalWindowEndAt: string;
+  timeframeMinutes: number;
+}) {
+  const atr = averageTrueRange(input.candles, 14);
+  const trend = trendBias(input.candles);
+  const direction = input.direction;
+  const trendOpposed = direction != null && trend !== "NEUTRAL" && (direction === "LONG" ? trend === "BEARISH" : trend === "BULLISH");
+  const width = Number(input.openingRangeWidth);
+  const orbWidthAtr = atr && atr > 0 && Number.isFinite(width) ? width / atr : null;
+  const latest = input.candles.at(-1);
+  const remainingMinutes = latest ? Math.max(0, (new Date(input.signalWindowEndAt).getTime() - new Date(latest.timestampUtc).getTime()) / 60_000) : 0;
+  const remainingBars = Math.max(0, Math.floor(remainingMinutes / Math.max(1, input.timeframeMinutes)));
+  const projectedRemainingRange = atr == null ? null : atr * Math.max(1, Math.sqrt(remainingBars)) * 1.5;
+  const entry = Number(input.entry);
+  const target = Number(input.target);
+  const targetDistance = Number.isFinite(entry) && Number.isFinite(target) ? Math.abs(target - entry) : null;
+  const targetFeasible = targetDistance == null || projectedRemainingRange == null ? null : targetDistance <= projectedRemainingRange;
+  const recent = input.candles.slice(-12);
+  const netMove = recent.length > 1 ? Math.abs(recent.at(-1)!.close - recent[0].close) : 0;
+  const path = recent.slice(1).reduce((sum, candle, index) => sum + Math.abs(candle.close - recent[index].close), 0);
+  const directionalEfficiency = path > 0 ? netMove / path : 0;
+  const continuation = !String(input.scenario).includes("SWEEP_REVERSAL") && !String(input.scenario).includes("LIQUIDITY_SWEEP");
+  const recommendations: string[] = [];
+  if (continuation && trendOpposed) recommendations.push("BLOCK_OPPOSITE_TREND_CONTINUATION");
+  if (orbWidthAtr != null && orbWidthAtr < 0.8) recommendations.push("WAIT_FOR_RETEST_LOW_VOLATILITY_RANGE");
+  if (orbWidthAtr != null && orbWidthAtr > 4) recommendations.push("SKIP_EXHAUSTED_OPENING_RANGE");
+  if (targetFeasible === false) recommendations.push("SKIP_UNREALISTIC_REMAINING_SESSION_TARGET");
+  if (directionalEfficiency < 0.2) recommendations.push("CHOP_RISK");
+  return {
+    version: "MODULE1_MARKET_CHALLENGER_V1",
+    mode: "OBSERVE",
+    wouldPass: recommendations.length === 0,
+    recommendations,
+    metrics: {
+      atr: atr == null ? null : roundPrice(atr),
+      trend,
+      trendOpposed,
+      orbWidthAtr: orbWidthAtr == null ? null : Number(orbWidthAtr.toFixed(3)),
+      directionalEfficiency: Number(directionalEfficiency.toFixed(3)),
+      remainingMinutes: Math.round(remainingMinutes),
+      remainingBars,
+      targetDistance: targetDistance == null ? null : roundPrice(targetDistance),
+      projectedRemainingRange: projectedRemainingRange == null ? null : roundPrice(projectedRemainingRange),
+      targetFeasible
+    }
+  };
+}
+
 function buildTradePlan(
   context: RuleContext,
   direction: Direction,
@@ -717,7 +773,8 @@ function orbMandatoryEntryReady(evaluations: ReturnType<typeof evaluateMandatory
     "ENTRY_NOT_OVEREXTENDED",
     "RISK_PERMISSION"
   ]);
-  return [...required].every((ruleCode) =>
+  const requiredPassed = [...required].every((ruleCode) =>
     evaluations.some((evaluation) => evaluation.ruleCode === ruleCode && evaluation.status === "PASS")
   );
+  return requiredPassed && !evaluations.some((evaluation) => evaluation.blocking && evaluation.status === "FAIL");
 }

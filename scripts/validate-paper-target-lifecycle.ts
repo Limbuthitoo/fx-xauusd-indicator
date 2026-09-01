@@ -30,6 +30,13 @@ try {
   ))[0];
   add("Migration 088", Boolean(excursionMigration), "Signal quality V2 excursion migration is recorded.", "Migration 088 is missing from schema_migrations.", excursionMigration);
 
+  const marketGuardMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '096_module1_market_guard_learning.sql'`
+  ))[0];
+  add("Migration 096", Boolean(marketGuardMigration), "Module 1 market guard learning migration is recorded.", "Migration 096 is missing from schema_migrations.", marketGuardMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -52,6 +59,10 @@ try {
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'breakeven_activated_at') AS breakeven_activation,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'max_favorable_excursion_r') AS mfe_r,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'max_adverse_excursion_r') AS mae_r,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'shadow_observation_until') AS shadow_window,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'shadow_max_favorable_excursion_r') AS shadow_mfe,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'shadow_max_adverse_before_tp1_r') AS shadow_mae,
+       to_regclass('public.module1_stop_calibration') IS NOT NULL AS stop_calibration_view,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'position_fraction') AS target_fraction,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'realized_r') AS target_realized_r,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
@@ -144,6 +155,24 @@ try {
      LIMIT 50`
   );
   add("Excursion integrity", invalidExcursions.length === 0, "MFE and MAE are non-negative and retain their observed prices.", `${invalidExcursions.length} trade excursion record(s) are invalid.`, invalidExcursions);
+
+  const invalidShadowObservations = await rows(
+    `SELECT id, shadow_observation_started_at, shadow_observation_until,
+            shadow_observation_completed_at, shadow_max_favorable_excursion_r,
+            shadow_max_adverse_before_tp1_r, shadow_tp1_hit_at,
+            shadow_recovered_after_stop
+     FROM trades
+     WHERE shadow_observation_started_at IS NOT NULL
+       AND (shadow_observation_until IS NULL
+         OR shadow_observation_until < shadow_observation_started_at
+         OR shadow_max_favorable_excursion_r < 0
+         OR shadow_max_adverse_before_tp1_r < 0
+         OR (shadow_observation_completed_at IS NOT NULL
+           AND shadow_observation_completed_at < shadow_observation_started_at)
+         OR (shadow_recovered_after_stop AND shadow_tp1_hit_at IS NULL))
+     LIMIT 50`
+  );
+  add("Post-stop observation integrity", invalidShadowObservations.length === 0, "Module 1 post-stop observations have valid windows, excursions, and recovery evidence.", `${invalidShadowObservations.length} post-stop observation(s) are inconsistent.`, invalidShadowObservations);
 
   const invalidTargetState = await rows(
     `SELECT trade_id, target_number, status, hit_at, hit_price, position_fraction, risk_multiple, realized_r
