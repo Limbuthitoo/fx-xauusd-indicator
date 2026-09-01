@@ -1,5 +1,17 @@
 # Production Deployment Runbook
 
+## Routine One-Command Deployment
+
+After the one-time Git update that introduces the command, routine deployments use:
+
+```bash
+npm run deploy:vps
+```
+
+The command holds an exclusive deployment lock, fast-forwards `main`, backs up `.env.production`, normalizes the free official calendar setting, checks that production ports belong to this Compose project, removes only stopped migration-tool containers, installs locked dependencies, validates the environment, creates a PostgreSQL backup, and builds replacement images while the live stack remains online. It then applies additive migrations, smoke-tests isolated API/web/quant canaries, rolls out the new containers, waits for health checks, runs production validators, and asks for a fresh admin OTP immediately before authenticated verification.
+
+If rollout or post-rollout verification fails, the command retags and recreates the previously running application images automatically. It never kills an unknown process to free a port. Because the current Nginx topology uses fixed localhost upstream ports, the final healthy-container replacement can still cause a brief connection retry; builds and validations do not interrupt the serving stack.
+
 ## Required Environment
 
 Start from `.env.production.example` and set real values:
