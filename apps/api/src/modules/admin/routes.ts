@@ -1692,8 +1692,7 @@ function configurationHealth() {
     config.nodeEnv === "production" && !config.adminSessionSecret ? "ADMIN_SESSION_SECRET is required in production." : null,
     config.nodeEnv === "production" && ["1234", "change-this-password"].includes(config.adminPassword) ? "ADMIN_PASSWORD must be changed in production." : null,
     config.nodeEnv === "production" && config.billingProvider !== "manual" && !config.billingWebhookSecret ? "BILLING_WEBHOOK_SECRET is required when billing provider is external." : null,
-    config.twelveDataStopCredits >= config.twelveDataDailyCreditLimit ? "TWELVE_DATA_STOP_CREDITS should be below the daily limit." : null,
-    config.economicCalendarProvider === "trading_economics" && !config.tradingEconomicsApiKey ? "TRADING_ECONOMICS_API_KEY is required for automated economic calendar mode." : null
+    config.twelveDataStopCredits >= config.twelveDataDailyCreditLimit ? "TWELVE_DATA_STOP_CREDITS should be below the daily limit." : null
   ].filter(Boolean);
   return {
     status: issues.length > 0 ? (config.nodeEnv === "production" ? "CRITICAL" : "WARN") : "HEALTHY",

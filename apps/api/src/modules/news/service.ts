@@ -2,8 +2,8 @@ import type { NewsStatus } from "@orb-guide/shared-types";
 import { config } from "../../infrastructure/config.js";
 import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
+import { fetchOfficialUsCalendar, OFFICIAL_US_PROVIDER } from "./official-us-calendar.js";
 
-const TRADING_ECONOMICS_PROVIDER = "TRADING_ECONOMICS";
 let eventStatusCache: { key: string; expiresAt: number; value: EconomicEventState } | null = null;
 
 export type EconomicEvent = {
@@ -42,34 +42,6 @@ export type EconomicCalendarAutomationState = {
   coverageEndAt: string | null;
   eventsUpserted: number;
   upcomingHighImpactEvents: number;
-};
-
-type TradingEconomicsEvent = {
-  CalendarId?: string | number;
-  CalendarID?: string | number;
-  Date?: string;
-  Country?: string;
-  Category?: string;
-  Event?: string;
-  Importance?: number | string;
-  DateSpan?: number | string;
-  LastUpdate?: string;
-  Source?: string;
-  SourceURL?: string;
-  Actual?: string;
-  Previous?: string;
-  Forecast?: string;
-  TEForecast?: string;
-  Ticker?: string;
-  Symbol?: string;
-};
-
-export type NormalizedProviderEvent = {
-  externalEventId: string;
-  title: string;
-  eventTimeUtc: string;
-  sourceUpdatedAt: string | null;
-  metadata: Record<string, unknown>;
 };
 
 export function classifyEconomicEvents(events: EconomicEvent[], evaluatedAt: string | Date = new Date()): EconomicEventState {
@@ -115,39 +87,6 @@ export function classifyEconomicEvents(events: EconomicEvent[], evaluatedAt: str
   return { status, reason, activeEvent, events, evaluatedAt: at.toISOString() };
 }
 
-export function normalizeTradingEconomicsEvents(payload: unknown): NormalizedProviderEvent[] {
-  if (!Array.isArray(payload)) throw new Error("Trading Economics calendar response was not an array.");
-  const normalized: NormalizedProviderEvent[] = [];
-  for (const raw of payload as TradingEconomicsEvent[]) {
-    const externalEventId = String(raw.CalendarId ?? raw.CalendarID ?? "").trim();
-    const importance = Number(raw.Importance ?? 0);
-    const exactTime = Number(raw.DateSpan ?? 0) === 0;
-    const country = String(raw.Country ?? "").trim().toLowerCase();
-    const eventTime = providerUtcDate(raw.Date);
-    if (!externalEventId || importance < 3 || !exactTime || country !== "united states" || !eventTime) continue;
-    normalized.push({
-      externalEventId,
-      title: String(raw.Event ?? raw.Category ?? "US high-impact economic event").trim(),
-      eventTimeUtc: eventTime,
-      sourceUpdatedAt: providerUtcDate(raw.LastUpdate),
-      metadata: {
-        country: raw.Country ?? "United States",
-        category: raw.Category ?? null,
-        source: raw.Source ?? null,
-        sourceUrl: raw.SourceURL ?? null,
-        actual: raw.Actual ?? null,
-        previous: raw.Previous ?? null,
-        forecast: raw.Forecast ?? null,
-        providerForecast: raw.TEForecast ?? null,
-        ticker: raw.Ticker ?? null,
-        symbol: raw.Symbol ?? null,
-        importance
-      }
-    });
-  }
-  return [...new Map(normalized.map((event) => [event.externalEventId, event])).values()];
-}
-
 export function calendarFreshness(input: {
   evaluatedAt: string | Date;
   lastSuccessAt?: string | Date | null;
@@ -165,7 +104,7 @@ export function calendarFreshness(input: {
 export async function economicCalendarAutomationStatus(evaluatedAt: string | Date = new Date()): Promise<EconomicCalendarAutomationState> {
   const provider = configuredCalendarProvider();
   const automated = provider !== "MANUAL";
-  const configured = !automated || Boolean(config.tradingEconomicsApiKey);
+  const configured = true;
   const at = new Date(evaluatedAt);
   if (!automated) {
     const count = await upcomingEventCount(at);
@@ -200,13 +139,11 @@ export async function economicCalendarAutomationStatus(evaluatedAt: string | Dat
   });
   const { staleByAge, staleByCoverage } = freshness;
   const emptyCoverage = Boolean(row?.last_success_at) && Number(row?.events_upserted ?? 0) === 0 && count === 0;
-  const stale = !configured || freshness.stale || emptyCoverage;
-  const status = !configured ? "NOT_READY" : stale ? (row?.status === "ERROR" ? "ERROR" : row ? "STALE" : "NOT_READY") : row?.status === "ERROR" ? "WARN" : "HEALTHY";
-  const reason = !configured
-    ? "Trading Economics automation is selected but TRADING_ECONOMICS_API_KEY is missing."
-    : emptyCoverage
-      ? "Automated synchronization returned no high-impact US events for its forward coverage window."
-      : staleByAge
+  const stale = freshness.stale || emptyCoverage;
+  const status = stale ? (row?.status === "ERROR" ? "ERROR" : row ? "STALE" : "NOT_READY") : row?.status === "ERROR" ? "WARN" : "HEALTHY";
+  const reason = emptyCoverage
+    ? "Automated synchronization returned no high-impact US events for its forward coverage window."
+    : staleByAge
       ? `Economic calendar has not synchronized successfully within ${config.economicCalendarStaleHours} hours.`
       : staleByCoverage
         ? "Economic calendar coverage does not extend at least 24 hours ahead."
@@ -273,24 +210,20 @@ export async function syncEconomicCalendar(input: {
 } = {}) {
   const provider = configuredCalendarProvider();
   if (provider === "MANUAL") return { provider, status: "MANUAL", imported: 0, skipped: true };
-  if (provider !== TRADING_ECONOMICS_PROVIDER) throw new Error(`Unsupported economic calendar provider: ${provider}`);
-  if (!config.tradingEconomicsApiKey) {
-    await recordSyncFailure(provider, "TRADING_ECONOMICS_API_KEY is missing.");
-    throw new Error("Trading Economics calendar synchronization is not configured.");
-  }
+  if (provider !== OFFICIAL_US_PROVIDER) throw new Error(`Unsupported economic calendar provider: ${provider}`);
   const now = input.now ?? new Date();
   const coverageStart = startOfUtcDay(new Date(now.getTime() - 24 * 60 * 60_000));
-  const coverageEnd = endOfUtcDay(new Date(now.getTime() + config.economicCalendarLookaheadDays * 24 * 60 * 60_000));
   const ownsSync = await markSyncAttempt(provider);
   if (!ownsSync) return { provider, status: "ALREADY_RUNNING", imported: 0, skipped: true };
   try {
-    const url = new URL(`https://api.tradingeconomics.com/calendar/country/united%20states/${dateOnly(coverageStart)}/${dateOnly(coverageEnd)}`);
-    url.searchParams.set("c", config.tradingEconomicsApiKey);
-    url.searchParams.set("importance", "3");
-    url.searchParams.set("f", "json");
-    const response = await (input.fetchImpl ?? fetch)(url, { signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) throw new Error(`Trading Economics returned HTTP ${response.status}.`);
-    const events = normalizeTradingEconomicsEvents(await response.json());
+    const sources = await fetchOfficialUsCalendar(input.fetchImpl ?? fetch, now);
+    if (sources.successful.length === 0) {
+      throw new Error(`Every official economic calendar source failed: ${sourceFailureMessage(sources.failures)}`);
+    }
+    const events = sources.successful.flatMap((source) => source.events
+      .filter((event) => new Date(event.eventTimeUtc) >= coverageStart)
+      .map((event) => ({ ...event, sourceCode: source.sourceCode })));
+    const coverageEnd = new Date(Math.min(...sources.successful.map((source) => new Date(source.coverageEndAt).getTime())));
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -318,7 +251,7 @@ export async function syncEconomicCalendar(input: {
             event.eventTimeUtc,
             config.economicCalendarBlockBeforeMinutes,
             config.economicCalendarBlockAfterMinutes,
-            "Automatically synchronized high-impact United States event.",
+            `Automatically synchronized from the official ${event.sourceCode} release schedule.`,
             provider,
             event.externalEventId,
             event.sourceUpdatedAt,
@@ -327,26 +260,53 @@ export async function syncEconomicCalendar(input: {
           ]
         );
       }
-      await client.query(
-        `DELETE FROM economic_events
-         WHERE provider = $1
-           AND event_time_utc BETWEEN $2 AND $3
-           AND last_seen_at < $4
-           AND override_status IS NULL`,
-        [provider, coverageStart.toISOString(), coverageEnd.toISOString(), now.toISOString()]
-      );
-      await client.query(
-        `INSERT INTO economic_calendar_sync_state (
-           provider, enabled, status, last_attempt_at, last_success_at,
-           coverage_start_at, coverage_end_at, events_upserted, last_error, metadata, updated_at
-         ) VALUES ($1,true,'HEALTHY',$2,$2,$3,$4,$5,NULL,$6::jsonb,now())
-         ON CONFLICT (provider) DO UPDATE SET
-           enabled = true, status = 'HEALTHY', last_attempt_at = EXCLUDED.last_attempt_at,
-           last_success_at = EXCLUDED.last_success_at, coverage_start_at = EXCLUDED.coverage_start_at,
-           coverage_end_at = EXCLUDED.coverage_end_at, events_upserted = EXCLUDED.events_upserted,
-           last_error = NULL, metadata = EXCLUDED.metadata, updated_at = now()`,
-        [provider, now.toISOString(), coverageStart.toISOString(), coverageEnd.toISOString(), events.length, JSON.stringify({ country: "United States", importance: 3 })]
-      );
+      for (const source of sources.successful) {
+        await client.query(
+          `DELETE FROM economic_events
+           WHERE provider = $1
+             AND metadata->>'sourceCode' = $2
+             AND event_time_utc BETWEEN $3 AND $4
+             AND last_seen_at < $5
+             AND override_status IS NULL`,
+          [provider, source.sourceCode, coverageStart.toISOString(), source.coverageEndAt, now.toISOString()]
+        );
+      }
+      const metadata = JSON.stringify({
+        country: "United States",
+        officialSources: sources.successful.map((source) => ({
+          sourceCode: source.sourceCode,
+          sourceUrl: source.sourceUrl,
+          fetchedAt: source.fetchedAt,
+          coverageEndAt: source.coverageEndAt,
+          events: source.events.length
+        })),
+        failures: sources.failures
+      });
+      if (sources.failures.length === 0) {
+        await client.query(
+          `INSERT INTO economic_calendar_sync_state (
+             provider, enabled, status, last_attempt_at, last_success_at,
+             coverage_start_at, coverage_end_at, events_upserted, last_error, metadata, updated_at
+           ) VALUES ($1,true,'HEALTHY',$2,$2,$3,$4,$5,NULL,$6::jsonb,now())
+           ON CONFLICT (provider) DO UPDATE SET
+             enabled = true, status = 'HEALTHY', last_attempt_at = EXCLUDED.last_attempt_at,
+             last_success_at = EXCLUDED.last_success_at, coverage_start_at = EXCLUDED.coverage_start_at,
+             coverage_end_at = EXCLUDED.coverage_end_at, events_upserted = EXCLUDED.events_upserted,
+             last_error = NULL, metadata = EXCLUDED.metadata, updated_at = now()`,
+          [provider, now.toISOString(), coverageStart.toISOString(), coverageEnd.toISOString(), events.length, metadata]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO economic_calendar_sync_state (
+             provider, enabled, status, last_attempt_at, events_upserted, last_error, metadata, updated_at
+           ) VALUES ($1,true,'ERROR',$2,$3,$4,$5::jsonb,now())
+           ON CONFLICT (provider) DO UPDATE SET
+             enabled = true, status = 'ERROR', last_attempt_at = EXCLUDED.last_attempt_at,
+             events_upserted = EXCLUDED.events_upserted, last_error = EXCLUDED.last_error,
+             metadata = EXCLUDED.metadata, updated_at = now()`,
+          [provider, now.toISOString(), events.length, sourceFailureMessage(sources.failures), metadata]
+        );
+      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -354,12 +314,15 @@ export async function syncEconomicCalendar(input: {
     } finally {
       client.release();
     }
+    if (sources.failures.length > 0) {
+      throw new Error(`Official economic calendar synchronization was incomplete: ${sourceFailureMessage(sources.failures)}`);
+    }
     await recordOperationalEvent({
       category: "SYSTEM",
       eventType: "ECONOMIC_CALENDAR_SYNC_SUCCEEDED",
       source: "economic-calendar-worker",
-      message: `Economic calendar synchronized ${events.length} high-impact US event(s).`,
-      metadata: { provider, coverageStart: coverageStart.toISOString(), coverageEnd: coverageEnd.toISOString(), events: events.length }
+      message: `Economic calendar synchronized ${events.length} high-impact US event(s) from four official sources.`,
+      metadata: { provider, coverageStart: coverageStart.toISOString(), coverageEnd: coverageEnd.toISOString(), events: events.length, sources: sources.successful.map((source) => source.sourceCode) }
     });
     invalidateEconomicEventStatusCache();
     return { provider, status: "HEALTHY", imported: events.length, coverageStart: coverageStart.toISOString(), coverageEnd: coverageEnd.toISOString() };
@@ -394,15 +357,7 @@ export function startEconomicCalendarWorker() {
 }
 
 function configuredCalendarProvider() {
-  return config.economicCalendarProvider === "trading_economics" ? TRADING_ECONOMICS_PROVIDER : "MANUAL";
-}
-
-function providerUtcDate(value: unknown) {
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  const explicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
-  const parsed = new Date(explicitZone ? text : `${text}Z`);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  return config.economicCalendarProvider === "official_us" ? OFFICIAL_US_PROVIDER : "MANUAL";
 }
 
 async function upcomingEventCount(at: Date) {
@@ -440,16 +395,11 @@ async function recordSyncFailure(provider: string, message: string) {
   ).catch(() => undefined);
 }
 
-function dateOnly(value: Date) {
-  return value.toISOString().slice(0, 10);
-}
-
 function startOfUtcDay(value: Date) {
   value.setUTCHours(0, 0, 0, 0);
   return value;
 }
 
-function endOfUtcDay(value: Date) {
-  value.setUTCHours(23, 59, 59, 999);
-  return value;
+function sourceFailureMessage(failures: Array<{ sourceCode: string; error: string }>) {
+  return failures.map((failure) => `${failure.sourceCode}: ${failure.error}`).join("; ").slice(0, 1_000);
 }

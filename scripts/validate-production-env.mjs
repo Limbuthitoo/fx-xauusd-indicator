@@ -18,13 +18,11 @@ required("ADMIN_SESSION_SECRET");
 required("PUBLIC_API_BASE_URL");
 required("TWELVE_DATA_API_KEY");
 
-const calendarProvider = (env.ECONOMIC_CALENDAR_PROVIDER ?? "manual").toLowerCase();
-if (!["manual", "trading_economics"].includes(calendarProvider)) errors.push("ECONOMIC_CALENDAR_PROVIDER must be manual or trading_economics.");
-if (calendarProvider === "trading_economics") required("TRADING_ECONOMICS_API_KEY");
+const calendarProvider = (env.ECONOMIC_CALENDAR_PROVIDER ?? "official_us").toLowerCase();
+if (!["manual", "official_us"].includes(calendarProvider)) errors.push("ECONOMIC_CALENDAR_PROVIDER must be manual or official_us.");
 
 if (!allowPlaceholders) {
   const sensitiveKeys = ["POSTGRES_PASSWORD", "LOCAL_PIN", "ADMIN_PASSWORD", "ADMIN_SESSION_SECRET", "TWELVE_DATA_API_KEY"];
-  if (calendarProvider === "trading_economics") sensitiveKeys.push("TRADING_ECONOMICS_API_KEY");
   for (const key of sensitiveKeys) {
     if (isPlaceholder(env[key])) errors.push(`${key} still contains a placeholder value.`);
   }

@@ -22,12 +22,16 @@
     "@orb-guide/risk-engine": "0.1.0",
     "@orb-guide/shared-types": "0.1.0",
     "@orb-guide/strategy-engine": "0.1.0",
+    "cheerio": "^1.2.0",
     "fastify": "^4.28.1",
     "firebase-admin": "^14.2.0",
     "ioredis": "^5.11.1",
+    "luxon": "^3.7.2",
+    "node-ical": "^0.27.1",
     "pg": "^8.12.0"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.5",
     "@types/node": "^20.14.10",
     "@types/pg": "^8.11.6",
     "tsx": "^4.16.2",

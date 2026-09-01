@@ -14,7 +14,8 @@ import {
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, calculatePostStopShadowObservation, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
-import { calendarFreshness, classifyEconomicEvents, normalizeTradingEconomicsEvents } from "../apps/api/src/modules/news/service.js";
+import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
+import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
 import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
@@ -31,15 +32,24 @@ assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 2, "Module 1 settings mus
 assert.equal(subscriberTradeSetup.risk.liquidityBufferAtr, 0.25, "Module 1 settings must preserve the structural liquidity buffer");
 assert.equal(subscriberTradeSetup.newsFilter.enabled, true, "Module 1 economic-event protection must default on");
 assert.equal(subscriberTradeSetup.newsFilter.mode, "BLOCK", "Legacy high-impact news mode must normalize to a real blocking mode");
-const normalizedCalendar = normalizeTradingEconomicsEvents([
-  { CalendarId: "us-cpi-1", Date: "2026-08-12T12:30:00", Country: "United States", Event: "CPI", Importance: 3, DateSpan: 0 },
-  { CalendarId: "us-cpi-1", Date: "2026-08-12T12:30:00", Country: "United States", Event: "CPI revised", Importance: 3, DateSpan: 0 },
-  { CalendarId: "estimated", Date: "2026-08-13T00:00:00", Country: "United States", Event: "Estimated", Importance: 3, DateSpan: 1 },
-  { CalendarId: "medium", Date: "2026-08-14T12:30:00", Country: "United States", Event: "Medium", Importance: 2, DateSpan: 0 }
-]);
-assert.equal(normalizedCalendar.length, 1, "Calendar normalization must keep only unique, exact-time, high-impact US events");
-assert.equal(normalizedCalendar[0].title, "CPI revised", "Calendar reschedules must retain the latest provider record for a stable event ID");
-assert.equal(normalizedCalendar[0].eventTimeUtc, "2026-08-12T12:30:00.000Z", "Provider timestamps without offsets must normalize as documented UTC");
+const fetchedAt = new Date("2026-08-01T00:00:00Z");
+const blsFixture = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:cpi-2026-08\nDTSTART;TZID=US-Eastern:20260812T083000\nSUMMARY:Consumer Price Index\nEND:VEVENT\nBEGIN:VEVENT\nUID:minor\nDTSTART;TZID=US-Eastern:20260813T100000\nSUMMARY:Productivity and Costs\nEND:VEVENT\nEND:VCALENDAR`;
+const blsCalendar = parseBlsCalendar(blsFixture, fetchedAt);
+assert.equal(blsCalendar.events.length, 1, "BLS synchronization must retain only the curated market-moving releases");
+assert.equal(blsCalendar.events[0].eventTimeUtc, "2026-08-12T12:30:00.000Z", "BLS Eastern release time must convert to UTC with DST");
+const beaCalendar = parseBeaSchedule(`<table id="release-schedule-table"><thead><tr><th>Year 2026</th></tr></thead><tbody><tr><td class="release-date">August 27</td><td class="release-title">Gross Domestic Product, 2nd Quarter and Corporate Profits (Second Estimate)</td><td><small class="text-muted">8:30 AM</small></td></tr><tr><td class="release-date">August 28</td><td class="release-title">GDP by State</td><td><small class="text-muted">10:00 AM</small></td></tr></tbody></table>`, fetchedAt);
+assert.equal(beaCalendar.events.length, 1, "BEA synchronization must exclude regional GDP releases");
+const censusCalendar = parseCensusSchedule(`<table id="calendar"><tbody><tr><td>Advance Monthly Sales for Retail and Food Services</td><td sorttable_customkey="202608140830">August 14, 2026</td><td>8:30 AM</td></tr><tr><td>Construction Spending</td><td sorttable_customkey="202608151000">August 15, 2026</td><td>10:00 AM</td></tr></tbody></table>`, fetchedAt);
+assert.equal(censusCalendar.events.length, 1, "Census synchronization must retain retail sales and exclude lower-impact releases");
+const fedCalendar = parseFedSchedule(`<div class="panel"><div class="panel-heading">2026 FOMC Meetings</div><div class="fomc-meeting"><div class="fomc-meeting__month"><strong>September</strong></div><div class="fomc-meeting__date">15-16*</div></div></div>`, fetchedAt);
+assert.equal(fedCalendar.events[0].eventTimeUtc, "2026-09-16T18:00:00.000Z", "FOMC statements must use the final meeting day at 2 PM Eastern");
+const partialCalendar = await fetchOfficialUsCalendar(async (input) =>
+  String(input).includes("bls.gov")
+    ? new Response(blsFixture, { status: 200 })
+    : new Response("unavailable", { status: 503 })
+, fetchedAt);
+assert.deepEqual(partialCalendar.successful.map((source) => source.sourceCode), ["BLS"], "A healthy agency source must remain usable during a partial outage");
+assert.equal(partialCalendar.failures.length, 3, "Every failed official source must remain visible to the fail-closed synchronization state");
 assert.deepEqual(
   calendarFreshness({ evaluatedAt: "2026-08-10T12:00:00Z", lastSuccessAt: "2026-08-10T11:00:00Z", coverageEndAt: "2026-08-12T00:00:00Z", staleHours: 30 }),
   { stale: false, staleByAge: false, staleByCoverage: false },
