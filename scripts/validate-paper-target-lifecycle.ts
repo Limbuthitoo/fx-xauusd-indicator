@@ -44,6 +44,13 @@ try {
   ))[0];
   add("Migration 097", Boolean(calendarMigration), "Economic calendar automation migration is recorded.", "Migration 097 is missing from schema_migrations.", calendarMigration);
 
+  const milestoneRepairMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '100_paper_milestone_audit_repair.sql'`
+  ))[0];
+  add("Migration 100", Boolean(milestoneRepairMigration), "Paper milestone audit repair migration is recorded.", "Migration 100 is missing from schema_migrations.", milestoneRepairMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -75,6 +82,7 @@ try {
        to_regclass('public.economic_events_provider_external_id_idx') IS NOT NULL AS calendar_dedup_index,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'position_fraction') AS target_fraction,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'realized_r') AS target_realized_r,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'positions' AND column_name = 'updated_at') AS position_updated_at,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
   );
   const schemaRow = schema[0] ?? {};
@@ -195,6 +203,19 @@ try {
   );
   add("Target state integrity", invalidTargetState.length === 0, "Target status, hit timestamp, and hit price agree.", `${invalidTargetState.length} sampled target state row(s) are inconsistent.`, invalidTargetState);
 
+  const missingMilestoneEvents = await rows(
+    `SELECT target.trade_id, target.target_number, target.hit_at
+     FROM paper_trade_targets target
+     WHERE target.status = 'HIT'
+       AND NOT EXISTS (
+         SELECT 1 FROM trade_events event
+         WHERE event.trade_id = target.trade_id
+           AND event.event_type = 'PAPER_TP' || target.target_number || '_HIT'
+       )
+     LIMIT 50`
+  );
+  add("Milestone event completeness", missingMilestoneEvents.length === 0, "Every filled paper target has its immutable milestone event.", `${missingMilestoneEvents.length} filled target(s) are missing milestone events.`, missingMilestoneEvents);
+
   const invalidAllocations = await rows(
     `SELECT trade_id, count(*)::int AS targets, sum(position_fraction)::numeric AS allocated_fraction
      FROM paper_trade_targets
@@ -299,6 +320,7 @@ try {
      FROM trade_events e
      WHERE e.created_at >= COALESCE($1::timestamptz, '-infinity'::timestamptz)
        AND e.event_type IN ('PAPER_TP1_HIT', 'PAPER_TP2_HIT', 'PAPER_TP3_HIT')
+       AND COALESCE(e.payload->>'backfilled', 'false') <> 'true'
        AND NOT EXISTS (
          SELECT 1 FROM notifications n
          WHERE n.data->>'tradeId' = e.trade_id::text

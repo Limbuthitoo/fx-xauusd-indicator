@@ -121,6 +121,22 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
       realized_r: Number(hit.realized_r),
       hit_price: Number(hit.hit_price)
     });
+    await query(
+      `INSERT INTO trade_events (trade_id, event_type, payload)
+       VALUES ($1,$2,$3::jsonb)
+       ON CONFLICT (trade_id, event_type)
+       WHERE event_type IN ('PAPER_TP1_HIT', 'PAPER_TP2_HIT', 'PAPER_TP3_HIT', 'PAPER_SL_HIT')
+       DO NOTHING`,
+      [trade.id, `PAPER_TP${hit.target_number}_HIT`, JSON.stringify({
+        mode: "PAPER",
+        targetNumber: Number(hit.target_number),
+        targetPrice: Number(hit.price),
+        riskMultiple: Number(hit.risk_multiple),
+        positionFraction: Number(hit.position_fraction),
+        realizedR: Number(hit.realized_r),
+        candleTimestamp: candle.timestamp_utc ?? candle.timestampUtc
+      })]
+    );
     const managed = await syncPaperTradeManagement(String(trade.id));
     if (Number(hit.target_number) === 1 && managed) {
       await query(
@@ -152,22 +168,6 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
         })]
       );
     }
-    await query(
-      `INSERT INTO trade_events (trade_id, event_type, payload)
-       VALUES ($1,$2,$3::jsonb)
-       ON CONFLICT (trade_id, event_type)
-       WHERE event_type IN ('PAPER_TP1_HIT', 'PAPER_TP2_HIT', 'PAPER_TP3_HIT', 'PAPER_SL_HIT')
-       DO NOTHING`,
-      [trade.id, `PAPER_TP${target.target_number}_HIT`, JSON.stringify({
-        mode: "PAPER",
-        targetNumber: target.target_number,
-        targetPrice: target.price,
-        riskMultiple: target.risk_multiple,
-        positionFraction: Number(hit.position_fraction),
-        realizedR: Number(hit.realized_r),
-        candleTimestamp: candle.timestamp_utc ?? candle.timestampUtc
-      })]
-    );
   }
   const refreshed = newlyHit.length > 0 ? await paperTradeTargets(String(trade.id)) : targets;
   const refreshedTrade = newlyHit.length > 0
