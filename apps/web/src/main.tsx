@@ -7384,13 +7384,14 @@ function PasswordPlaceholderPanel() {
 }
 
 function SettingsEditor({ settings, onUpdate }: { settings: any[]; onUpdate: (key: string, value: unknown) => Promise<void> }) {
+  const editableSettings = settings.filter((setting) => !["trading.symbol", "trading.timeframeMinutes"].includes(setting.key));
   return (
     <Panel icon={<Settings />} title="Account Settings">
       <div className="settings-list">
-        {settings.map((setting) => (
+        {editableSettings.map((setting) => (
           <SettingControl key={setting.key} setting={setting} onUpdate={onUpdate} />
         ))}
-        {settings.length === 0 ? <p className="reason">Settings will appear after the admin security migration is applied.</p> : null}
+        {editableSettings.length === 0 ? <p className="reason">No user-editable account settings are available.</p> : null}
       </div>
     </Panel>
   );
@@ -7617,14 +7618,6 @@ function SettingControl({ setting, onUpdate }: { setting: any; onUpdate: (key: s
         <span>{setting.category} · {setting.description ?? "No description"}</span>
       </div>
       <div className="setting-control">
-        {setting.key === "trading.symbol" ? (
-          <input value={draft ?? ""} onChange={(event) => setDraft(event.target.value.toUpperCase())} />
-        ) : null}
-        {setting.key === "trading.timeframeMinutes" ? (
-          <select value={Number(draft ?? 15)} onChange={(event) => setDraft(Number(event.target.value))}>
-            {[1, 5, 15, 30, 45, 60].map((value) => <option key={value} value={value}>{value} minutes</option>)}
-          </select>
-        ) : null}
         {setting.key === "trading.paperTrading" ? (
           <div className="toggle-grid">
             <label><input type="checkbox" checked={Boolean(draft?.enabled)} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked, brokerExecution: false })} /> Paper trading</label>

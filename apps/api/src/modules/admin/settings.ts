@@ -106,6 +106,7 @@ export async function listTenantSettings(tenantId: string) {
        ts.value IS NOT NULL AS tenant_override
      FROM app_settings s
      LEFT JOIN tenant_settings ts ON ts.key = s.key AND ts.tenant_id = $1
+     WHERE s.key NOT IN ('trading.symbol', 'trading.timeframeMinutes')
      ORDER BY s.category, s.key`,
     [tenantId]
   );
@@ -113,6 +114,11 @@ export async function listTenantSettings(tenantId: string) {
 }
 
 export async function updateTenantSetting(tenantId: string, key: string, value: unknown, adminUserId: string | null) {
+  if (key === "trading.symbol" || key === "trading.timeframeMinutes") {
+    const error = new Error("Symbol and signal timeframe are managed by the production strategy.") as Error & { statusCode?: number };
+    error.statusCode = 403;
+    throw error;
+  }
   const global = await query("SELECT category, description FROM app_settings WHERE key = $1", [key]);
   if (!global.rows[0]) {
     const error = new Error("Unknown setting key.") as Error & { statusCode?: number };
