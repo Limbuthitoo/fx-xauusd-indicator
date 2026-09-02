@@ -51,6 +51,13 @@ try {
   ))[0];
   add("Migration 100", Boolean(milestoneRepairMigration), "Paper milestone audit repair migration is recorded.", "Migration 100 is missing from schema_migrations.", milestoneRepairMigration);
 
+  const runnerManagementMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '101_professional_paper_runner_management.sql'`
+  ))[0];
+  add("Migration 101", Boolean(runnerManagementMigration), "Professional runner-management migration is recorded.", "Migration 101 is missing from schema_migrations.", runnerManagementMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -83,6 +90,8 @@ try {
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'position_fraction') AS target_fraction,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'paper_trade_targets' AND column_name = 'realized_r') AS target_realized_r,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'positions' AND column_name = 'updated_at') AS position_updated_at,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'management_policy') AS management_policy,
+       EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'runner_protection_activated_at') AS runner_protection,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
   );
   const schemaRow = schema[0] ?? {};
@@ -246,16 +255,36 @@ try {
 
   const unprotectedRunners = await rows(
     `SELECT t.id, t.outcome, t.actual_entry, t.actual_stop, t.structural_stop,
-            t.realized_r, t.remaining_fraction, t.breakeven_activated_at
+            t.realized_r, t.remaining_fraction, t.management_policy,
+            t.runner_protection_activated_at, t.breakeven_activated_at,
+            targets.tp1_hit, targets.tp2_hit
      FROM trades t
-     WHERE EXISTS (
-       SELECT 1 FROM paper_trade_targets ptt
-       WHERE ptt.trade_id = t.id AND ptt.target_number = 1 AND ptt.status = 'HIT'
-     )
-       AND (t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011)
+     JOIN LATERAL (
+       SELECT bool_or(target_number = 1 AND status = 'HIT') AS tp1_hit,
+              bool_or(target_number = 2 AND status = 'HIT') AS tp2_hit
+       FROM paper_trade_targets
+       WHERE trade_id = t.id
+     ) targets ON true
+     WHERE t.outcome = 'ACTIVE'
+       AND targets.tp1_hit
+       AND (
+         t.runner_protection_activated_at IS NULL
+         OR (t.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND NOT targets.tp2_hit AND (
+           t.breakeven_activated_at IS NOT NULL
+           OR abs(t.actual_stop - CASE
+             WHEN t.structural_stop < t.actual_entry THEN t.actual_entry - t.initial_risk_distance * 0.25
+             ELSE t.actual_entry + t.initial_risk_distance * 0.25 END) > 0.00011
+         ))
+         OR (t.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND targets.tp2_hit AND (
+           t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011
+         ))
+         OR (t.management_policy <> 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND (
+           t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011
+         ))
+       )
      LIMIT 50`
   );
-  add("TP1 breakeven protection", unprotectedRunners.length === 0, "Every TP1 fill moves the managed runner stop to entry while preserving structural risk.", `${unprotectedRunners.length} TP1 runner(s) are not protected at breakeven.`, unprotectedRunners);
+  add("Professional runner protection", unprotectedRunners.length === 0, "TP1 runners use the policy buffer and TP2 runners use true breakeven.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences

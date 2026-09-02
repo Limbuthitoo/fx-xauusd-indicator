@@ -10,6 +10,52 @@ export type PaperTarget = {
   hit_price?: number | null;
 };
 
+export const PAPER_MANAGEMENT_POLICY_V1 = "EQUAL_THIRDS_TP1_BREAKEVEN_V1";
+export const PAPER_MANAGEMENT_POLICY_V2 = "TP1_BUFFERED_TP2_BREAKEVEN_V2";
+export const PAPER_TP1_PROTECTION_BUFFER_R = 0.25;
+
+export function paperManagedStop(input: {
+  direction: string;
+  entry: number;
+  structuralStop: number;
+  currentStop: number;
+  tp1Hit: boolean;
+  tp2Hit: boolean;
+  managementPolicy?: string | null;
+}) {
+  const direction = input.direction.toUpperCase();
+  const short = direction === "SHORT" || direction === "SELL";
+  const riskDistance = Math.abs(input.entry - input.structuralStop);
+  const policy = input.managementPolicy ?? PAPER_MANAGEMENT_POLICY_V2;
+  if (![input.entry, input.structuralStop, input.currentStop, riskDistance].every(Number.isFinite) || riskDistance <= 0) {
+    return { stop: input.currentStop, stage: "STRUCTURAL" as const, bufferR: null };
+  }
+
+  let desiredStop = input.currentStop;
+  let stage: "STRUCTURAL" | "TP1_BUFFERED" | "BREAKEVEN" = "STRUCTURAL";
+  if (policy === PAPER_MANAGEMENT_POLICY_V2) {
+    if (input.tp2Hit) {
+      desiredStop = input.entry;
+      stage = "BREAKEVEN";
+    } else if (input.tp1Hit) {
+      desiredStop = input.entry + (short ? 1 : -1) * riskDistance * PAPER_TP1_PROTECTION_BUFFER_R;
+      stage = "TP1_BUFFERED";
+    }
+  } else if (input.tp1Hit) {
+    desiredStop = input.entry;
+    stage = "BREAKEVEN";
+  }
+
+  const stop = short
+    ? Math.min(input.currentStop, desiredStop)
+    : Math.max(input.currentStop, desiredStop);
+  return {
+    stop: Number(stop.toFixed(5)),
+    stage,
+    bufferR: stage === "TP1_BUFFERED" ? PAPER_TP1_PROTECTION_BUFFER_R : 0
+  };
+}
+
 export function buildPaperTargetPlan(entry: number, stop: number, target: number, direction: string) {
   if (![entry, stop, target].every(Number.isFinite)) return [];
   const normalizedDirection = direction.toUpperCase();

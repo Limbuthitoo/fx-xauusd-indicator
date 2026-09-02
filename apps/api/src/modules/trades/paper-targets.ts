@@ -1,5 +1,12 @@
 import { query } from "../../infrastructure/db/client.js";
-import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "./paper-target-plan.js";
+import {
+  buildPaperTargetPlan,
+  PAPER_MANAGEMENT_POLICY_V2,
+  paperManagedStop,
+  paperSettlement,
+  paperTargetTouches,
+  type PaperTarget
+} from "./paper-target-plan.js";
 
 export { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "./paper-target-plan.js";
 
@@ -31,7 +38,7 @@ export async function ensurePaperTradeTargets(tradeId: string) {
   for (const target of plan) {
     await query(
       `INSERT INTO paper_trade_targets (trade_id, target_number, price, risk_multiple, position_fraction, metadata)
-       VALUES ($1,$2,$3,$4,$5,'{"source":"STRATEGY_RISK_PLAN","management":"EQUAL_THIRDS_TP1_BREAKEVEN"}'::jsonb)
+       VALUES ($1,$2,$3,$4,$5,'{"source":"STRATEGY_RISK_PLAN","management":"TP1_BUFFERED_TP2_BREAKEVEN_V2"}'::jsonb)
        ON CONFLICT (trade_id, target_number) DO UPDATE SET
          price = EXCLUDED.price,
          risk_multiple = EXCLUDED.risk_multiple,
@@ -86,11 +93,14 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
   // A 5M OHLC candle has no intrabar ordering, so protect the audit result with stop-first handling.
   if (stopHit) {
     const breakevenProtected = managedTrade.breakeven_activated_at != null || Math.abs(Number(managedTrade.actual_stop) - Number(managedTrade.actual_entry)) < 0.00001;
+    const runnerProtected = managedTrade.runner_protection_activated_at != null;
     return {
       stopHit: true,
-      stopReason: breakevenProtected ? "BREAKEVEN_STOP" : "STOP",
+      stopReason: breakevenProtected ? "BREAKEVEN_STOP" : runnerProtected ? "PROTECTED_STOP" : "STOP",
       stopPrice: Number(managedTrade.actual_stop ?? managedTrade.structural_stop),
       breakevenProtected,
+      runnerProtected,
+      managementStage: managedTrade.management_stage ?? (breakevenProtected ? "BREAKEVEN" : runnerProtected ? "TP1_BUFFERED" : "STRUCTURAL"),
       ambiguous,
       newlyHit: [],
       targets,
@@ -138,18 +148,26 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
       })]
     );
     const managed = await syncPaperTradeManagement(String(trade.id));
-    if (Number(hit.target_number) === 1 && managed) {
+    const v2Policy = managed?.management_policy === PAPER_MANAGEMENT_POLICY_V2;
+    const protectionEvent = Number(hit.target_number) === 1 && v2Policy
+      ? "PAPER_STOP_TO_PROTECTED_BUFFER"
+      : (Number(hit.target_number) === 1 && !v2Policy) || (Number(hit.target_number) === 2 && v2Policy)
+        ? "PAPER_STOP_TO_BREAKEVEN"
+        : null;
+    if (protectionEvent && managed) {
       await query(
         `INSERT INTO trade_events (trade_id, event_type, payload)
-         SELECT $1, 'PAPER_STOP_TO_BREAKEVEN', $2::jsonb
+         SELECT $1, $2, $3::jsonb
          WHERE NOT EXISTS (
-           SELECT 1 FROM trade_events WHERE trade_id = $1 AND event_type = 'PAPER_STOP_TO_BREAKEVEN'
+           SELECT 1 FROM trade_events WHERE trade_id = $1 AND event_type = $2
          )`,
-        [trade.id, JSON.stringify({
+        [trade.id, protectionEvent, JSON.stringify({
           mode: "PAPER",
-          trigger: "TP1_HIT",
+          trigger: `TP${hit.target_number}_HIT`,
           previousStop: managedTrade.structural_stop ?? managedTrade.actual_stop,
           activeStop: Number(managed.actual_stop),
+          managementPolicy: managed.management_policy,
+          managementStage: managed.management_stage,
           lockedR: Number(managed.realized_r),
           remainingFraction: Number(managed.remaining_fraction),
           candleTimestamp: candle.timestamp_utc ?? candle.timestampUtc
@@ -163,7 +181,9 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
            updated_at = now()
          WHERE trade_id = $1 AND state NOT LIKE 'CLOSED%'`,
         [trade.id, Number(managed.actual_stop), JSON.stringify({
-          stopManagement: "BREAKEVEN_AFTER_TP1",
+          stopManagement: managed.management_stage,
+          managementPolicy: managed.management_policy,
+          runnerProtectionActivatedAt: managed.runner_protection_activated_at,
           breakevenActivatedAt: managed.breakeven_activated_at
         })]
       );
@@ -171,13 +191,20 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
   }
   const refreshed = newlyHit.length > 0 ? await paperTradeTargets(String(trade.id)) : targets;
   const refreshedTrade = newlyHit.length > 0
-    ? (await query("SELECT actual_stop, realized_r, remaining_fraction, breakeven_activated_at FROM trades WHERE id = $1", [trade.id])).rows[0]
+    ? (await query("SELECT actual_stop, realized_r, remaining_fraction, management_policy, runner_protection_activated_at, breakeven_activated_at FROM trades WHERE id = $1", [trade.id])).rows[0]
     : managedTrade;
+  const managementStage = refreshedTrade.breakeven_activated_at != null
+    ? "BREAKEVEN"
+    : refreshedTrade.runner_protection_activated_at != null
+      ? "TP1_BUFFERED"
+      : "STRUCTURAL";
   return {
     stopHit: false,
     stopReason: null,
     stopPrice: Number(refreshedTrade.actual_stop ?? trade.actual_stop),
     breakevenProtected: refreshedTrade.breakeven_activated_at != null,
+    runnerProtected: refreshedTrade.runner_protection_activated_at != null,
+    managementStage,
     ambiguous: false,
     newlyHit,
     targets: refreshed,
@@ -221,28 +248,58 @@ export async function paperTradeSettlement(trade: any, exitPrice: number) {
   return paperSettlement(trade, await paperTradeTargets(String(trade.id)), exitPrice);
 }
 
-async function syncPaperTradeManagement(tradeId: string) {
-  const managed = await query(
+async function syncPaperTradeManagement(tradeId: string): Promise<any> {
+  const state = await query(
     `WITH target_state AS (
        SELECT
          COALESCE(sum(realized_r) FILTER (WHERE status = 'HIT'), 0) AS locked_r,
          COALESCE(sum(position_fraction) FILTER (WHERE status = 'HIT'), 0) AS filled_fraction,
-         min(hit_at) FILTER (WHERE target_number = 1 AND status = 'HIT') AS tp1_hit_at
+         min(hit_at) FILTER (WHERE target_number = 1 AND status = 'HIT') AS tp1_hit_at,
+         min(hit_at) FILTER (WHERE target_number = 2 AND status = 'HIT') AS tp2_hit_at
        FROM paper_trade_targets
        WHERE trade_id = $1
      )
-     UPDATE trades t SET
-       realized_r = target_state.locked_r,
-       remaining_fraction = CASE WHEN t.outcome = 'ACTIVE' THEN greatest(0, 1 - target_state.filled_fraction) ELSE 0 END,
-       actual_stop = CASE WHEN target_state.tp1_hit_at IS NOT NULL THEN t.actual_entry ELSE t.actual_stop END,
-       breakeven_activated_at = COALESCE(t.breakeven_activated_at, target_state.tp1_hit_at)
-     FROM target_state
-     WHERE t.id = $1
-     RETURNING t.actual_entry, t.actual_stop, t.structural_stop, t.initial_risk_distance,
-               t.realized_r, t.remaining_fraction, t.breakeven_activated_at`,
+     SELECT t.actual_entry, t.actual_stop, t.structural_stop, t.initial_risk_distance,
+            t.outcome, t.management_policy, t.runner_protection_activated_at,
+            t.breakeven_activated_at, sc.direction, target_state.*
+     FROM trades t
+     JOIN trade_plans plan ON plan.id = t.trade_plan_id
+     JOIN setup_candidates sc ON sc.id = plan.setup_candidate_id
+     CROSS JOIN target_state
+     WHERE t.id = $1`,
     [tradeId]
   );
-  return managed.rows[0] ?? {};
+  const current = state.rows[0] as any;
+  if (!current) return {};
+  const management = paperManagedStop({
+    direction: current.direction,
+    entry: Number(current.actual_entry),
+    structuralStop: Number(current.structural_stop ?? current.actual_stop),
+    currentStop: Number(current.actual_stop),
+    tp1Hit: current.tp1_hit_at != null,
+    tp2Hit: current.tp2_hit_at != null,
+    managementPolicy: current.management_policy
+  });
+  const runnerProtectionAt = current.runner_protection_activated_at ?? current.tp1_hit_at;
+  const breakevenAt = current.breakeven_activated_at ?? (
+    management.stage === "BREAKEVEN"
+      ? current.management_policy === PAPER_MANAGEMENT_POLICY_V2 ? current.tp2_hit_at : current.tp1_hit_at
+      : null
+  );
+  const managed = await query(
+    `UPDATE trades SET
+       realized_r = $2,
+       remaining_fraction = CASE WHEN outcome = 'ACTIVE' THEN greatest(0, 1 - $3::numeric) ELSE 0 END,
+       actual_stop = $4,
+       runner_protection_activated_at = $5,
+       breakeven_activated_at = $6
+     WHERE id = $1
+     RETURNING actual_entry, actual_stop, structural_stop, initial_risk_distance,
+               realized_r, remaining_fraction, management_policy,
+               runner_protection_activated_at, breakeven_activated_at`,
+    [tradeId, current.locked_r, current.filled_fraction, management.stop, runnerProtectionAt, breakevenAt]
+  );
+  return { ...(managed.rows[0] ?? {}), management_stage: management.stage };
 }
 
 export async function cancelPendingPaperTargets(tradeId: string, reason: string) {
@@ -252,7 +309,7 @@ export async function cancelPendingPaperTargets(tradeId: string, reason: string)
      WHERE trade_id = $1 AND status = 'PENDING'`,
     [tradeId, JSON.stringify({ cancelReason: reason })]
   );
-  if (["STOP", "SL_HIT", "BREAKEVEN_STOP"].includes(reason.toUpperCase())) {
+  if (["STOP", "SL_HIT", "PROTECTED_STOP", "BREAKEVEN_STOP"].includes(reason.toUpperCase())) {
     await query(
       `INSERT INTO trade_events (trade_id, event_type, payload)
        VALUES ($1,'PAPER_SL_HIT',$2::jsonb)
@@ -261,7 +318,11 @@ export async function cancelPendingPaperTargets(tradeId: string, reason: string)
        DO NOTHING`,
       [tradeId, JSON.stringify({
         mode: "PAPER",
-        reason: reason.toUpperCase() === "BREAKEVEN_STOP" ? "BREAKEVEN_STOP_HIT" : "STRUCTURAL_STOP_HIT"
+        reason: reason.toUpperCase() === "BREAKEVEN_STOP"
+          ? "BREAKEVEN_STOP_HIT"
+          : reason.toUpperCase() === "PROTECTED_STOP"
+            ? "TP1_BUFFERED_STOP_HIT"
+            : "STRUCTURAL_STOP_HIT"
       })]
     );
   }

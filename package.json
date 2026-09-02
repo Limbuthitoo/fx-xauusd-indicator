@@ -54,6 +54,8 @@
     "validate:module2-production": "tsx scripts/validate-module2-production.ts",
     "validate:mvp-runtime": "node --import tsx scripts/validate-mvp-runtime.ts",
     "validate:paper-lifecycle": "node --import tsx scripts/validate-paper-target-lifecycle.ts",
+    "validate:paper-management": "node --import tsx scripts/validate-paper-management-policy.ts",
+    "validate:paper-management-gate": "node --import tsx scripts/validate-paper-management-policy.ts compare --gate --minimum-sample 5",
     "validate:production-observation": "node --import tsx scripts/validate-production-observation.ts",
     "calendar:sync": "node --import tsx scripts/sync-economic-calendar.ts",
     "verify:mobile-release": "node scripts/verify-mobile-release.mjs",

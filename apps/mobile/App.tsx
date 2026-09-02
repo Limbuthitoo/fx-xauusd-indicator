@@ -157,6 +157,8 @@ type NotificationDetail = {
   realizedR?: string | number | null;
   lockedR?: string | number | null;
   remainingFraction?: string | number | null;
+  runnerProtected?: boolean | null;
+  managementStage?: string | null;
   breakevenProtected?: boolean | null;
   rewardToRisk?: string | number | null;
   grade?: string | number | null;
@@ -234,6 +236,8 @@ type JournalTrade = {
   structural_stop?: string | number | null;
   realized_r?: string | number | null;
   remaining_fraction?: string | number | null;
+  management_policy?: string | null;
+  runner_protection_activated_at?: string | null;
   breakeven_activated_at?: string | null;
   max_favorable_excursion_r?: string | number | null;
   max_adverse_excursion_r?: string | number | null;
@@ -1703,7 +1707,7 @@ function BuySellSetupCard({ module, horizon }: { module: ModuleRow; horizon: "sh
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
-        <Metric label={trade.breakeven_activated_at ? "SL · BREAKEVEN" : "SL"} value={formatPrice(stopLoss)} />
+        <Metric label={trade.breakeven_activated_at ? "SL · BREAKEVEN" : trade.runner_protection_activated_at ? "SL · TP1 BUFFER" : "SL"} value={formatPrice(stopLoss)} />
         {tracking ? <Metric label="Locked" value={`${formatR(trade.realized_r)}R`} /> : null}
         {tracking ? <Metric label="Runner" value={`${Math.round(Number(trade.remaining_fraction ?? 1) * 100)}%`} /> : null}
         {horizon === "long" ? (
@@ -1762,7 +1766,7 @@ function BuySellSetupDetail({
         <View style={styles.metricsGrid}>
           <Metric label="Entry Range" value={entryRangeLabel(setup, entry)} />
           <Metric label="Entry" value={formatPrice(entry)} />
-          <Metric label={trade.breakeven_activated_at ? "Active Stop · Breakeven" : "Stop Loss"} value={formatPrice(stopLoss)} />
+          <Metric label={trade.breakeven_activated_at ? "Active Stop · Breakeven" : trade.runner_protection_activated_at ? "Active Stop · TP1 Buffer" : "Stop Loss"} value={formatPrice(stopLoss)} />
           {tracking ? <Metric label="Locked Profit" value={`${formatR(trade.realized_r)}R`} /> : null}
           {tracking ? <Metric label="Runner Open" value={`${Math.round(Number(trade.remaining_fraction ?? 1) * 100)}%`} /> : null}
           {horizon === "long" ? (
@@ -1971,7 +1975,7 @@ function JournalTradeCard({ trade, module }: { trade: JournalTrade; module: Modu
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry" value={formatPrice(trade.actual_entry)} />
-        <Metric label={trade.breakeven_activated_at ? "Active SL · BE" : "Active SL"} value={formatPrice(trade.actual_stop)} />
+        <Metric label={trade.breakeven_activated_at ? "Active SL · BE" : trade.runner_protection_activated_at ? "Active SL · TP1 Buffer" : "Active SL"} value={formatPrice(trade.actual_stop)} />
         <Metric label="TP" value={formatPrice(trade.actual_target)} />
         <Metric label="Exit" value={formatPrice(trade.actual_exit)} />
         <Metric label="Result" value={formatR(trade.result_r)} />
@@ -2164,7 +2168,7 @@ function PaperTradeNotification({ detail, module }: { detail: NotificationDetail
       </View>
       <View style={styles.metricsGrid}>
         <Metric label="Entry" value={formatDetailValue(detail.entry ?? trade.actual_entry)} />
-        <Metric label={detail.breakevenProtected ? "Active Stop · Breakeven" : "Stop Loss"} value={formatDetailValue(detail.stopLoss ?? trade.actual_stop)} />
+        <Metric label={detail.breakevenProtected ? "Active Stop · Breakeven" : detail.runnerProtected ? "Active Stop · TP1 Buffer" : "Stop Loss"} value={formatDetailValue(detail.stopLoss ?? trade.actual_stop)} />
         <Metric label="Target" value={formatDetailValue(detail.takeProfit ?? trade.actual_target)} />
         <Metric label="RR" value={formatDetailValue(detail.rewardToRisk ?? trade.reward_to_risk)} />
         <Metric label="Age" value={formatDuration(detail.ageSeconds)} />
@@ -3507,6 +3511,8 @@ function notificationDetailFromPush(title: unknown, body: unknown, data: any): N
     realizedR: payload.realizedR ?? payload.realized_r ?? null,
     lockedR: payload.lockedR ?? payload.locked_r ?? null,
     remainingFraction: payload.remainingFraction ?? payload.remaining_fraction ?? null,
+    runnerProtected: payload.runnerProtected === true || payload.runner_protected === true,
+    managementStage: stringOrNull(payload.managementStage ?? payload.management_stage),
     breakevenProtected: payload.breakevenProtected === true || payload.breakeven_protected === true,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? null,
     grade: payload.grade ?? null,
@@ -3613,6 +3619,8 @@ function notificationDetailFromHistory(item: any, dashboard: Dashboard | null): 
     realizedR: payload.realizedR ?? payload.realized_r ?? null,
     lockedR: payload.lockedR ?? payload.locked_r ?? trade.realized_r ?? null,
     remainingFraction: payload.remainingFraction ?? payload.remaining_fraction ?? trade.remaining_fraction ?? null,
+    runnerProtected: payload.runnerProtected === true || payload.runner_protected === true || trade.runner_protection_activated_at != null,
+    managementStage: stringOrNull(payload.managementStage ?? payload.management_stage),
     breakevenProtected: payload.breakevenProtected === true || payload.breakeven_protected === true || trade.breakeven_activated_at != null,
     rewardToRisk: payload.rewardToRisk ?? payload.reward_to_risk ?? payload.rr ?? extractBodyField(body, "rr") ?? trade.reward_to_risk ?? null,
     grade: payload.grade ?? extractBodyField(body, "grade") ?? module?.currentSetup?.trade_grade ?? null,

@@ -5022,7 +5022,7 @@ async function createModule2PositionFromPaperTrade(session: any, setup: any, pla
       trade.opened_at ?? new Date().toISOString(),
       JSON.stringify({
         mode: "PAPER",
-        managementModel: "EQUAL_THIRDS_TP1_BREAKEVEN",
+        managementModel: "TP1_BUFFERED_TP2_BREAKEVEN_V2",
         setupCandidateId: setup.id,
         scenario: setup.scenario,
         setupTier: setup.scenario_flags?.setupTier ?? null
@@ -5099,7 +5099,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         `paper-tp${target.target_number}-${trade.id}`,
         `PAPER_TP${target.target_number}_HIT`,
         `Paper trade TP${target.target_number} reached`,
-        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD booked ${Math.round(target.position_fraction * 100)}% at TP${target.target_number} (${target.risk_multiple}R). ${target.target_number === 1 ? "The remaining position is now protected at breakeven." : target.target_number === 3 ? "The final runner is complete." : "The TP3 runner remains protected at breakeven."}`,
+        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD booked ${Math.round(target.position_fraction * 100)}% at TP${target.target_number} (${target.risk_multiple}R). ${target.target_number === 1 ? "The runner now has a 0.25R retest buffer; true breakeven activates after TP2." : target.target_number === 3 ? "The final runner is complete." : "The TP3 runner is now protected at breakeven."}`,
         target.target_number === 3 ? "HIGH" : "NORMAL",
         {
           moduleCode: trade.module_code,
@@ -5119,6 +5119,8 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
           lockedR: targetProgress.lockedR,
           remainingFraction: targetProgress.remainingFraction,
           breakevenProtected: targetProgress.breakevenProtected,
+          runnerProtected: targetProgress.runnerProtected,
+          managementStage: targetProgress.managementStage,
           targets: targetPayload
         },
         "takeProfitStopLoss"
@@ -5150,7 +5152,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
        RETURNING *`,
-      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, exit.reason === "STOP", trade.signal_window_end_at]
+      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, ["STOP", "PROTECTED_STOP", "BREAKEVEN_STOP"].includes(exit.reason), trade.signal_window_end_at]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
@@ -5179,7 +5181,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
       `paper-exit-${trade.id}`,
       "PAPER_TRADE_CLOSED",
       `Paper trade closed: ${outcome}`,
-      `${exit.reason === "BREAKEVEN_STOP" ? "Runner stopped at breakeven" : exit.reason} at ${exit.price}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
+      `${exit.reason === "BREAKEVEN_STOP" ? "Runner stopped at breakeven" : exit.reason === "PROTECTED_STOP" ? "Runner stopped at its TP1 protection buffer" : exit.reason} at ${exit.price}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
       "HIGH",
       {
         moduleCode: trade.module_code,
@@ -5196,6 +5198,8 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         lockedR: settlement.lockedR,
         remainingFraction: 0,
         breakevenProtected: exit.reason === "BREAKEVEN_STOP" || targetProgress.breakevenProtected,
+        runnerProtected: targetProgress.runnerProtected,
+        managementStage: targetProgress.managementStage,
         closeReason: exit.reason,
         targets: closedTargets
       },

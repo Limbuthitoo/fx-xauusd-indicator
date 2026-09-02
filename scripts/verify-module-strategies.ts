@@ -17,7 +17,7 @@ import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1Ra
 import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
 import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
-import { buildPaperTargetPlan, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_V2, paperManagedStop, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
 import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js";
@@ -575,6 +575,24 @@ const pendingLongTargets: PaperTarget[] = longTargets.map((target) => ({
 }));
 const progressTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 108, low: 99 });
 assert.deepEqual(progressTouch.pendingHit.map((target) => target.target_number), [1, 2], "A completed candle may advance multiple reached milestones");
+const tp1ManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: false, managementPolicy: PAPER_MANAGEMENT_POLICY_V2 });
+assert.equal(tp1ManagedStop.stop, 98.75, "TP1 must leave a 0.25R retest buffer beyond entry");
+assert.equal(tp1ManagedStop.stage, "TP1_BUFFERED");
+assert.equal(paperTargetTouches({ direction: "LONG", actual_stop: tp1ManagedStop.stop }, pendingLongTargets, { high: 104, low: 99 }).stopHit, false, "A normal entry retest must not stop a TP1 runner");
+const tp1OnlyTargets = pendingLongTargets.map((target, index) => ({
+  ...target,
+  status: index === 0 ? ("HIT" as const) : ("PENDING" as const),
+  realized_r: index === 0 ? target.risk_multiple * target.position_fraction : null
+}));
+const bufferedSettlement = paperSettlement(
+  { direction: "LONG", actual_entry: 100, actual_stop: tp1ManagedStop.stop, structural_stop: 95, initial_risk_distance: 5 },
+  tp1OnlyTargets,
+  tp1ManagedStop.stop
+);
+assert.equal(bufferedSettlement.outcome, "WIN", "TP1 profit must outweigh the buffered runner exit");
+assert.equal(bufferedSettlement.resultR, 0.1667, "TP1 plus a -0.25R runner exit must retain about +0.17R overall");
+const tp2ManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: tp1ManagedStop.stop, tp1Hit: true, tp2Hit: true, managementPolicy: PAPER_MANAGEMENT_POLICY_V2 });
+assert.equal(tp2ManagedStop.stop, 100, "TP2 must activate true breakeven");
 pendingLongTargets[0].status = "HIT";
 pendingLongTargets[1].status = "HIT";
 pendingLongTargets[0].realized_r = pendingLongTargets[0].risk_multiple * pendingLongTargets[0].position_fraction;
@@ -582,7 +600,7 @@ pendingLongTargets[1].realized_r = pendingLongTargets[1].risk_multiple * pending
 const longFinalTouch = paperTargetTouches({ direction: "LONG", actual_stop: 95 }, pendingLongTargets, { high: 111, low: 99 });
 assert.deepEqual(longFinalTouch.pendingHit.map((target) => target.target_number), [3], "LONG sequence must leave only TP3 pending after TP1 and TP2");
 const longStopAfterProgress = paperTargetTouches({ direction: "LONG", actual_stop: 100, structural_stop: 95 }, pendingLongTargets, { high: 104, low: 99 });
-assert.equal(longStopAfterProgress.stopHit, true, "A LONG runner must stop at entry after TP1 activates breakeven protection");
+assert.equal(longStopAfterProgress.stopHit, true, "A LONG runner at true breakeven must stop when entry is revisited after TP2");
 const protectedLongSettlement = paperSettlement(
   { direction: "LONG", actual_entry: 100, actual_stop: 100, structural_stop: 95, initial_risk_distance: 5 },
   pendingLongTargets,

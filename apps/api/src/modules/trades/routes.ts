@@ -37,6 +37,8 @@ export async function tradeRoutes(app: FastifyInstance) {
          t.structural_stop,
          t.realized_r,
          t.remaining_fraction,
+         t.management_policy,
+         t.runner_protection_activated_at,
          t.breakeven_activated_at,
          t.max_favorable_excursion_r,
          t.max_adverse_excursion_r,
@@ -911,10 +913,13 @@ function paperTradeView(row: any) {
     rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
     plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),
     status: row.outcome,
-    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets, row.breakeven_activated_at),
+    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets, row.runner_protection_activated_at, row.breakeven_activated_at),
     unrealizedR,
     lockedR,
     remainingFraction,
+    managementPolicy: row.management_policy,
+    runnerProtected: row.runner_protection_activated_at != null,
+    runnerProtectionActivatedAt: row.runner_protection_activated_at,
     breakevenProtected: row.breakeven_activated_at != null,
     breakevenActivatedAt: row.breakeven_activated_at,
     maxFavorableExcursionR: Number(row.max_favorable_excursion_r ?? 0),
@@ -970,7 +975,7 @@ function paperTargetProgress(targets: any) {
   };
 }
 
-function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any, breakevenActivatedAt?: unknown) {
+function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any, runnerProtectionActivatedAt?: unknown, breakevenActivatedAt?: unknown) {
   const progress = paperTargetProgress(targets);
   if (status === "WIN") return progress.finalTargetHit ? "TARGET HIT" : "PARTIAL PROFIT";
   if (status === "LOSS") return "SL HIT";
@@ -980,6 +985,7 @@ function paperTradeCondition(status: string, unrealizedR: number | null, rewardT
   if (unrealizedR <= -1) return "SL HIT";
   if (rewardToRisk != null && unrealizedR >= rewardToRisk) return "TARGET HIT";
   if (breakevenActivatedAt != null) return `${progress.latestHit ?? "TP1"} · BE PROTECTED`;
+  if (runnerProtectionActivatedAt != null) return `${progress.latestHit ?? "TP1"} · BUFFER PROTECTED`;
   if (progress.latestHit) return `${progress.latestHit} HIT`;
   if (unrealizedR >= 1.5) return "NEAR TARGET";
   if (unrealizedR > 0) return "IN PROFIT";

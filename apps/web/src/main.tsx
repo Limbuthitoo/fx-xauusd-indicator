@@ -8893,7 +8893,7 @@ function PaperTradingWorkspace({
           <div className="paper-focus-metrics">
             <Metric label="Entry" value={formatPriceValue(selected.entry)} />
             <Metric label={selected.status === "ACTIVE" ? "Current" : "Exit"} value={formatPriceValue(selected.status === "ACTIVE" ? selected.currentPrice : selected.exit)} />
-            <Metric label={selected.breakevenProtected ? "Active stop · BE" : "Active stop"} value={formatPriceValue(selected.stopLoss)} />
+            <Metric label={selected.breakevenProtected ? "Active stop · BE" : selected.runnerProtected ? "Active stop · TP1 buffer" : "Active stop"} value={formatPriceValue(selected.stopLoss)} />
             <Metric label="Final target" value={formatPriceValue(selected.takeProfit)} />
             <Metric label="Planned RR" value={selected.rewardToRisk == null ? "--" : `${Number(selected.rewardToRisk).toFixed(2)}R`} />
             <Metric label={selected.status === "ACTIVE" ? "Unrealized" : "Result"} value={`${formatR(selected.status === "ACTIVE" ? selected.unrealizedR : selected.resultR)}R`} />
@@ -8916,7 +8916,8 @@ function PaperTradingWorkspace({
           <div className="paper-focus-footer">
             <div>
               <p>{selected.reason ?? formatScenario(selected.scenario)}</p>
-              {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after TP1 at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
+              {selected.runnerProtectionActivatedAt && !selected.breakevenActivatedAt ? <small>TP1 booked. The runner retains a 0.25R retest buffer until TP2.</small> : null}
+              {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after TP2 at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
               {selected.status === "ACTIVE" && selected.currentPriceAt ? <small>Current condition updated {formatNepalTime(selected.currentPriceAt)}.</small> : null}
               {selected.shadowObservation?.recoveredAfterStop ? <small>Shadow tracking found that price reached the original TP1 after the initial stop. This is learning evidence only and does not rewrite the recorded loss.</small> : null}
             </div>
@@ -8977,7 +8978,7 @@ function PaperTradingWorkspace({
 }
 
 function paperTradeTone(status: string, condition: string) {
-  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || condition === "PARTIAL PROFIT" || condition.includes("BE PROTECTED") || /^TP[12] HIT$/.test(condition)) return "good";
+  if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || condition === "PARTIAL PROFIT" || condition.includes("PROTECTED") || /^TP[12] HIT$/.test(condition)) return "good";
   if (status === "LOSS" || condition === "NEAR STOP") return "bad";
   if (condition === "IN DRAWDOWN") return "warn";
   return "";
