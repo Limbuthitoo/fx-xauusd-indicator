@@ -1,6 +1,7 @@
 import { query } from "../../infrastructure/db/client.js";
 import {
   buildPaperTargetPlan,
+  PAPER_MANAGEMENT_POLICY_PRODUCTION,
   PAPER_MANAGEMENT_POLICY_V2,
   paperManagedStop,
   paperSettlement,
@@ -20,7 +21,7 @@ export async function ensurePaperTradeTargets(tradeId: string) {
   );
   const tradeResult = await query(
     `SELECT t.id, t.actual_entry, COALESCE(t.structural_stop, t.actual_stop) AS actual_stop,
-       t.actual_target, sc.direction
+       t.actual_target, t.management_policy, sc.direction
      FROM trades t
      JOIN trade_plans tp ON tp.id = t.trade_plan_id
      JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -38,14 +39,17 @@ export async function ensurePaperTradeTargets(tradeId: string) {
   for (const target of plan) {
     await query(
       `INSERT INTO paper_trade_targets (trade_id, target_number, price, risk_multiple, position_fraction, metadata)
-       VALUES ($1,$2,$3,$4,$5,'{"source":"STRATEGY_RISK_PLAN","management":"TP1_BUFFERED_TP2_BREAKEVEN_V2"}'::jsonb)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb)
        ON CONFLICT (trade_id, target_number) DO UPDATE SET
          price = EXCLUDED.price,
          risk_multiple = EXCLUDED.risk_multiple,
          position_fraction = EXCLUDED.position_fraction,
          updated_at = now()
        WHERE paper_trade_targets.status = 'PENDING'`,
-      [tradeId, target.targetNumber, target.price, target.riskMultiple, target.positionFraction]
+      [tradeId, target.targetNumber, target.price, target.riskMultiple, target.positionFraction, JSON.stringify({
+        source: "STRATEGY_RISK_PLAN",
+        management: trade.management_policy ?? PAPER_MANAGEMENT_POLICY_PRODUCTION
+      })]
     );
   }
   return paperTradeTargets(tradeId);

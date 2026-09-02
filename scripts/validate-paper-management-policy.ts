@@ -3,6 +3,7 @@ import pg from "pg";
 import {
   PAPER_MANAGEMENT_POLICY_V1,
   PAPER_MANAGEMENT_POLICY_V2,
+  PAPER_MANAGEMENT_POLICY_PRODUCTION,
   PAPER_TP1_PROTECTION_BUFFER_R
 } from "../apps/api/src/modules/trades/paper-target-plan.js";
 
@@ -23,7 +24,7 @@ type ReplayTrade = {
 type PolicyResult = {
   policy: string;
   outcome: "WIN" | "LOSS" | "BREAKEVEN";
-  closeReason: "STRUCTURAL_STOP" | "TP1_BREAKEVEN" | "TP1_BUFFERED_STOP" | "TP2_BREAKEVEN" | "TP3" | "SESSION_CLOSE";
+  closeReason: string;
   resultR: number;
   tp1: boolean;
   tp2: boolean;
@@ -31,6 +32,21 @@ type PolicyResult = {
   ambiguous: boolean;
   closedAt: string;
 };
+type ResearchPolicy = {
+  code: string;
+  label: string;
+  mode: "TP1_BREAKEVEN" | "TP1_BUFFER" | "TP1_PROFIT_LOCK" | "TP2_BREAKEVEN" | "TP1_CLOSE_CONFIRMED" | "STRUCTURE_TRAIL";
+  stopR?: number;
+};
+
+const RESEARCH_POLICIES: ResearchPolicy[] = [
+  { code: PAPER_MANAGEMENT_POLICY_V1, label: "TP1 exact breakeven (production)", mode: "TP1_BREAKEVEN" },
+  { code: PAPER_MANAGEMENT_POLICY_V2, label: "TP1 -0.25R buffer / TP2 breakeven", mode: "TP1_BUFFER", stopR: -PAPER_TP1_PROTECTION_BUFFER_R },
+  { code: "TP1_PROFIT_LOCK_0_10R_RESEARCH", label: "TP1 +0.10R profit lock", mode: "TP1_PROFIT_LOCK", stopR: 0.1 },
+  { code: "TP2_BREAKEVEN_RESEARCH", label: "Structural stop until TP2", mode: "TP2_BREAKEVEN" },
+  { code: "TP1_CLOSE_CONFIRMED_BREAKEVEN_RESEARCH", label: "Breakeven after a close beyond TP1", mode: "TP1_CLOSE_CONFIRMED" },
+  { code: "TWO_CANDLE_STRUCTURE_TRAIL_RESEARCH", label: "Two-candle structure trail", mode: "STRUCTURE_TRAIL" }
+];
 
 loadEnv(cliValue("--env") ?? ".env.production");
 const command = process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : "compare";
@@ -55,9 +71,12 @@ async function comparePolicies() {
   const limit = positiveInteger(cliValue("--limit") ?? "500", "--limit");
   const minimumSample = positiveInteger(cliValue("--minimum-sample") ?? "5", "--minimum-sample");
   const enforceGate = process.argv.includes("--gate");
-  const migration = (await client.query(
-    `SELECT applied_at FROM schema_migrations WHERE filename='101_professional_paper_runner_management.sql'`
-  )).rows[0] ?? null;
+  const migrations = (await client.query(
+    `SELECT filename, applied_at FROM schema_migrations
+     WHERE filename IN ('101_professional_paper_runner_management.sql','102_retain_tp1_breakeven_production.sql')`
+  )).rows;
+  const migration101 = migrations.find((row) => row.filename === "101_professional_paper_runner_management.sql") ?? null;
+  const migration102 = migrations.find((row) => row.filename === "102_retain_tp1_breakeven_production.sql") ?? null;
 
   const rows = await client.query(
     `SELECT t.id, sc.scenario, sc.direction, sc.symbol, t.opened_at,
@@ -95,10 +114,28 @@ async function comparePolicies() {
     [days, limit]
   );
 
-  const comparisons: Array<{ trade: ReplayTrade; v1: PolicyResult; v2: PolicyResult }> = [];
+  const independentRows: any[] = [];
+  const independentKeys = new Set<string>();
+  let invalidGeometryExcluded = 0;
+  let duplicateSubscriberTradesExcluded = 0;
   for (const row of rows.rows) {
     const targets = normalizeTargets(row.targets, Number(row.entry), Number(row.structural_stop), String(row.direction));
-    if (targets.length !== 3 || targets.some((target) => ![target.number, target.price, target.riskMultiple, target.fraction].every(Number.isFinite))) continue;
+    if (targets.length !== 3 || targets.some((target) => ![target.number, target.price, target.riskMultiple, target.fraction].every(Number.isFinite))) {
+      invalidGeometryExcluded += 1;
+      continue;
+    }
+    const independentKey = independentSignalKey(row, targets);
+    if (independentKeys.has(independentKey)) {
+      duplicateSubscriberTradesExcluded += 1;
+      continue;
+    }
+    independentKeys.add(independentKey);
+    independentRows.push({ ...row, normalizedTargets: targets });
+  }
+
+  const replays: Array<{ trade: ReplayTrade; results: Record<string, PolicyResult> }> = [];
+  for (const row of independentRows) {
+    const targets = row.normalizedTargets as ReplayTarget[];
     const candles = await client.query(
       `SELECT timestamp_utc, high::float, low::float, close::float
        FROM candles
@@ -124,13 +161,17 @@ async function comparePolicies() {
         close: Number(candle.close)
       }))
     };
-    comparisons.push({
+    replays.push({
       trade,
-      v1: replayPolicy(trade, PAPER_MANAGEMENT_POLICY_V1),
-      v2: replayPolicy(trade, PAPER_MANAGEMENT_POLICY_V2)
+      results: Object.fromEntries(RESEARCH_POLICIES.map((policy) => [policy.code, replayResearchPolicy(trade, policy)]))
     });
   }
-  comparisons.sort((left, right) => left.trade.openedAt.localeCompare(right.trade.openedAt));
+  replays.sort((left, right) => left.trade.openedAt.localeCompare(right.trade.openedAt));
+  const comparisons = replays.map((row) => ({
+    trade: row.trade,
+    v1: row.results[PAPER_MANAGEMENT_POLICY_V1],
+    v2: row.results[PAPER_MANAGEMENT_POLICY_V2]
+  }));
 
   const v1 = summarize(comparisons.map((row) => row.v1));
   const v2 = summarize(comparisons.map((row) => row.v2));
@@ -140,16 +181,32 @@ async function comparePolicies() {
   const deltaDrawdownR = fixed(v2.maxDrawdownR - v1.maxDrawdownR);
   const promotionEligible = comparisons.length >= minimumSample;
   const promotionPassed = promotionEligible && deltaTotalR >= 0 && deltaAverageR >= 0 && deltaDrawdownR <= 0.5;
+  const productionBaselineRetained = PAPER_MANAGEMENT_POLICY_PRODUCTION === PAPER_MANAGEMENT_POLICY_V1;
+  const matrix = RESEARCH_POLICIES.map((policy) => {
+    const metrics = summarize(replays.map((row) => row.results[policy.code]));
+    return {
+      code: policy.code,
+      label: policy.label,
+      production: policy.code === PAPER_MANAGEMENT_POLICY_PRODUCTION,
+      observationOnly: policy.code !== PAPER_MANAGEMENT_POLICY_PRODUCTION,
+      ...metrics,
+      deltaVsProductionR: fixed(metrics.totalR - v1.totalR),
+      deltaVsProductionDrawdownR: fixed(metrics.maxDrawdownR - v1.maxDrawdownR)
+    };
+  });
   const output = {
-    status: enforceGate ? (migration ? "PASS" : promotionPassed ? "PASS" : "FAIL") : comparisons.length ? "PASS" : "WARN",
+    status: enforceGate ? (productionBaselineRetained ? "PASS" : "FAIL") : comparisons.length ? "PASS" : "WARN",
     mode: "READ_ONLY_COUNTERFACTUAL",
     syntheticChecks: "PASS",
-    migration101AppliedAt: migration?.applied_at ?? null,
+    productionPolicy: PAPER_MANAGEMENT_POLICY_PRODUCTION,
+    migration101AppliedAt: migration101?.applied_at ?? null,
+    migration102AppliedAt: migration102?.applied_at ?? null,
     promotionGate: {
       enforced: enforceGate,
-      status: migration ? "ALREADY_PROMOTED" : !promotionEligible ? "INSUFFICIENT_SAMPLE" : promotionPassed ? "PASS" : "FAIL",
+      status: productionBaselineRetained ? "BASELINE_V1_RETAINED" : "FAIL",
       minimumSample,
-      requirements: "At least the minimum sample, non-negative total and average R deltas, and no more than +0.50R additional maximum drawdown."
+      candidateV2Status: !promotionEligible ? "INSUFFICIENT_SAMPLE" : promotionPassed ? "PASS" : "REJECTED",
+      requirements: "The selected production policy must remain V1. Every alternative stays observation-only until an independent-signal candidate gate passes."
     },
     assumptions: {
       execution: "5-minute OHLC; stop-first when a candle touches the active stop and a pending target",
@@ -158,9 +215,17 @@ async function comparePolicies() {
       v1: "TP1 moves the remaining runner to exact entry",
       v2: `TP1 moves the runner to -${PAPER_TP1_PROTECTION_BUFFER_R}R; TP2 moves it to exact entry`
     },
-    sample: { requestedDays: days, queriedTrades: rows.rowCount, replayedTrades: comparisons.length },
+    sample: {
+      requestedDays: days,
+      queriedSubscriberTrades: rows.rowCount,
+      independentTradeCandidates: independentRows.length,
+      replayedIndependentTrades: comparisons.length,
+      duplicateSubscriberTradesExcluded,
+      invalidGeometryExcluded
+    },
     v1,
     v2,
+    policyMatrix: matrix,
     delta: {
       totalR: deltaTotalR,
       averageR: deltaAverageR,
@@ -180,7 +245,7 @@ async function comparePolicies() {
     }))
   };
   console.log(JSON.stringify(output, null, 2));
-  if (enforceGate && !migration && !promotionPassed) process.exitCode = 1;
+  if (enforceGate && !productionBaselineRetained) process.exitCode = 1;
 }
 
 async function diagnoseSetup() {
@@ -243,6 +308,12 @@ async function diagnoseSetup() {
 }
 
 export function replayPolicy(trade: ReplayTrade, policy: string): PolicyResult {
+  const definition = RESEARCH_POLICIES.find((candidate) => candidate.code === policy);
+  if (!definition) throw new Error(`Unknown paper-management replay policy: ${policy}`);
+  return replayResearchPolicy(trade, definition);
+}
+
+function replayResearchPolicy(trade: ReplayTrade, policy: ResearchPolicy): PolicyResult {
   const multiplier = trade.direction === "SHORT" ? -1 : 1;
   const risk = Math.abs(trade.entry - trade.structuralStop);
   if (!Number.isFinite(risk) || risk <= 0) throw new Error(`Trade ${trade.id} has invalid risk geometry.`);
@@ -251,6 +322,8 @@ export function replayPolicy(trade: ReplayTrade, policy: string): PolicyResult {
   let hitFraction = 0;
   const hit = new Set<number>();
   let ambiguous = false;
+  let closeConfirmed = false;
+  const completedCandles: Candle[] = [];
 
   for (const candle of trade.candles) {
     const stopHit = trade.direction === "SHORT" ? candle.high >= stop : candle.low <= stop;
@@ -261,26 +334,60 @@ export function replayPolicy(trade: ReplayTrade, policy: string): PolicyResult {
     if (stopHit) {
       const runnerR = ((stop - trade.entry) * multiplier) / risk;
       const resultR = lockedR + Math.max(0, 1 - hitFraction) * runnerR;
-      return settle(policy, resultR, stopReason(policy, hit), hit, ambiguous, candle.timestamp);
+      return settle(policy.code, resultR, stopReason(policy, hit), hit, ambiguous, candle.timestamp);
     }
     for (const target of pendingHits.sort((left, right) => left.number - right.number)) {
       hit.add(target.number);
       lockedR += target.riskMultiple * target.fraction;
       hitFraction += target.fraction;
     }
-    if (hit.has(3)) return settle(policy, lockedR, "TP3", hit, ambiguous, candle.timestamp);
-    if (hit.has(2)) stop = trade.entry;
-    else if (hit.has(1)) {
-      stop = policy === PAPER_MANAGEMENT_POLICY_V2
-        ? trade.entry - multiplier * risk * PAPER_TP1_PROTECTION_BUFFER_R
-        : trade.entry;
-    }
+    if (hit.has(3)) return settle(policy.code, lockedR, "TP3", hit, ambiguous, candle.timestamp);
+    completedCandles.push(candle);
+    if (hit.has(1) && beyondTargetClose(trade.direction, candle.close, trade.targets[0].price)) closeConfirmed = true;
+    stop = researchManagedStop({ trade, policy, hit, currentStop: stop, risk, multiplier, closeConfirmed, completedCandles });
   }
 
   const finalCandle = trade.candles.at(-1)!;
   const runnerR = ((finalCandle.close - trade.entry) * multiplier) / risk;
   const resultR = lockedR + Math.max(0, 1 - hitFraction) * runnerR;
-  return settle(policy, resultR, "SESSION_CLOSE", hit, ambiguous, finalCandle.timestamp);
+  return settle(policy.code, resultR, "SESSION_CLOSE", hit, ambiguous, finalCandle.timestamp);
+}
+
+function researchManagedStop(input: {
+  trade: ReplayTrade;
+  policy: ResearchPolicy;
+  hit: Set<number>;
+  currentStop: number;
+  risk: number;
+  multiplier: number;
+  closeConfirmed: boolean;
+  completedCandles: Candle[];
+}) {
+  const { trade, policy, hit, risk, multiplier } = input;
+  let desired = trade.structuralStop;
+  if (policy.mode === "TP1_BREAKEVEN" && hit.has(1)) desired = trade.entry;
+  if ((policy.mode === "TP1_BUFFER" || policy.mode === "TP1_PROFIT_LOCK") && hit.has(1)) {
+    desired = trade.entry + multiplier * risk * Number(policy.stopR ?? 0);
+  }
+  if (policy.mode === "TP2_BREAKEVEN" && hit.has(2)) desired = trade.entry;
+  if (policy.mode === "TP1_CLOSE_CONFIRMED" && input.closeConfirmed) desired = trade.entry;
+  if (policy.mode === "STRUCTURE_TRAIL" && hit.has(1)) {
+    const recent = input.completedCandles.slice(-2);
+    const structure = trade.direction === "LONG"
+      ? Math.min(...recent.map((candle) => candle.low), trade.entry)
+      : Math.max(...recent.map((candle) => candle.high), trade.entry);
+    desired = hit.has(2)
+      ? structure
+      : trade.direction === "LONG" ? Math.min(structure, trade.entry) : Math.max(structure, trade.entry);
+  }
+  if (policy.mode === "TP1_BUFFER" && hit.has(2)) desired = trade.entry;
+  return trade.direction === "SHORT"
+    ? Math.min(input.currentStop, desired)
+    : Math.max(input.currentStop, desired);
+}
+
+function beyondTargetClose(direction: Direction, close: number, target: number) {
+  return direction === "SHORT" ? close <= target : close >= target;
 }
 
 function runSyntheticAssertions() {
@@ -290,20 +397,20 @@ function runSyntheticAssertions() {
   ]);
   const baseV1 = replayPolicy(base, PAPER_MANAGEMENT_POLICY_V1);
   const baseV2 = replayPolicy(base, PAPER_MANAGEMENT_POLICY_V2);
-  assert(baseV1.closeReason === "TP1_BREAKEVEN" && baseV1.resultR === 0.3333, "V1 TP1 breakeven path");
+  assert(baseV1.closeReason.endsWith(":POST_TP1_STOP") && baseV1.resultR === 0.3333, "V1 TP1 breakeven path");
   assert(baseV2.closeReason === "TP3" && baseV2.resultR === 1.5, "V2 recovered runner path");
 
   const buffered = replayPolicy(syntheticTrade([
     candle("2026-09-02T14:35:00.000Z", 111, 101, 108),
     candle("2026-09-02T14:40:00.000Z", 108, 96, 98)
   ]), PAPER_MANAGEMENT_POLICY_V2);
-  assert(buffered.closeReason === "TP1_BUFFERED_STOP" && buffered.resultR === 0.1667, "V2 TP1 buffered-stop floor");
+  assert(buffered.closeReason.endsWith(":POST_TP1_STOP") && buffered.resultR === 0.1667, "V2 TP1 buffered-stop floor");
 
   const tp2Breakeven = replayPolicy(syntheticTrade([
     candle("2026-09-02T14:35:00.000Z", 116, 101, 114),
     candle("2026-09-02T14:40:00.000Z", 114, 99, 101)
   ]), PAPER_MANAGEMENT_POLICY_V2);
-  assert(tp2Breakeven.closeReason === "TP2_BREAKEVEN" && tp2Breakeven.resultR === 0.8333, "V2 TP2 breakeven floor");
+  assert(tp2Breakeven.closeReason.endsWith(":POST_TP2_STOP") && tp2Breakeven.resultR === 0.8333, "V2 TP2 breakeven floor");
 
   const ambiguous = replayPolicy(syntheticTrade([
     candle("2026-09-02T14:35:00.000Z", 111, 89, 100)
@@ -324,6 +431,33 @@ function runSyntheticAssertions() {
     ]
   }, PAPER_MANAGEMENT_POLICY_V2);
   assert(shortRunner.closeReason === "TP3" && shortRunner.resultR === 1.5, "V2 short runner path");
+
+  const profitLock = replayPolicy(syntheticTrade([
+    candle("2026-09-02T14:35:00.000Z", 111, 101, 108),
+    candle("2026-09-02T14:40:00.000Z", 108, 96, 98)
+  ]), "TP1_PROFIT_LOCK_0_10R_RESEARCH");
+  assert(profitLock.resultR === 0.4, "TP1 profit-lock research path");
+
+  const delayedBreakeven = replayPolicy(base, "TP2_BREAKEVEN_RESEARCH");
+  assert(delayedBreakeven.closeReason === "TP3" && delayedBreakeven.resultR === 1.5, "TP2-delayed breakeven research path");
+
+  const closeConfirmed = replayPolicy(base, "TP1_CLOSE_CONFIRMED_BREAKEVEN_RESEARCH");
+  assert(closeConfirmed.closeReason === "TP3" && closeConfirmed.resultR === 1.5, "close-confirmed breakeven research path");
+
+  const duplicateShape = {
+    symbol: "XAUUSD",
+    scenario: "CLEAN_BREAKOUT_CONTINUATION",
+    direction: "LONG",
+    opened_at: "2026-09-02T14:31:03.000Z",
+    entry: 100,
+    structural_stop: 90
+  };
+  const duplicateTargets = syntheticTrade([]).targets;
+  const firstKey = independentSignalKey(duplicateShape, duplicateTargets);
+  const subscriberCopyKey = independentSignalKey({ ...duplicateShape, opened_at: "2026-09-02T14:34:58.000Z" }, duplicateTargets);
+  const nextCandleKey = independentSignalKey({ ...duplicateShape, opened_at: "2026-09-02T14:35:00.000Z" }, duplicateTargets);
+  assert(firstKey === subscriberCopyKey, "subscriber copies inside one signal candle deduplicate");
+  assert(firstKey !== nextCandleKey, "signals from different five-minute candles remain independent");
 }
 
 function syntheticTrade(candles: Candle[]): ReplayTrade {
@@ -361,9 +495,9 @@ function settle(policy: string, resultR: number, closeReason: PolicyResult["clos
   };
 }
 
-function stopReason(policy: string, hit: Set<number>): PolicyResult["closeReason"] {
-  if (hit.has(2)) return "TP2_BREAKEVEN";
-  if (hit.has(1)) return policy === PAPER_MANAGEMENT_POLICY_V2 ? "TP1_BUFFERED_STOP" : "TP1_BREAKEVEN";
+function stopReason(policy: ResearchPolicy, hit: Set<number>): PolicyResult["closeReason"] {
+  if (hit.has(2)) return `${policy.code}:POST_TP2_STOP`;
+  if (hit.has(1)) return `${policy.code}:POST_TP1_STOP`;
   return "STRUCTURAL_STOP";
 }
 
@@ -380,7 +514,7 @@ function summarize(rows: PolicyResult[]) {
     tp1: rows.filter((row) => row.tp1).length,
     tp2: rows.filter((row) => row.tp2).length,
     tp3: rows.filter((row) => row.tp3).length,
-    protectedStops: rows.filter((row) => ["TP1_BREAKEVEN", "TP1_BUFFERED_STOP", "TP2_BREAKEVEN"].includes(row.closeReason)).length,
+    protectedStops: rows.filter((row) => row.closeReason.includes(":POST_TP")).length,
     ambiguousCandles: rows.filter((row) => row.ambiguous).length
   };
 }
@@ -401,6 +535,21 @@ function normalizeTargets(value: unknown, entry: number, stop: number, direction
     riskMultiple,
     fraction: index === 2 ? 0.333334 : 0.333333
   }));
+}
+
+function independentSignalKey(row: any, targets: ReplayTarget[]) {
+  const openedAt = new Date(row.opened_at).getTime();
+  if (!Number.isFinite(openedAt)) throw new Error(`Trade ${String(row.id ?? "unknown")} has an invalid opened_at timestamp.`);
+  const signalCandleAt = new Date(Math.floor(openedAt / 300_000) * 300_000).toISOString();
+  return [
+    row.symbol,
+    row.scenario,
+    normalizeDirection(row.direction),
+    signalCandleAt,
+    Number(row.entry).toFixed(5),
+    Number(row.structural_stop).toFixed(5),
+    ...targets.map((target) => target.price.toFixed(5))
+  ].join(":");
 }
 
 function entryExtensionPercent(row: any) {

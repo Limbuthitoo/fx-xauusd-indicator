@@ -128,7 +128,7 @@ capture_previous_images
 "${COMPOSE[@]}" --profile prod build api worker web quant ops-monitor
 
 echo "[5/9] Applying checksum-ledger migrations after successful image builds"
-echo "Running the read-only V2 paper-management promotion gate before schema changes"
+echo "Running the read-only paper-management release gate before schema changes"
 "${COMPOSE[@]}" --profile prod-tools run --build --rm --no-deps migrate \
   sh -lc "cd /app && timeout -s TERM ${VALIDATION_TIMEOUT_SECONDS} npm run validate:paper-management-gate"
 "${COMPOSE[@]}" --profile prod-tools run --build --rm migrate

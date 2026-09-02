@@ -56,7 +56,14 @@ try {
      FROM schema_migrations
      WHERE filename = '101_professional_paper_runner_management.sql'`
   ))[0];
-  add("Migration 101", Boolean(runnerManagementMigration), "Professional runner-management migration is recorded.", "Migration 101 is missing from schema_migrations.", runnerManagementMigration);
+  add("Migration 101", Boolean(runnerManagementMigration), "Versioned runner-management migration is recorded.", "Migration 101 is missing from schema_migrations.", runnerManagementMigration);
+
+  const retainedProductionPolicyMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '102_retain_tp1_breakeven_production.sql'`
+  ))[0];
+  add("Migration 102", Boolean(retainedProductionPolicyMigration), "V1 production runner-policy retention migration is recorded.", "Migration 102 is missing from schema_migrations.", retainedProductionPolicyMigration);
 
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
@@ -92,6 +99,11 @@ try {
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'positions' AND column_name = 'updated_at') AS position_updated_at,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'management_policy') AS management_policy,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'runner_protection_activated_at') AS runner_protection,
+       EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'management_policy'
+           AND column_default LIKE '%EQUAL_THIRDS_TP1_BREAKEVEN_V1%'
+       ) AS production_policy_v1_default,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
   );
   const schemaRow = schema[0] ?? {};
@@ -284,7 +296,7 @@ try {
        )
      LIMIT 50`
   );
-  add("Professional runner protection", unprotectedRunners.length === 0, "TP1 runners use the policy buffer and TP2 runners use true breakeven.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
+  add("Versioned runner protection", unprotectedRunners.length === 0, "Active runners match their immutable policy; production V1 uses exact breakeven after TP1.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences

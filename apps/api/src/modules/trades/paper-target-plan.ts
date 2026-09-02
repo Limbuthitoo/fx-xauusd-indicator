@@ -12,6 +12,7 @@ export type PaperTarget = {
 
 export const PAPER_MANAGEMENT_POLICY_V1 = "EQUAL_THIRDS_TP1_BREAKEVEN_V1";
 export const PAPER_MANAGEMENT_POLICY_V2 = "TP1_BUFFERED_TP2_BREAKEVEN_V2";
+export const PAPER_MANAGEMENT_POLICY_PRODUCTION = PAPER_MANAGEMENT_POLICY_V1;
 export const PAPER_TP1_PROTECTION_BUFFER_R = 0.25;
 
 export function paperManagedStop(input: {
@@ -26,7 +27,7 @@ export function paperManagedStop(input: {
   const direction = input.direction.toUpperCase();
   const short = direction === "SHORT" || direction === "SELL";
   const riskDistance = Math.abs(input.entry - input.structuralStop);
-  const policy = input.managementPolicy ?? PAPER_MANAGEMENT_POLICY_V2;
+  const policy = input.managementPolicy ?? PAPER_MANAGEMENT_POLICY_PRODUCTION;
   if (![input.entry, input.structuralStop, input.currentStop, riskDistance].every(Number.isFinite) || riskDistance <= 0) {
     return { stop: input.currentStop, stage: "STRUCTURAL" as const, bufferR: null };
   }

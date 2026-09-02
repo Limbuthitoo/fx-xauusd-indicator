@@ -30,7 +30,7 @@ import { sendTenantPush } from "../notifications/push.js";
 import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
-import { buildPaperTargetPlan } from "../trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION } from "../trades/paper-target-plan.js";
 
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
@@ -5022,7 +5022,7 @@ async function createModule2PositionFromPaperTrade(session: any, setup: any, pla
       trade.opened_at ?? new Date().toISOString(),
       JSON.stringify({
         mode: "PAPER",
-        managementModel: "TP1_BUFFERED_TP2_BREAKEVEN_V2",
+        managementModel: PAPER_MANAGEMENT_POLICY_PRODUCTION,
         setupCandidateId: setup.id,
         scenario: setup.scenario,
         setupTier: setup.scenario_flags?.setupTier ?? null
