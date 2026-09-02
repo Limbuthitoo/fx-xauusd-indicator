@@ -87,6 +87,18 @@ export function paperTargetPayload(targets: PaperTarget[]) {
   }));
 }
 
+export function paperTargetManagementSummary(targetNumber: number, managementPolicy: string) {
+  if (targetNumber === 3) return "The final runner is complete.";
+  if (managementPolicy === PAPER_MANAGEMENT_POLICY_V2) {
+    return targetNumber === 1
+      ? "The runner now has a 0.25R retest buffer; true breakeven activates after TP2."
+      : "The TP3 runner is now protected at breakeven.";
+  }
+  return targetNumber === 1
+    ? "The remaining runner is now protected at exact breakeven."
+    : "The TP3 runner remains protected at breakeven.";
+}
+
 export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
   await updatePaperTradeExcursion(trade, candle);
   const targets = await ensurePaperTradeTargets(String(trade.id));
@@ -110,7 +122,8 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
       targets,
       finalTargetHit: false,
       lockedR: Number(managedTrade.realized_r ?? 0),
-      remainingFraction: Number(managedTrade.remaining_fraction ?? 1)
+      remainingFraction: Number(managedTrade.remaining_fraction ?? 1),
+      managementPolicy: managedTrade.management_policy ?? PAPER_MANAGEMENT_POLICY_PRODUCTION
     };
   }
 
@@ -214,7 +227,8 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
     targets: refreshed,
     finalTargetHit: refreshed.find((target) => target.target_number === 3)?.status === "HIT",
     lockedR: Number(refreshedTrade.realized_r ?? 0),
-    remainingFraction: Number(refreshedTrade.remaining_fraction ?? 1)
+    remainingFraction: Number(refreshedTrade.remaining_fraction ?? 1),
+    managementPolicy: refreshedTrade.management_policy ?? PAPER_MANAGEMENT_POLICY_PRODUCTION
   };
 }
 

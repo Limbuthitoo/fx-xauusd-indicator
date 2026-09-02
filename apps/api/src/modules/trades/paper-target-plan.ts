@@ -15,6 +15,13 @@ export const PAPER_MANAGEMENT_POLICY_V2 = "TP1_BUFFERED_TP2_BREAKEVEN_V2";
 export const PAPER_MANAGEMENT_POLICY_PRODUCTION = PAPER_MANAGEMENT_POLICY_V1;
 export const PAPER_TP1_PROTECTION_BUFFER_R = 0.25;
 
+export function shouldStartPostStopObservation(exitReason: string, exitAt: string | Date, observationUntil: string | Date) {
+  if (!["STOP", "PROTECTED_STOP", "BREAKEVEN_STOP"].includes(exitReason.toUpperCase())) return false;
+  const exitTime = new Date(exitAt).getTime();
+  const untilTime = new Date(observationUntil).getTime();
+  return Number.isFinite(exitTime) && Number.isFinite(untilTime) && exitTime < untilTime;
+}
+
 export function paperManagedStop(input: {
   direction: string;
   entry: number;

@@ -29,8 +29,8 @@ import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
 import { sendTenantPush } from "../notifications/push.js";
 import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
-import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
-import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION } from "../trades/paper-target-plan.js";
+import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetManagementSummary, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "../trades/paper-target-plan.js";
 
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
@@ -5099,8 +5099,8 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         `paper-tp${target.target_number}-${trade.id}`,
         `PAPER_TP${target.target_number}_HIT`,
         `Paper trade TP${target.target_number} reached`,
-        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD booked ${Math.round(target.position_fraction * 100)}% at TP${target.target_number} (${target.risk_multiple}R). ${target.target_number === 1 ? "The runner now has a 0.25R retest buffer; true breakeven activates after TP2." : target.target_number === 3 ? "The final runner is complete." : "The TP3 runner is now protected at breakeven."}`,
-        target.target_number === 3 ? "HIGH" : "NORMAL",
+        `${trade.direction === "SHORT" ? "SELL" : "BUY"} XAUUSD booked ${Math.round(target.position_fraction * 100)}% at TP${target.target_number} (${target.risk_multiple}R). ${paperTargetManagementSummary(target.target_number, targetProgress.managementPolicy)}`,
+        "HIGH",
         {
           moduleCode: trade.module_code,
           tradeId: trade.id,
@@ -5141,6 +5141,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
     if (!exit) continue;
     const settlement = await paperTradeSettlement(trade, exit.price);
     const { resultR, outcome } = settlement;
+    const observeAfterStop = shouldStartPostStopObservation(exit.reason, latest.timestampUtc, trade.signal_window_end_at);
     const updated = await query(
       `UPDATE trades SET
         actual_exit = $2,
@@ -5152,7 +5153,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
        RETURNING *`,
-      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, ["STOP", "PROTECTED_STOP", "BREAKEVEN_STOP"].includes(exit.reason), trade.signal_window_end_at]
+      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, observeAfterStop, trade.signal_window_end_at]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));

@@ -17,7 +17,8 @@ import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1Ra
 import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
 import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
-import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, paperManagedStop, paperSettlement, paperTargetTouches, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, paperManagedStop, paperSettlement, paperTargetTouches, shouldStartPostStopObservation, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { paperTargetManagementSummary } from "../apps/api/src/modules/trades/paper-targets.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
 import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js";
@@ -89,6 +90,9 @@ const shortShadow = calculatePostStopShadowObservation(
 )!;
 assert.equal(shortShadow.favorableR, 2, "Post-stop SHORT shadow must measure favorable excursion symmetrically");
 assert.equal(shortShadow.adverseR, 1.2, "Post-stop SHORT shadow must measure adverse excursion symmetrically");
+assert.equal(shouldStartPostStopObservation("STOP", "2026-08-10T19:00:00Z", "2026-08-10T20:00:00Z"), true, "A stop before session end must start shadow observation");
+assert.equal(shouldStartPostStopObservation("STOP", "2026-08-10T20:05:00Z", "2026-08-10T20:00:00Z"), false, "A stale stop after session end must not create an impossible shadow window");
+assert.equal(shouldStartPostStopObservation("TARGET", "2026-08-10T19:00:00Z", "2026-08-10T20:00:00Z"), false, "A target exit must not start post-stop observation");
 
 const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
 const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
@@ -582,6 +586,8 @@ assert.equal(PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, "Pr
 const productionManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: false });
 assert.equal(productionManagedStop.stop, 100, "The default production policy must move the runner to exact breakeven after TP1");
 assert.equal(productionManagedStop.stage, "BREAKEVEN", "The default production TP1 stage must be breakeven");
+assert.equal(paperTargetManagementSummary(1, PAPER_MANAGEMENT_POLICY_V1), "The remaining runner is now protected at exact breakeven.", "V1 TP1 notification must describe exact breakeven");
+assert.equal(paperTargetManagementSummary(1, PAPER_MANAGEMENT_POLICY_V2).includes("0.25R retest buffer"), true, "V2 TP1 notification must describe its versioned buffer");
 assert.equal(paperTargetTouches({ direction: "LONG", actual_stop: tp1ManagedStop.stop }, pendingLongTargets, { high: 104, low: 99 }).stopHit, false, "A normal entry retest must not stop a TP1 runner");
 const tp1OnlyTargets = pendingLongTargets.map((target, index) => ({
   ...target,

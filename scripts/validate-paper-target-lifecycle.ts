@@ -65,6 +65,13 @@ try {
   ))[0];
   add("Migration 102", Boolean(retainedProductionPolicyMigration), "V1 production runner-policy retention migration is recorded.", "Migration 102 is missing from schema_migrations.", retainedProductionPolicyMigration);
 
+  const lifecycleRepairMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '103_paper_lifecycle_integrity_repair.sql'`
+  ))[0];
+  add("Migration 103", Boolean(lifecycleRepairMigration), "Paper lifecycle integrity repair migration is recorded.", "Migration 103 is missing from schema_migrations.", lifecycleRepairMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];

@@ -135,6 +135,8 @@ echo "Running the read-only paper-management release gate before schema changes"
 run_http_canary quant 18000 8000 /health
 run_http_canary api 17073 7073 /api/health
 run_http_canary web 13000 3000 /
+echo "Validating migrated paper lifecycle before replacing live application containers"
+run_validation validate:paper-lifecycle
 
 echo "[6/9] Starting production services"
 ROLLOUT_STARTED=true
@@ -164,7 +166,6 @@ done
 echo "[8/9] Verifying deterministic target sequences and PostgreSQL lifecycle integrity"
 run_validation calendar:sync
 run_validation verify:modules
-run_validation validate:paper-lifecycle
 run_validation validate:mvp-runtime
 run_validation validate:signal-policy
 run_validation validate:production-observation

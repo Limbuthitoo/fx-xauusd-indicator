@@ -3,6 +3,7 @@ import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate } from "../../infrastructure/time.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
+import { shouldStartPostStopObservation } from "./paper-target-plan.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
   app.get("/api/trades/paper", async (request) => {
@@ -834,6 +835,7 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
     if (!exit) continue;
     const settlement = await paperTradeSettlement(trade, exit.price);
     const { resultR, outcome } = settlement;
+    const observeAfterStop = shouldStartPostStopObservation(exit.reason, exit.timestampUtc, trade.signal_window_end_at);
     await query(
       `UPDATE trades SET
          actual_exit = $2,
@@ -845,7 +847,7 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
          shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
          AND outcome = 'ACTIVE'`,
-      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, exit.reason === "STOP", trade.signal_window_end_at]
+      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, observeAfterStop, trade.signal_window_end_at]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
