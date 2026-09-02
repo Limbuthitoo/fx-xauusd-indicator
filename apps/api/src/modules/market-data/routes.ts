@@ -31,6 +31,7 @@ import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetManagementSummary, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
 import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "../trades/paper-target-plan.js";
+import { evaluateHorizontalBreakoutShadow } from "./horizontal-breakout-shadow.js";
 
 type TwelveDataTimeSeriesResponse = {
   status?: "ok" | "error";
@@ -97,6 +98,16 @@ type AutoRunState = {
   lastLearningResult: Record<string, unknown> | null;
   reason: string;
 };
+
+let horizontalShadowBackfillInFlight: Promise<any> | null = null;
+let horizontalShadowBackfillState: {
+  tenantId: string | null;
+  status: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED";
+  startedAt: string | null;
+  completedAt: string | null;
+  result: any;
+  error: string | null;
+} = { tenantId: null, status: "IDLE", startedAt: null, completedAt: null, result: null, error: null };
 
 type TenantAutoRunState = AutoRunState & {
   tenantId: string;
@@ -237,6 +248,90 @@ export async function marketDataRoutes(app: FastifyInstance) {
       [auth.tenantId, queryParams.symbol ?? null, limit]
     );
     return rows.map(rangeRowView);
+  });
+
+  app.get("/api/ranges/horizontal-breakout-shadows", async (request) => {
+    const queryParams = request.query as { moduleCode?: string; symbol?: string; limit?: string };
+    const moduleCode = queryParams.moduleCode ?? "orb_max_options";
+    const auth = await requireTenantModule(request, moduleCode);
+    const limit = Math.min(Math.max(Number(queryParams.limit ?? 100), 1), 500);
+    const [profiles, observations, candidateAudits] = await Promise.all([
+      query(
+        `SELECT *
+         FROM module1_horizontal_breakout_shadow_calibration
+         WHERE tenant_id = $1
+         ORDER BY calibration_eligible DESC, completed_breakouts DESC, direction, cohort`,
+        [auth.tenantId]
+      ),
+      query(
+        `SELECT *
+         FROM module1_horizontal_breakout_shadows
+         WHERE tenant_id = $1
+           AND symbol = COALESCE($2, symbol)
+         ORDER BY breakout_at DESC
+         LIMIT $3`,
+        [auth.tenantId, queryParams.symbol ?? null, limit]
+      ),
+      query(
+        `SELECT *
+         FROM module1_horizontal_candidate_audits
+         WHERE tenant_id = $1
+           AND symbol = COALESCE($2, symbol)
+         ORDER BY evaluated_at DESC
+         LIMIT $3`,
+        [auth.tenantId, queryParams.symbol ?? null, limit]
+      )
+    ]);
+    return {
+      mode: "OBSERVE_ONLY",
+      minimumCompletedBreakouts: 30,
+      productionEffects: false,
+      backfill: horizontalShadowBackfillState.tenantId === auth.tenantId
+        ? horizontalShadowBackfillState
+        : { status: "IDLE", startedAt: null, completedAt: null, result: null, error: null },
+      profiles: profiles.rows,
+      observations: observations.rows,
+      candidateAudits: candidateAudits.rows
+    };
+  });
+
+  app.post("/api/ranges/horizontal-breakout-shadows/backfill", async (request) => {
+    const auth = requireAdmin(request);
+    if (!auth.tenantId) throw Object.assign(new Error("Tenant admin account required."), { statusCode: 403 });
+    const body = (request.body ?? {}) as { days?: number; sessionLimit?: number };
+    if (horizontalShadowBackfillInFlight) {
+      throw Object.assign(new Error("A horizontal breakout shadow backfill is already running."), { statusCode: 409 });
+    }
+    horizontalShadowBackfillState = {
+      tenantId: auth.tenantId,
+      status: "RUNNING",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      result: null,
+      error: null
+    };
+    horizontalShadowBackfillInFlight = backfillModule1HorizontalBreakoutShadows({
+      tenantId: auth.tenantId,
+      days: Math.min(Math.max(Number(body.days ?? 14), 1), 90),
+      sessionLimit: Math.min(Math.max(Number(body.sessionLimit ?? 20), 1), 50)
+    })
+      .then((result) => {
+        horizontalShadowBackfillState = { ...horizontalShadowBackfillState, status: "COMPLETED", completedAt: new Date().toISOString(), result };
+        return result;
+      })
+      .catch((error) => {
+        horizontalShadowBackfillState = {
+          ...horizontalShadowBackfillState,
+          status: "FAILED",
+          completedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error)
+        };
+        return null;
+      })
+      .finally(() => {
+        horizontalShadowBackfillInFlight = null;
+      });
+    return { accepted: true, backfill: horizontalShadowBackfillState };
   });
 
   app.get("/api/ranges/:id", async (request) => {
@@ -5669,6 +5764,21 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     ]
   );
   await persistGenericRangeEngineEvidence(session, saved.rows[0], rangeEngineMetadata, currentCandle, previousRows.map(toCandle));
+  await observeModule1HorizontalBreakouts(session, saved.rows[0], rangeEngineMetadata, currentCandle).catch(async (error) => {
+    await recordOperationalEvent({
+      severity: "WARN",
+      category: "WORKER",
+      eventType: "HORIZONTAL_SHADOW_OBSERVER_FAILED",
+      source: "module1-horizontal-breakout-shadow",
+      tenantId: session.tenant_id,
+      message: "Horizontal breakout shadow observation failed open; production setup processing continued.",
+      metadata: {
+        setupCandidateId: saved.rows[0].id,
+        candleTimestamp: currentCandle.timestampUtc,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+  });
   for (const evaluation of decision.evaluations) {
     await query(
       `INSERT INTO setup_rule_evaluations (
@@ -5850,12 +5960,14 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
       observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL",
       signalMode: horizontalSignalMode,
       range: horizontalRange,
+      candidateRange: horizontalResult.candidateRange ?? null,
       lifecycle: horizontalLifecycle,
       breakout: horizontalBreakout,
       falseBreakout: horizontalFalseBreakout,
       retest: horizontalRetest,
       conflict: horizontalConflict,
       decision: horizontalDecision,
+      evidence: horizontalResult.candidateRange ? null : horizontalResult.evidence,
       failures: horizontalResult.failures,
       warnings: horizontalResult.warnings
     }
@@ -6154,6 +6266,343 @@ async function persistGenericRangeEngineEvidence(session: any, setup: any, metad
       emitRangeEvent("range.setup.blocked", range, activeDecision?.reason ?? setup.final_reason ?? "Range setup blocked.");
     }
   }
+}
+
+async function observeModule1HorizontalBreakouts(session: any, setup: any, metadata: any, currentCandle: Candle) {
+  const horizontal = metadata?.horizontal;
+  await query(
+    `INSERT INTO module1_horizontal_candidate_audits (
+       tenant_id, session_id, strategy_version_id, setup_candidate_id, symbol, evaluated_at,
+       detector_status, structure_classification, range_id, evidence_json, failures_json
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb)
+     ON CONFLICT (tenant_id, session_id, evaluated_at) DO UPDATE SET
+       setup_candidate_id = EXCLUDED.setup_candidate_id,
+       detector_status = EXCLUDED.detector_status,
+       structure_classification = EXCLUDED.structure_classification,
+       range_id = EXCLUDED.range_id,
+       evidence_json = EXCLUDED.evidence_json,
+       failures_json = EXCLUDED.failures_json`,
+    [
+      session.tenant_id,
+      session.id,
+      session.strategy_version_id,
+      setup.id,
+      session.symbol,
+      currentCandle.timestampUtc,
+      horizontal?.status ?? "DISABLED",
+      horizontal?.range?.sourceEvidence?.structureClassification
+        ?? horizontal?.candidateRange?.sourceEvidence?.structureClassification
+        ?? horizontal?.evidence?.structureClassification
+        ?? null,
+      horizontal?.range?.id ?? null,
+      JSON.stringify(horizontal?.range?.sourceEvidence ?? horizontal?.candidateRange?.sourceEvidence ?? horizontal?.evidence ?? {}),
+      JSON.stringify(horizontal?.failures ?? [])
+    ]
+  );
+
+  await query(
+    `UPDATE module1_horizontal_breakout_shadows
+     SET status = 'SESSION_EXPIRED',
+         terminal_reason = 'SESSION_END',
+         completed_at = observation_until,
+         updated_at = now()
+     WHERE tenant_id = $1
+       AND symbol = $2
+       AND completed_at IS NULL
+       AND observation_until < $3::timestamptz`,
+    [session.tenant_id, session.symbol, currentCandle.timestampUtc]
+  );
+
+  const active = await query(
+    `SELECT *
+     FROM module1_horizontal_breakout_shadows
+     WHERE tenant_id = $1
+       AND symbol = $2
+       AND completed_at IS NULL
+       AND breakout_at < $3::timestamptz
+       AND observation_until >= $3::timestamptz
+     ORDER BY breakout_at ASC`,
+    [session.tenant_id, session.symbol, currentCandle.timestampUtc]
+  );
+  for (const row of active.rows as any[]) {
+    const progress = evaluateHorizontalBreakoutShadow(
+      {
+        direction: row.direction,
+        entry: Number(row.entry_price),
+        stop: Number(row.initial_stop_price),
+        tp1: Number(row.tp1_price),
+        tp2: Number(row.tp2_price),
+        tp3: Number(row.tp3_price),
+        maxFavorableExcursionR: Number(row.max_favorable_excursion_r ?? 0),
+        maxAdverseExcursionR: Number(row.max_adverse_excursion_r ?? 0),
+        tp1HitAt: row.tp1_hit_at,
+        tp2HitAt: row.tp2_hit_at,
+        tp3HitAt: row.tp3_hit_at
+      },
+      currentCandle
+    );
+    await query(
+      `UPDATE module1_horizontal_breakout_shadows
+       SET status = $2,
+           completed_at = CASE WHEN $3 THEN $4::timestamptz ELSE completed_at END,
+           terminal_reason = COALESCE($5, terminal_reason),
+           max_favorable_price = CASE
+             WHEN max_favorable_price IS NULL THEN $6
+             WHEN direction = 'LONG' THEN GREATEST(max_favorable_price, $6)
+             ELSE LEAST(max_favorable_price, $6) END,
+           max_adverse_price = CASE
+             WHEN max_adverse_price IS NULL THEN $7
+             WHEN direction = 'LONG' THEN LEAST(max_adverse_price, $7)
+             ELSE GREATEST(max_adverse_price, $7) END,
+           max_favorable_excursion_r = GREATEST(max_favorable_excursion_r, $8),
+           max_adverse_excursion_r = GREATEST(max_adverse_excursion_r, $9),
+           tp1_hit_at = COALESCE(tp1_hit_at, $10::timestamptz),
+           tp2_hit_at = COALESCE(tp2_hit_at, $11::timestamptz),
+           tp3_hit_at = COALESCE(tp3_hit_at, $12::timestamptz),
+           stop_hit_at = COALESCE(stop_hit_at, $13::timestamptz),
+           updated_at = now()
+       WHERE id = $1`,
+      [
+        row.id,
+        progress.status,
+        progress.completed,
+        currentCandle.timestampUtc,
+        progress.terminalReason,
+        numericParam(progress.maxFavorablePrice, 5),
+        numericParam(progress.maxAdversePrice, 5),
+        numericParam(progress.maxFavorableExcursionR, 6),
+        numericParam(progress.maxAdverseExcursionR, 6),
+        progress.tp1HitAt,
+        progress.tp2HitAt,
+        progress.tp3HitAt,
+        progress.stopHitAt
+      ]
+    );
+  }
+
+  const range = horizontal?.range ?? horizontal?.candidateRange;
+  const breakout = horizontal?.range
+    ? horizontal?.breakout
+    : range
+      ? evaluateRangeBreakout(range, currentCandle, {
+          ...RANGE_BREAKOUT_PROFILES.HORIZONTAL_CONSOLIDATION,
+          atr: Number(metadata?.atr5m ?? range.width)
+        } as any)
+      : null;
+  const breakoutCandle = horizontal?.range ? horizontal?.lifecycle?.breakoutCandle : breakout?.confirmed ? currentCandle : null;
+  if (!range || !breakout?.confirmed || !breakout?.direction || !breakoutCandle) return;
+  const breakoutAt = new Date(breakoutCandle.timestampUtc).toISOString();
+  if (new Date(breakoutAt).getTime() >= new Date(session.signal_window_end_at).getTime()) return;
+  const direction: Direction = breakout.direction;
+  const entry = Number(breakoutCandle.close);
+  const atr = Number(metadata?.atr5m ?? range.width);
+  const structuralInvalidation = direction === "LONG"
+    ? Math.min(Number(breakoutCandle.low), Number(range.upperZone?.lowerBound ?? range.high))
+    : Math.max(Number(breakoutCandle.high), Number(range.lowerZone?.upperBound ?? range.low));
+  const stopPlan = buildLiquidityAwareStop({
+    direction,
+    entry,
+    structuralInvalidation,
+    atr,
+    spread: breakoutCandle.spread,
+    minimumStopAtr: metadata?.minimumStopAtr,
+    liquidityBufferAtr: metadata?.liquidityBufferAtr
+  });
+  const risk = Math.abs(entry - stopPlan.stop);
+  if (!Number.isFinite(risk) || risk <= 0) return;
+  const productionReady = String(setup.scenario ?? "").startsWith("HORIZONTAL_RANGE_")
+    && ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(setup.status));
+  const rejectionStage = productionReady ? null : horizontal?.range ? horizontalShadowRejectionStage(horizontal) : "RANGE_QUALITY_REJECTED";
+  const rejectionReason = productionReady
+    ? null
+    : horizontal?.range
+      ? horizontal?.decision?.reason ?? setup.final_reason ?? "Production horizontal setup was not ready."
+      : (horizontal?.failures ?? []).map((failure: any) => `${failure.ruleCode}: ${failure.actualValue} requires ${failure.requiredValue}`).join("; ")
+        || "The closest horizontal range candidate did not pass production validation.";
+  const target = (multiple: number) => direction === "LONG" ? entry + risk * multiple : entry - risk * multiple;
+  await query(
+    `INSERT INTO module1_horizontal_breakout_shadows (
+       tenant_id, session_id, strategy_version_id, setup_candidate_id, range_id, candidate_range_key, symbol,
+       direction, status, breakout_at, observation_until, entry_price, initial_stop_price,
+       initial_risk_distance, tp1_price, tp2_price, tp3_price, production_setup_ready,
+       production_decision, production_reason, rejection_stage, rejection_reason,
+       range_quality_score, breakout_metrics_json, range_evidence_json
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'ACTIVE',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23::jsonb,$24::jsonb)
+     ON CONFLICT (tenant_id, candidate_range_key, breakout_at, direction, entry_model) DO UPDATE SET
+       setup_candidate_id = CASE WHEN EXCLUDED.production_setup_ready THEN EXCLUDED.setup_candidate_id ELSE module1_horizontal_breakout_shadows.setup_candidate_id END,
+       production_setup_ready = module1_horizontal_breakout_shadows.production_setup_ready OR EXCLUDED.production_setup_ready,
+       production_decision = EXCLUDED.production_decision,
+       production_reason = EXCLUDED.production_reason,
+       rejection_stage = CASE WHEN EXCLUDED.production_setup_ready THEN NULL ELSE module1_horizontal_breakout_shadows.rejection_stage END,
+       rejection_reason = CASE WHEN EXCLUDED.production_setup_ready THEN NULL ELSE module1_horizontal_breakout_shadows.rejection_reason END,
+       updated_at = now()`,
+    [
+      session.tenant_id,
+      session.id,
+      session.strategy_version_id,
+      setup.id,
+      horizontal?.range?.id ?? null,
+      range.id,
+      session.symbol,
+      direction,
+      breakoutAt,
+      session.signal_window_end_at,
+      numericParam(entry, 5),
+      numericParam(stopPlan.stop, 5),
+      numericParam(risk, 5),
+      numericParam(target(1), 5),
+      numericParam(target(1.5), 5),
+      numericParam(target(2), 5),
+      productionReady,
+      horizontal?.decision?.status ?? "RANGE_QUALITY_REJECTED",
+      horizontal?.decision?.reason ?? rejectionReason,
+      rejectionStage,
+      rejectionReason,
+      numericParam(range.qualityScore, 2),
+      JSON.stringify(breakout),
+      JSON.stringify(range.sourceEvidence ?? {})
+    ]
+  );
+}
+
+function horizontalShadowRejectionStage(horizontal: any) {
+  if (horizontal?.falseBreakout?.falseBreakout) return "FALSE_BREAKOUT";
+  if (horizontal?.breakout?.directEntryBlocked) return "OVEREXTENDED";
+  if (horizontal?.retest?.status === "WAITING") return "RETEST_REQUIRED";
+  if (horizontal?.retest?.status === "EXPIRED") return "RETEST_EXPIRED";
+  if (horizontal?.retest?.invalidated) return "RETEST_INVALIDATED";
+  if (horizontal?.conflict?.status === "CONFLICT") return "RANGE_CONFLICT";
+  return String(horizontal?.decision?.status ?? "PRODUCTION_FILTER");
+}
+
+async function backfillModule1HorizontalBreakoutShadows(input: { tenantId: string; days: number; sessionLimit: number }) {
+  const sessions = await query(
+    `SELECT ts.*, sv.configuration_json
+     FROM trading_sessions ts
+     JOIN strategy_versions sv ON sv.id = ts.strategy_version_id
+     WHERE ts.tenant_id = $1
+       AND ts.module_code = 'orb_max_options'
+       AND ts.session_preset IN ('NEW_YORK_ORB', 'NY_0915', 'NY_0930')
+       AND ts.session_date >= (CURRENT_DATE - $2::int)
+       AND ts.signal_window_end_at < now()
+     ORDER BY ts.session_date DESC, ts.session_start_at DESC
+     LIMIT $3`,
+    [input.tenantId, input.days, input.sessionLimit]
+  );
+  let candlesEvaluated = 0;
+  let sessionsEvaluated = 0;
+  const failures: Array<{ sessionId: string; sessionDate: string; reason: string }> = [];
+
+  for (const session of sessions.rows as any[]) {
+    try {
+      const [rangeResult, candleResult, setupResult] = await Promise.all([
+        query("SELECT * FROM opening_ranges WHERE session_id = $1 AND status = 'LOCKED' LIMIT 1", [session.id]),
+        query(
+          `SELECT timestamp_utc, open, high, low, close, volume, spread
+           FROM candles
+           WHERE symbol = $1
+             AND timeframe_minutes = 5
+             AND timestamp_utc >= $2
+             AND timestamp_utc <= $3
+           ORDER BY timestamp_utc ASC`,
+          [session.symbol, session.opening_range_end_at, session.signal_window_end_at]
+        ),
+        query(
+          `SELECT id, scenario, direction, status, final_reason, detected_at
+           FROM setup_candidates
+           WHERE tenant_id = $1
+             AND session_id = $2
+             AND module_code = 'orb_max_options'`,
+          [input.tenantId, session.id]
+        )
+      ]);
+      const openingRange = rangeResult.rows[0] as any;
+      if (!openingRange) {
+        failures.push({ sessionId: session.id, sessionDate: String(session.session_date), reason: "Locked opening range is missing." });
+        continue;
+      }
+      const configuration = await getTenantOrbStrategyConfiguration(input.tenantId, session.configuration_json);
+      const backfillRange = {
+        ...openingRange,
+        module1RangeLabel: orbSessionLabel(session.session_preset),
+        module1RangeShortLabel: orbSessionShortLabel(session.session_preset),
+        module1RangeSessionPreset: session.session_preset,
+        module1RangeSessionDate: session.session_date,
+        module1RangeSessionStartAt: session.session_start_at,
+        module1RangeOpeningRangeEndAt: session.opening_range_end_at,
+        module1RangeCalculated: true
+      };
+      const setupByTimestamp = new Map(
+        (setupResult.rows as any[]).map((row) => [new Date(row.detected_at).toISOString(), row])
+      );
+      const previous: Candle[] = [];
+      for (const candleRow of candleResult.rows as any[]) {
+        const currentCandle = toCandle(candleRow);
+        const metadata = buildModule1RangeEngineMetadata(session, backfillRange, currentCandle, previous, configuration);
+        if (metadata.horizontal?.range) {
+          await persistTradingRange(input.tenantId, metadata.horizontal.range);
+          await persistTradingRangeEvidence(input.tenantId, metadata.horizontal.range);
+        }
+        const historicalSetup = setupByTimestamp.get(new Date(currentCandle.timestampUtc).toISOString()) ?? {
+          id: null,
+          scenario: "HORIZONTAL_SHADOW_BACKFILL",
+          direction: null,
+          status: "OBSERVE_ONLY",
+          final_reason: "Historical horizontal breakout shadow replay."
+        };
+        await observeModule1HorizontalBreakouts(session, historicalSetup, metadata, currentCandle);
+        previous.push(currentCandle);
+        candlesEvaluated += 1;
+      }
+      await query(
+        `UPDATE module1_horizontal_breakout_shadows
+         SET status = 'SESSION_EXPIRED', terminal_reason = 'SESSION_END',
+             completed_at = observation_until, updated_at = now()
+         WHERE tenant_id = $1 AND session_id = $2 AND completed_at IS NULL
+           AND observation_until <= now()`,
+        [input.tenantId, session.id]
+      );
+      sessionsEvaluated += 1;
+    } catch (error) {
+      failures.push({
+        sessionId: session.id,
+        sessionDate: String(session.session_date),
+        reason: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  const totals = await query(
+    `SELECT
+       count(*)::int AS observations,
+       count(*) FILTER (WHERE completed_at IS NOT NULL)::int AS completed,
+       count(*) FILTER (WHERE production_setup_ready)::int AS production_controls,
+       count(*) FILTER (WHERE NOT production_setup_ready)::int AS rejected_opportunities,
+       count(*) FILTER (WHERE tp1_hit_at IS NOT NULL)::int AS tp1_hits,
+       count(*) FILTER (WHERE tp2_hit_at IS NOT NULL)::int AS tp2_hits,
+       count(*) FILTER (WHERE tp3_hit_at IS NOT NULL)::int AS tp3_hits
+     FROM module1_horizontal_breakout_shadows
+     WHERE tenant_id = $1`,
+    [input.tenantId]
+  );
+  await recordOperationalEvent({
+    severity: failures.length > 0 ? "WARN" : "INFO",
+    category: "SYSTEM",
+    eventType: "HORIZONTAL_SHADOW_BACKFILL_COMPLETED",
+    source: "module1-horizontal-breakout-shadow",
+    tenantId: input.tenantId,
+    message: `Horizontal shadow backfill evaluated ${sessionsEvaluated} session(s) and ${candlesEvaluated} candle(s).`,
+    metadata: { days: input.days, sessionLimit: input.sessionLimit, sessionsEvaluated, candlesEvaluated, failures: failures.length }
+  });
+  return {
+    mode: "OBSERVE_ONLY",
+    idempotent: true,
+    sessionsMatched: sessions.rows.length,
+    sessionsEvaluated,
+    candlesEvaluated,
+    failures,
+    totals: totals.rows[0] ?? {}
+  };
 }
 
 async function persistTradingRange(tenantId: string, range: any) {

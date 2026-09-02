@@ -137,6 +137,7 @@ run_http_canary api 17073 7073 /api/health
 run_http_canary web 13000 3000 /
 echo "Validating migrated paper lifecycle before replacing live application containers"
 run_validation validate:paper-lifecycle
+run_validation validate:horizontal-shadow
 
 echo "[6/9] Starting production services"
 ROLLOUT_STARTED=true

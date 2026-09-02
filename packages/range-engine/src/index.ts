@@ -113,6 +113,7 @@ export interface RangeDetectionResult {
   detectorCode: string;
   status: "NONE" | "FORMING" | "CANDIDATE" | "VALID" | "INVALID";
   range?: TradingRange;
+  candidateRange?: TradingRange;
   evidence: RangeEvidence;
   failures: RuleEvaluation[];
   warnings: RuleEvaluation[];
@@ -357,8 +358,9 @@ export class HorizontalRangeDetector implements RangeDetector {
     if (!this.config.enabled) return emptyResult(this.code, "NONE", "Horizontal range detector is disabled.");
     const historyCandles = this.config.maximumRangeCandles + this.config.expireAfterCandles;
     const candles = context.candles5m.slice(-historyCandles);
-    const best = this.bestCandidate(context, candles);
-    if (!best) return rejectedHorizontalStructureResult(this.code, context, candles, this.config);
+    const candidates = this.bestCandidate(context, candles);
+    const best = candidates.valid;
+    if (!best) return rejectedHorizontalStructureResult(this.code, context, candles, this.config, candidates.near);
     return {
       detectorCode: this.code,
       status: "VALID",
@@ -382,19 +384,30 @@ export class HorizontalRangeDetector implements RangeDetector {
 
   private bestCandidate(context: RangeDetectionContext, candles: Candle[]) {
     const earliestEnd = Math.max(this.config.minimumRangeCandles, candles.length - this.config.expireAfterCandles);
+    let nearest: TradingRange | null = null;
+    let nearestFailureCount = Number.POSITIVE_INFINITY;
     for (let end = candles.length; end >= earliestEnd; end -= 1) {
       let bestAtEnd: TradingRange | null = null;
       for (let size = this.config.minimumRangeCandles; size <= Math.min(this.config.maximumRangeCandles, end); size += 1) {
         const window = candles.slice(end - size, end);
         const candidate = this.candidate(context, window);
         if (!candidate) continue;
+        const failureCount = candidate.sourceEvidence.validationRules.filter((item) => item.status === "FAIL").length;
+        if (
+          failureCount < nearestFailureCount
+          || (failureCount === nearestFailureCount && Number(candidate.qualityScore ?? 0) > Number(nearest?.qualityScore ?? 0))
+        ) {
+          nearest = candidate;
+          nearestFailureCount = failureCount;
+        }
+        if (failureCount > 0) continue;
         if (!bestAtEnd || Number(candidate.qualityScore ?? 0) > Number(bestAtEnd.qualityScore ?? 0) || (candidate.qualityScore === bestAtEnd.qualityScore && size > bestAtEnd.sourceEvidence.candleIds.length)) {
           bestAtEnd = candidate;
         }
       }
-      if (bestAtEnd) return bestAtEnd;
+      if (bestAtEnd) return { valid: bestAtEnd, near: nearest };
     }
-    return null;
+    return { valid: null, near: nearest };
   }
 
   private candidate(context: RangeDetectionContext, candles: Candle[]) {
@@ -452,13 +465,13 @@ export class HorizontalRangeDetector implements RangeDetector {
     ];
     const qualityScore = horizontalQualityScore({ upperTouchCount, lowerTouchCount, containmentRatio, efficiencyRatio, midpointCrossCount, balancedMidpointRatio, upperSlopeAtrPerBar, lowerSlopeAtrPerBar, widthAtr, candleCount: candles.length, config: this.config });
     validationRules.push(rule("HORIZONTAL_QUALITY_SCORE", "Horizontal range quality score", qualityScore >= this.config.minimumQualityScore ? "PASS" : "FAIL", true, qualityScore, this.config.minimumQualityScore));
-    if (validationRules.some((item) => item.status !== "PASS")) return null;
+    const valid = validationRules.every((item) => item.status === "PASS");
     const formationEndedAt = candles.at(-1)!.timestampUtc;
     return tradingRangeFromBounds({
       context,
       source: "HORIZONTAL_CONSOLIDATION",
       formationMethod: "PRICE_BASED",
-      state: this.config.lockAfterValidation ? "LOCKED" : "VALID",
+      state: valid ? (this.config.lockAfterValidation ? "LOCKED" : "VALID") : "CANDIDATE",
       high,
       low,
       startedAt: candles[0].timestampUtc,
@@ -481,7 +494,13 @@ export class HorizontalRangeDetector implements RangeDetector {
         acceptedBreakoutCount,
         upperSlopeAtrPerBar,
         lowerSlopeAtrPerBar,
-        structureClassification: "HORIZONTAL_CONSOLIDATION",
+        structureClassification: valid
+          ? "HORIZONTAL_CONSOLIDATION"
+          : classifyRejectedStructure(
+              signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.high), atr),
+              signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.low), atr),
+              Math.max(this.config.maximumBoundarySlopeAtrPerBar, 0.02)
+            ),
         validationRules
       }
     });
@@ -914,8 +933,32 @@ function emptyResult(detectorCode: string, status: RangeDetectionResult["status"
   };
 }
 
-function rejectedHorizontalStructureResult(detectorCode: string, context: RangeDetectionContext, candles: Candle[], config: HorizontalRangeConfig): RangeDetectionResult {
+function rejectedHorizontalStructureResult(
+  detectorCode: string,
+  context: RangeDetectionContext,
+  candles: Candle[],
+  config: HorizontalRangeConfig,
+  nearCandidate: TradingRange | null = null
+): RangeDetectionResult {
   if (candles.length < config.minimumRangeCandles) return emptyResult(detectorCode, "NONE", "No valid horizontal consolidation range detected.");
+  if (nearCandidate) {
+    const failures = nearCandidate.sourceEvidence.validationRules.filter((item) => item.status === "FAIL");
+    return {
+      detectorCode,
+      status: "NONE",
+      candidateRange: nearCandidate,
+      evidence: nearCandidate.sourceEvidence,
+      failures,
+      warnings: [rule(
+        "HORIZONTAL_NEAR_CANDIDATE_ONLY",
+        `Best horizontal candidate failed ${failures.length} mandatory rule(s).`,
+        "WAITING",
+        false,
+        failures.length,
+        0
+      )]
+    };
+  }
   const atr = Math.max(Number(context.atr5m ?? medianTrueRange(candles) ?? 0), 0.00001);
   const highSlope = signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.high), atr);
   const lowSlope = signedBoundarySlopeAtrPerBar(candles.map((candle) => candle.low), atr);

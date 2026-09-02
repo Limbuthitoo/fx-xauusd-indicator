@@ -1871,6 +1871,43 @@ button:hover,
   min-width: 0;
 }
 
+.observer-toolbar {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) auto auto minmax(220px, 1.5fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.observer-toolbar label {
+  display: grid;
+  gap: 5px;
+  color: #9ba8a0;
+  font-size: 12px;
+}
+
+.observer-toolbar select,
+.observer-toolbar button {
+  min-height: 38px;
+}
+
+.observer-status {
+  min-width: 0;
+  padding-bottom: 9px;
+  color: #aeb8b2;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  .observer-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .observer-status {
+    grid-column: 1 / -1;
+  }
+}
+
 .inline-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 150px;

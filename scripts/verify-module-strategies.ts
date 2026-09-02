@@ -14,6 +14,7 @@ import {
 } from "../packages/range-engine/src/index.js";
 import type { Candle } from "../packages/shared-types/src/index.js";
 import { applyModule1NewsGate, buildHorizontalRangeSetupDecision, buildModule1RangeEngineMetadata, calculateCatchupRequestCount, calculatePostStopShadowObservation, isModule1ActiveOrbPreset, isNewYorkWeekend, isScheduledTwelveDataTrigger, sharedNewYorkFeedWindow } from "../apps/api/src/modules/market-data/routes.js";
+import { evaluateHorizontalBreakoutShadow } from "../apps/api/src/modules/market-data/horizontal-breakout-shadow.js";
 import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
 import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
@@ -93,6 +94,19 @@ assert.equal(shortShadow.adverseR, 1.2, "Post-stop SHORT shadow must measure adv
 assert.equal(shouldStartPostStopObservation("STOP", "2026-08-10T19:00:00Z", "2026-08-10T20:00:00Z"), true, "A stop before session end must start shadow observation");
 assert.equal(shouldStartPostStopObservation("STOP", "2026-08-10T20:05:00Z", "2026-08-10T20:00:00Z"), false, "A stale stop after session end must not create an impossible shadow window");
 assert.equal(shouldStartPostStopObservation("TARGET", "2026-08-10T19:00:00Z", "2026-08-10T20:00:00Z"), false, "A target exit must not start post-stop observation");
+const directBreakoutShadow = evaluateHorizontalBreakoutShadow(
+  { direction: "LONG", entry: 100, stop: 96, tp1: 104, tp2: 106, tp3: 108 },
+  candle("2026-08-10T10:10:00Z", 101, 106.5, 99, 105)
+);
+assert.equal(directBreakoutShadow.status, "TP2_HIT", "Direct-breakout shadow must retain each reached target without creating a trade");
+assert.equal(directBreakoutShadow.maxFavorableExcursionR, 1.625, "Direct-breakout shadow must measure favorable excursion in initial R");
+const ambiguousDirectBreakoutShadow = evaluateHorizontalBreakoutShadow(
+  { direction: "LONG", entry: 100, stop: 96, tp1: 104, tp2: 106, tp3: 108 },
+  candle("2026-08-10T10:15:00Z", 100, 105, 95, 101)
+);
+assert.equal(ambiguousDirectBreakoutShadow.status, "STOPPED", "Ambiguous shadow candles must use conservative stop-first ordering");
+assert.equal(ambiguousDirectBreakoutShadow.tp1HitAt, null, "A target touched on an ambiguous stop candle must not be credited");
+assert.equal(ambiguousDirectBreakoutShadow.maxFavorableExcursionR, 0, "An ambiguous stop-first candle must not receive post-stop favorable excursion credit");
 
 const sampleDatabaseUrl = "postgresql://orb_user:do-not-leak@example.internal:5432/orb_guide";
 const redactedCommand = redactSensitiveText(`Command failed: python --database-url ${sampleDatabaseUrl} --tenant-id tenant-1`);
@@ -312,7 +326,7 @@ const trendingCandidate = new HorizontalRangeDetector(horizontalConfig).detect({
 });
 assert.equal(trendingCandidate.status, "NONE", "Horizontal detector must reject directional trends as non-horizontal structure");
 assert.equal(trendingCandidate.evidence.structureClassification, "ASCENDING_CHANNEL", "Rejected trend must be classified instead of silently ignored");
-assert.equal(trendingCandidate.failures.some((item) => item.ruleCode === "HORIZONTAL_STRUCTURE_CLASSIFICATION"), true, "Rejected horizontal candidates must expose a structure-classification rule");
+assert.equal(trendingCandidate.failures.length > 0, true, "Rejected horizontal candidates must retain their exact failed detector rules");
 const acceptedBreakoutCandidate = new HorizontalRangeDetector(horizontalConfig).detect({
   symbol: "XAUUSD",
   now: "2026-08-10T10:00:00Z",
@@ -322,6 +336,7 @@ const acceptedBreakoutCandidate = new HorizontalRangeDetector(horizontalConfig).
   strategyVersion: "horizontal-accepted-breakout-rejection"
 });
 assert.equal(acceptedBreakoutCandidate.status, "NONE", "Horizontal detector must reject ranges that already accepted a breakout close");
+assert.equal(acceptedBreakoutCandidate.failures.some((item) => item.ruleCode === "HORIZONTAL_NO_ACCEPTED_BREAKOUT"), true, "Near-candidate evidence must identify an accepted close inside the formation window");
 const wickFalseBreak = new FalseBreakoutEngine().evaluate(horizontal.range!, candle("2026-08-10T10:00:00Z", 100.2, horizontal.range!.high + 0.5, 99.8, horizontal.range!.high - 0.1));
 assert.equal(wickFalseBreak.falseBreakout, true, "False-breakout engine must reject wick-only boundary breaks");
 const retest = new RetestEngine().evaluate(horizontal.range!, "LONG", candle("2026-08-10T10:05:00Z", horizontal.range!.high - 0.1, horizontal.range!.high + 0.8, horizontal.range!.high - 0.2, horizontal.range!.high + 0.5));

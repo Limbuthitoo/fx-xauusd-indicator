@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
-import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
+import { ArrowLeft, ArrowUpDown, Bell, CheckCircle2, Clock, CreditCard, Database, Download, FileText, KeyRound, Layers, LineChart, Lock, LogOut, Plus, RefreshCw, Settings, ShieldCheck, Smartphone, Table2, Target, Trash2, UploadCloud, Users, XCircle } from "lucide-react";
 import { TwelveDataChart, type ChartIndicatorVisibility, type ChartPriceLine } from "./features/dashboard/TwelveDataChart";
 import { immutableModuleSignalPlan } from "./features/dashboard/signal-contract";
 import { API_BASE_URL, ApiError, api, apiWebSocketUrl, clearAuthToken, setAuthToken } from "./shared/api";
@@ -1417,6 +1417,7 @@ function App() {
             <DataAdminPanel state={state} refresh={refresh} runCacheBacktest={runCacheBacktest} clearLiveCache={clearLiveCache} clearTestSignals={clearTestSignals} />
             {selectedModuleCode === "orb_max_options" ? (
               <>
+                <HorizontalBreakoutObserverPanel />
                 <OrbDataReadinessPanel readiness={state.orbDataReadiness} onBackfill={runOrbBackfill} onBacktest={runCacheBacktest} />
                 <ModuleLaunchRehearsalPanel moduleName="Module 1" rehearsals={state.orbRehearsals} onRun={runOrbLaunchRehearsal} />
                 <OrbQAControlPanel onRunSuite={runOrbQaSuite} suite={orbQaSuite} />
@@ -7078,6 +7079,124 @@ function DataAdminPanel({ state, refresh, runCacheBacktest, clearLiveCache, clea
         <button onClick={() => runCacheBacktest().catch(() => undefined)}><LineChart size={16} />Backtest</button>
         <button onClick={() => clearLiveCache().catch(() => undefined)}><Trash2 size={16} />Clear Cache</button>
         <button onClick={() => clearTestSignals().catch(() => undefined)}><Trash2 size={16} />Clear Replay</button>
+      </div>
+    </Panel>
+  );
+}
+
+function HorizontalBreakoutObserverPanel() {
+  const [report, setReport] = useState<any>(null);
+  const [days, setDays] = useState(14);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("Loading observation evidence...");
+
+  async function load() {
+    setBusy(true);
+    try {
+      const next = await api<any>("/api/ranges/horizontal-breakout-shadows?moduleCode=orb_max_options&limit=100");
+      setReport(next);
+      setStatus(`Updated ${formatNepalTime(new Date().toISOString())}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Observer evidence could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function backfill() {
+    setBusy(true);
+    setStatus("Replaying completed New York sessions...");
+    try {
+      await api<any>("/api/ranges/horizontal-breakout-shadows/backfill", {
+        method: "POST",
+        body: JSON.stringify({ days, sessionLimit: 50 })
+      });
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3_000));
+        const next = await api<any>("/api/ranges/horizontal-breakout-shadows?moduleCode=orb_max_options&limit=100");
+        setReport(next);
+        if (next.backfill?.status === "RUNNING") {
+          setStatus(`Replay running since ${formatNepalTime(next.backfill.startedAt)}.`);
+          continue;
+        }
+        if (next.backfill?.status === "FAILED") throw new Error(next.backfill.error ?? "Historical replay failed.");
+        const result = next.backfill?.result ?? {};
+        setStatus(`${result.sessionsEvaluated ?? 0} sessions and ${result.candlesEvaluated ?? 0} candles evaluated.`);
+        return;
+      }
+      throw new Error("Historical replay is still running. Refresh this panel to check its status.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Historical replay failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch(() => undefined);
+  }, []);
+
+  const observations = report?.observations ?? [];
+  const completed = observations.filter((row: any) => row.completed_at).length;
+  const rejected = observations.filter((row: any) => !row.production_setup_ready).length;
+  const tp3Hits = observations.filter((row: any) => row.tp3_hit_at).length;
+  const profiles = report?.profiles ?? [];
+  return (
+    <Panel icon={<Target />} title="Horizontal Breakout Observer">
+      <Metric label="Mode" value={report?.mode ?? "OBSERVE_ONLY"} />
+      <Metric label="Breakouts" value={observations.length} />
+      <Metric label="Completed" value={completed} />
+      <Metric label="Rejected opportunities" value={rejected} />
+      <Metric label="TP3 reached" value={tp3Hits} />
+      <Metric label="Eligible cohorts" value={profiles.filter((row: any) => row.calibration_eligible).length} />
+      <div className="observer-toolbar">
+        <label>
+          Replay window
+          <select value={days} onChange={(event) => setDays(Number(event.target.value))} disabled={busy}>
+            <option value={7}>7 days</option>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+          </select>
+        </label>
+        <button onClick={() => backfill().catch(() => undefined)} disabled={busy}><Database size={16} />Replay Sessions</button>
+        <button onClick={() => load().catch(() => undefined)} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="observer-status">{status}</span>
+      </div>
+      <h3>Cohort Evidence</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Direction</th><th>Cohort</th><th>Complete</th><th>TP1</th><th>TP2</th><th>TP3</th><th>Stops</th><th>Avg MFE</th><th>Readiness</th></tr></thead>
+          <tbody>
+            {profiles.map((row: any) => (
+              <tr key={`${row.direction}-${row.cohort}`}>
+                <td>{row.direction}</td><td>{formatScenario(row.cohort)}</td><td>{row.completed_breakouts}/{row.observed_breakouts}</td>
+                <td>{row.tp1_hits}</td><td>{row.tp2_hits}</td><td>{row.tp3_hits}</td><td>{row.stop_hits}</td>
+                <td>{formatR(row.average_mfe_r)}</td><td><span className={`pill ${row.calibration_eligible ? "good" : "warn"}`}>{row.calibration_eligible ? "ELIGIBLE" : "COLLECTING"}</span></td>
+              </tr>
+            ))}
+            {profiles.length === 0 ? <tr><td colSpan={9}>No completed horizontal breakout observations.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+      <h3>Recent Shadow Opportunities</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Breakout</th><th>Side</th><th>Cohort</th><th>Status</th><th>Entry</th><th>Stop</th><th>MFE</th><th>MAE</th><th>Decision</th></tr></thead>
+          <tbody>
+            {observations.slice(0, 20).map((row: any) => (
+              <tr key={row.id}>
+                <td>{formatNepalTime(row.breakout_at)}</td><td>{row.direction}</td>
+                <td>{row.production_setup_ready ? "Production control" : formatScenario(row.rejection_stage)}</td>
+                <td>{formatScenario(row.status)}</td><td>{formatPriceValue(row.entry_price)}</td><td>{formatPriceValue(row.initial_stop_price)}</td>
+                <td>{formatR(row.max_favorable_excursion_r)}</td><td>{formatR(row.max_adverse_excursion_r)}</td>
+                <td title={row.rejection_reason ?? row.production_reason ?? ""}>{row.production_setup_ready ? "READY" : formatScenario(row.rejection_stage)}</td>
+              </tr>
+            ))}
+            {observations.length === 0 ? <tr><td colSpan={9}>No shadow opportunities recorded.</td></tr> : null}
+          </tbody>
+        </table>
       </div>
     </Panel>
   );
