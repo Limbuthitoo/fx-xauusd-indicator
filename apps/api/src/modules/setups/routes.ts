@@ -19,6 +19,7 @@ import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 import { sendTenantPush } from "../notifications/push.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets } from "../trades/paper-targets.js";
+import { PAPER_MANAGEMENT_POLICY_PRODUCTION } from "../trades/paper-target-plan.js";
 
 type ReplayCase = "BUY" | "SELL" | "RETEST" | "FAKEOUT" | "SWEEP_REVERSAL" | "OVEREXTENDED" | "NO_TRADE";
 type Module2ReplayCase =
@@ -3371,9 +3372,9 @@ async function openModule2ReplayPaperTrade(setup: any, tenantId: string | null) 
   const trade = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
-      commission, spread, slippage, opened_at, outcome
-    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE') RETURNING *`,
-    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price]
+      commission, spread, slippage, opened_at, outcome, management_policy
+    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE',$5) RETURNING *`,
+    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price, PAPER_MANAGEMENT_POLICY_PRODUCTION]
   );
   await ensurePaperTradeTargets(trade.rows[0].id);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1 AND tenant_id = $2", [setup.id, tenantId]);
@@ -3420,9 +3421,9 @@ async function openModuleReplayPaperTrade(setup: any, tenantId: string | null, e
   const trade = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
-      commission, spread, slippage, opened_at, outcome
-    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE') RETURNING *`,
-    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price]
+      commission, spread, slippage, opened_at, outcome, management_policy
+    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE',$5) RETURNING *`,
+    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price, PAPER_MANAGEMENT_POLICY_PRODUCTION]
   );
   await ensurePaperTradeTargets(trade.rows[0].id);
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1 AND tenant_id = $2", [setup.id, tenantId]);

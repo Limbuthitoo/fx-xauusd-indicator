@@ -3,6 +3,7 @@ import pg from "pg";
 import {
   PAPER_MANAGEMENT_POLICY_V1,
   PAPER_MANAGEMENT_POLICY_V2,
+  PAPER_MANAGEMENT_POLICY_V3,
   PAPER_MANAGEMENT_POLICY_PRODUCTION,
   PAPER_TP1_PROTECTION_BUFFER_R
 } from "../apps/api/src/modules/trades/paper-target-plan.js";
@@ -40,8 +41,9 @@ type ResearchPolicy = {
 };
 
 const RESEARCH_POLICIES: ResearchPolicy[] = [
-  { code: PAPER_MANAGEMENT_POLICY_V1, label: "TP1 exact breakeven (production)", mode: "TP1_BREAKEVEN" },
+  { code: PAPER_MANAGEMENT_POLICY_V1, label: "TP1 exact breakeven (legacy)", mode: "TP1_BREAKEVEN" },
   { code: PAPER_MANAGEMENT_POLICY_V2, label: "TP1 -0.25R buffer / TP2 breakeven", mode: "TP1_BUFFER", stopR: -PAPER_TP1_PROTECTION_BUFFER_R },
+  { code: PAPER_MANAGEMENT_POLICY_V3, label: "TP1 scale-out / TP2 breakeven (production)", mode: "TP2_BREAKEVEN" },
   { code: "TP1_PROFIT_LOCK_0_10R_RESEARCH", label: "TP1 +0.10R profit lock", mode: "TP1_PROFIT_LOCK", stopR: 0.1 },
   { code: "TP2_BREAKEVEN_RESEARCH", label: "Structural stop until TP2", mode: "TP2_BREAKEVEN" },
   { code: "TP1_CLOSE_CONFIRMED_BREAKEVEN_RESEARCH", label: "Breakeven after a close beyond TP1", mode: "TP1_CLOSE_CONFIRMED" },
@@ -73,10 +75,11 @@ async function comparePolicies() {
   const enforceGate = process.argv.includes("--gate");
   const migrations = (await client.query(
     `SELECT filename, applied_at FROM schema_migrations
-     WHERE filename IN ('101_professional_paper_runner_management.sql','102_retain_tp1_breakeven_production.sql')`
+     WHERE filename IN ('101_professional_paper_runner_management.sql','102_retain_tp1_breakeven_production.sql','105_tp2_breakeven_production.sql')`
   )).rows;
   const migration101 = migrations.find((row) => row.filename === "101_professional_paper_runner_management.sql") ?? null;
   const migration102 = migrations.find((row) => row.filename === "102_retain_tp1_breakeven_production.sql") ?? null;
+  const migration105 = migrations.find((row) => row.filename === "105_tp2_breakeven_production.sql") ?? null;
 
   const rows = await client.query(
     `SELECT t.id, sc.scenario, sc.direction, sc.symbol, t.opened_at,
@@ -170,18 +173,20 @@ async function comparePolicies() {
   const comparisons = replays.map((row) => ({
     trade: row.trade,
     v1: row.results[PAPER_MANAGEMENT_POLICY_V1],
-    v2: row.results[PAPER_MANAGEMENT_POLICY_V2]
+    v2: row.results[PAPER_MANAGEMENT_POLICY_V2],
+    v3: row.results[PAPER_MANAGEMENT_POLICY_V3]
   }));
 
   const v1 = summarize(comparisons.map((row) => row.v1));
   const v2 = summarize(comparisons.map((row) => row.v2));
-  const changed = comparisons.filter((row) => row.v1.resultR !== row.v2.resultR || row.v1.closeReason !== row.v2.closeReason);
-  const deltaTotalR = fixed(v2.totalR - v1.totalR);
-  const deltaAverageR = fixed(v2.averageR - v1.averageR);
-  const deltaDrawdownR = fixed(v2.maxDrawdownR - v1.maxDrawdownR);
+  const v3 = summarize(comparisons.map((row) => row.v3));
+  const changed = comparisons.filter((row) => row.v1.resultR !== row.v3.resultR || row.v1.closeReason !== row.v3.closeReason);
+  const deltaTotalR = fixed(v3.totalR - v1.totalR);
+  const deltaAverageR = fixed(v3.averageR - v1.averageR);
+  const deltaDrawdownR = fixed(v3.maxDrawdownR - v1.maxDrawdownR);
   const promotionEligible = comparisons.length >= minimumSample;
   const promotionPassed = promotionEligible && deltaTotalR >= 0 && deltaAverageR >= 0 && deltaDrawdownR <= 0.5;
-  const productionBaselineRetained = PAPER_MANAGEMENT_POLICY_PRODUCTION === PAPER_MANAGEMENT_POLICY_V1;
+  const productionPolicySelected = PAPER_MANAGEMENT_POLICY_PRODUCTION === PAPER_MANAGEMENT_POLICY_V3;
   const matrix = RESEARCH_POLICIES.map((policy) => {
     const metrics = summarize(replays.map((row) => row.results[policy.code]));
     return {
@@ -190,30 +195,32 @@ async function comparePolicies() {
       production: policy.code === PAPER_MANAGEMENT_POLICY_PRODUCTION,
       observationOnly: policy.code !== PAPER_MANAGEMENT_POLICY_PRODUCTION,
       ...metrics,
-      deltaVsProductionR: fixed(metrics.totalR - v1.totalR),
-      deltaVsProductionDrawdownR: fixed(metrics.maxDrawdownR - v1.maxDrawdownR)
+      deltaVsProductionR: fixed(metrics.totalR - v3.totalR),
+      deltaVsProductionDrawdownR: fixed(metrics.maxDrawdownR - v3.maxDrawdownR)
     };
   });
   const output = {
-    status: enforceGate ? (productionBaselineRetained ? "PASS" : "FAIL") : comparisons.length ? "PASS" : "WARN",
+    status: enforceGate ? (productionPolicySelected ? "PASS" : "FAIL") : comparisons.length ? "PASS" : "WARN",
     mode: "READ_ONLY_COUNTERFACTUAL",
     syntheticChecks: "PASS",
     productionPolicy: PAPER_MANAGEMENT_POLICY_PRODUCTION,
     migration101AppliedAt: migration101?.applied_at ?? null,
     migration102AppliedAt: migration102?.applied_at ?? null,
+    migration105AppliedAt: migration105?.applied_at ?? null,
     promotionGate: {
       enforced: enforceGate,
-      status: productionBaselineRetained ? "BASELINE_V1_RETAINED" : "FAIL",
+      status: productionPolicySelected ? "TP2_BREAKEVEN_V3_SELECTED" : "FAIL",
       minimumSample,
-      candidateV2Status: !promotionEligible ? "INSUFFICIENT_SAMPLE" : promotionPassed ? "PASS" : "REJECTED",
-      requirements: "The selected production policy must remain V1. Every alternative stays observation-only until an independent-signal candidate gate passes."
+      productionV3ReplayStatus: !promotionEligible ? "INSUFFICIENT_SAMPLE" : promotionPassed ? "PASS" : "REVIEW",
+      requirements: "Production must use V3: TP1 scales out only, and TP2 moves the remaining runner to exact breakeven."
     },
     assumptions: {
       execution: "5-minute OHLC; stop-first when a candle touches the active stop and a pending target",
       targetFractions: "persisted fractions, falling back to equal thirds",
       horizon: "New York signal window end; remaining size settles at the last candle close",
       v1: "TP1 moves the remaining runner to exact entry",
-      v2: `TP1 moves the runner to -${PAPER_TP1_PROTECTION_BUFFER_R}R; TP2 moves it to exact entry`
+      v2: `TP1 moves the runner to -${PAPER_TP1_PROTECTION_BUFFER_R}R; TP2 moves it to exact entry`,
+      v3: "TP1 retains the structural stop; TP2 moves the remaining runner to exact entry"
     },
     sample: {
       requestedDays: days,
@@ -225,15 +232,16 @@ async function comparePolicies() {
     },
     v1,
     v2,
+    v3,
     policyMatrix: matrix,
     delta: {
       totalR: deltaTotalR,
       averageR: deltaAverageR,
       maxDrawdownR: deltaDrawdownR,
-      tp3Conversions: v2.tp3 - v1.tp3,
+      tp3Conversions: v3.tp3 - v1.tp3,
       changedTrades: changed.length,
-      improvedTrades: changed.filter((row) => row.v2.resultR > row.v1.resultR).length,
-      worsenedTrades: changed.filter((row) => row.v2.resultR < row.v1.resultR).length
+      improvedTrades: changed.filter((row) => row.v3.resultR > row.v1.resultR).length,
+      worsenedTrades: changed.filter((row) => row.v3.resultR < row.v1.resultR).length
     },
     changedTrades: changed.slice(0, 50).map((row) => ({
       tradeId: row.trade.id,
@@ -241,11 +249,11 @@ async function comparePolicies() {
       scenario: row.trade.scenario,
       direction: row.trade.direction,
       v1: { resultR: row.v1.resultR, closeReason: row.v1.closeReason },
-      v2: { resultR: row.v2.resultR, closeReason: row.v2.closeReason }
+      v3: { resultR: row.v3.resultR, closeReason: row.v3.closeReason }
     }))
   };
   console.log(JSON.stringify(output, null, 2));
-  if (enforceGate && !productionBaselineRetained) process.exitCode = 1;
+  if (enforceGate && !productionPolicySelected) process.exitCode = 1;
 }
 
 async function diagnoseSetup() {
@@ -397,8 +405,10 @@ function runSyntheticAssertions() {
   ]);
   const baseV1 = replayPolicy(base, PAPER_MANAGEMENT_POLICY_V1);
   const baseV2 = replayPolicy(base, PAPER_MANAGEMENT_POLICY_V2);
+  const baseV3 = replayPolicy(base, PAPER_MANAGEMENT_POLICY_V3);
   assert(baseV1.closeReason.endsWith(":POST_TP1_STOP") && baseV1.resultR === 0.3333, "V1 TP1 breakeven path");
   assert(baseV2.closeReason === "TP3" && baseV2.resultR === 1.5, "V2 recovered runner path");
+  assert(baseV3.closeReason === "TP3" && baseV3.resultR === 1.5, "V3 retains the structural stop after TP1");
 
   const buffered = replayPolicy(syntheticTrade([
     candle("2026-09-02T14:35:00.000Z", 111, 101, 108),

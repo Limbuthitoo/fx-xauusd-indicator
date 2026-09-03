@@ -3,6 +3,7 @@ import {
   buildPaperTargetPlan,
   PAPER_MANAGEMENT_POLICY_PRODUCTION,
   PAPER_MANAGEMENT_POLICY_V2,
+  PAPER_MANAGEMENT_POLICY_V3,
   paperManagedStop,
   paperSettlement,
   paperTargetTouches,
@@ -89,6 +90,11 @@ export function paperTargetPayload(targets: PaperTarget[]) {
 
 export function paperTargetManagementSummary(targetNumber: number, managementPolicy: string) {
   if (targetNumber === 3) return "The final runner is complete.";
+  if (managementPolicy === PAPER_MANAGEMENT_POLICY_V3) {
+    return targetNumber === 1
+      ? "TP1 is booked. The runner keeps its structural stop until TP2."
+      : "The TP3 runner is now protected at breakeven.";
+  }
   if (managementPolicy === PAPER_MANAGEMENT_POLICY_V2) {
     return targetNumber === 1
       ? "The runner now has a 0.25R retest buffer; true breakeven activates after TP2."
@@ -165,10 +171,13 @@ export async function evaluatePaperTargetMilestones(trade: any, candle: any) {
       })]
     );
     const managed = await syncPaperTradeManagement(String(trade.id));
-    const v2Policy = managed?.management_policy === PAPER_MANAGEMENT_POLICY_V2;
+    const managementPolicy = managed?.management_policy;
+    const v2Policy = managementPolicy === PAPER_MANAGEMENT_POLICY_V2;
+    const v3Policy = managementPolicy === PAPER_MANAGEMENT_POLICY_V3;
     const protectionEvent = Number(hit.target_number) === 1 && v2Policy
       ? "PAPER_STOP_TO_PROTECTED_BUFFER"
-      : (Number(hit.target_number) === 1 && !v2Policy) || (Number(hit.target_number) === 2 && v2Policy)
+      : (Number(hit.target_number) === 1 && !v2Policy && !v3Policy)
+        || (Number(hit.target_number) === 2 && (v2Policy || v3Policy))
         ? "PAPER_STOP_TO_BREAKEVEN"
         : null;
     if (protectionEvent && managed) {
@@ -298,10 +307,16 @@ async function syncPaperTradeManagement(tradeId: string): Promise<any> {
     tp2Hit: current.tp2_hit_at != null,
     managementPolicy: current.management_policy
   });
-  const runnerProtectionAt = current.runner_protection_activated_at ?? current.tp1_hit_at;
+  const runnerProtectionAt = current.management_policy === PAPER_MANAGEMENT_POLICY_V2
+    ? current.runner_protection_activated_at ?? current.tp1_hit_at
+    : current.management_policy === PAPER_MANAGEMENT_POLICY_V3
+      ? null
+      : current.runner_protection_activated_at ?? current.tp1_hit_at;
   const breakevenAt = current.breakeven_activated_at ?? (
     management.stage === "BREAKEVEN"
-      ? current.management_policy === PAPER_MANAGEMENT_POLICY_V2 ? current.tp2_hit_at : current.tp1_hit_at
+      ? current.management_policy === PAPER_MANAGEMENT_POLICY_V2 || current.management_policy === PAPER_MANAGEMENT_POLICY_V3
+        ? current.tp2_hit_at
+        : current.tp1_hit_at
       : null
   );
   const managed = await query(

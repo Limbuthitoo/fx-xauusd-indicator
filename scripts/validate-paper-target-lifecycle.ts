@@ -72,6 +72,13 @@ try {
   ))[0];
   add("Migration 103", Boolean(lifecycleRepairMigration), "Paper lifecycle integrity repair migration is recorded.", "Migration 103 is missing from schema_migrations.", lifecycleRepairMigration);
 
+  const tp2BreakevenMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '105_tp2_breakeven_production.sql'`
+  ))[0];
+  add("Migration 105", Boolean(tp2BreakevenMigration), "TP2 breakeven production migration is recorded.", "Migration 105 is missing from schema_migrations.", tp2BreakevenMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -109,8 +116,8 @@ try {
        EXISTS (
          SELECT 1 FROM information_schema.columns
          WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'management_policy'
-           AND column_default LIKE '%EQUAL_THIRDS_TP1_BREAKEVEN_V1%'
-       ) AS production_policy_v1_default,
+           AND column_default LIKE '%TP1_SCALE_OUT_TP2_BREAKEVEN_V3%'
+       ) AS production_policy_v3_default,
        to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
   );
   const schemaRow = schema[0] ?? {};
@@ -287,9 +294,9 @@ try {
      WHERE t.outcome = 'ACTIVE'
        AND targets.tp1_hit
        AND (
-         t.runner_protection_activated_at IS NULL
-         OR (t.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND NOT targets.tp2_hit AND (
-           t.breakeven_activated_at IS NOT NULL
+         (t.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND NOT targets.tp2_hit AND (
+           t.runner_protection_activated_at IS NULL
+           OR t.breakeven_activated_at IS NOT NULL
            OR abs(t.actual_stop - CASE
              WHEN t.structural_stop < t.actual_entry THEN t.actual_entry - t.initial_risk_distance * 0.25
              ELSE t.actual_entry + t.initial_risk_distance * 0.25 END) > 0.00011
@@ -297,13 +304,22 @@ try {
          OR (t.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND targets.tp2_hit AND (
            t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011
          ))
-         OR (t.management_policy <> 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND (
+         OR (t.management_policy = 'TP1_SCALE_OUT_TP2_BREAKEVEN_V3' AND NOT targets.tp2_hit AND (
+           t.runner_protection_activated_at IS NOT NULL
+           OR t.breakeven_activated_at IS NOT NULL
+           OR abs(t.actual_stop - t.structural_stop) > 0.00011
+         ))
+         OR (t.management_policy = 'TP1_SCALE_OUT_TP2_BREAKEVEN_V3' AND targets.tp2_hit AND (
            t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011
+         ))
+         OR (t.management_policy NOT IN ('TP1_BUFFERED_TP2_BREAKEVEN_V2', 'TP1_SCALE_OUT_TP2_BREAKEVEN_V3') AND (
+           t.runner_protection_activated_at IS NULL
+           OR t.breakeven_activated_at IS NULL OR abs(t.actual_stop - t.actual_entry) > 0.00011
          ))
        )
      LIMIT 50`
   );
-  add("Versioned runner protection", unprotectedRunners.length === 0, "Active runners match their immutable policy; production V1 uses exact breakeven after TP1.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
+  add("Versioned runner protection", unprotectedRunners.length === 0, "Active runners match their immutable policy; production V3 keeps the structural stop through TP1 and activates breakeven at TP2.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences

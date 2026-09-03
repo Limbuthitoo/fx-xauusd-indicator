@@ -9036,7 +9036,8 @@ function PaperTradingWorkspace({
             <div>
               <p>{selected.reason ?? formatScenario(selected.scenario)}</p>
               {selected.runnerProtectionActivatedAt && !selected.breakevenActivatedAt ? <small>TP1 booked. The runner retains a 0.25R retest buffer until TP2.</small> : null}
-              {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after TP2 at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
+              {!selected.runnerProtectionActivatedAt && !selected.breakevenActivatedAt && selected.targets?.some((target: any) => Number(target.targetNumber ?? target.target_number) === 1 && target.status === "HIT") ? <small>TP1 booked. The structural stop remains active until TP2.</small> : null}
+              {selected.breakevenActivatedAt ? <small>Runner stop moved to entry after {selected.managementPolicy === "EQUAL_THIRDS_TP1_BREAKEVEN_V1" ? "TP1" : "TP2"} at {formatNepalTime(selected.breakevenActivatedAt)}.</small> : null}
               {selected.status === "ACTIVE" && selected.currentPriceAt ? <small>Current condition updated {formatNepalTime(selected.currentPriceAt)}.</small> : null}
               {selected.shadowObservation?.recoveredAfterStop ? <small>Shadow tracking found that price reached the original TP1 after the initial stop. This is learning evidence only and does not rewrite the recorded loss.</small> : null}
             </div>

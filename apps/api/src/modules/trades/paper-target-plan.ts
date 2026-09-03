@@ -12,7 +12,8 @@ export type PaperTarget = {
 
 export const PAPER_MANAGEMENT_POLICY_V1 = "EQUAL_THIRDS_TP1_BREAKEVEN_V1";
 export const PAPER_MANAGEMENT_POLICY_V2 = "TP1_BUFFERED_TP2_BREAKEVEN_V2";
-export const PAPER_MANAGEMENT_POLICY_PRODUCTION = PAPER_MANAGEMENT_POLICY_V1;
+export const PAPER_MANAGEMENT_POLICY_V3 = "TP1_SCALE_OUT_TP2_BREAKEVEN_V3";
+export const PAPER_MANAGEMENT_POLICY_PRODUCTION = PAPER_MANAGEMENT_POLICY_V3;
 export const PAPER_TP1_PROTECTION_BUFFER_R = 0.25;
 
 export function shouldStartPostStopObservation(exitReason: string, exitAt: string | Date, observationUntil: string | Date) {
@@ -41,7 +42,12 @@ export function paperManagedStop(input: {
 
   let desiredStop = input.currentStop;
   let stage: "STRUCTURAL" | "TP1_BUFFERED" | "BREAKEVEN" = "STRUCTURAL";
-  if (policy === PAPER_MANAGEMENT_POLICY_V2) {
+  if (policy === PAPER_MANAGEMENT_POLICY_V3) {
+    if (input.tp2Hit) {
+      desiredStop = input.entry;
+      stage = "BREAKEVEN";
+    }
+  } else if (policy === PAPER_MANAGEMENT_POLICY_V2) {
     if (input.tp2Hit) {
       desiredStop = input.entry;
       stage = "BREAKEVEN";

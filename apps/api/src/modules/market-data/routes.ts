@@ -5024,8 +5024,8 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
   const tradeResult = await query(
     `INSERT INTO trades (
       trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
-      commission, spread, slippage, opened_at, outcome
-    ) VALUES ($1,$2,$3,$4,$5,0,$6,0,$7,'ACTIVE')
+      commission, spread, slippage, opened_at, outcome, management_policy
+    ) VALUES ($1,$2,$3,$4,$5,0,$6,0,$7,'ACTIVE',$8)
     ON CONFLICT (trade_plan_id) DO UPDATE SET
       trade_plan_id = EXCLUDED.trade_plan_id
     RETURNING *`,
@@ -5036,7 +5036,8 @@ async function createAutomaticPaperTrade(session: any, setup: any, risk: any, cu
       numericParam(setup.target_price, 5),
       numericParam(plannedLot, 4),
       numericParam(currentRow.spread ?? 0, 5),
-      currentRow.timestamp_utc ?? new Date().toISOString()
+      currentRow.timestamp_utc ?? new Date().toISOString(),
+      PAPER_MANAGEMENT_POLICY_PRODUCTION
     ]
   );
   const trade = tradeResult.rows[0] as any;
@@ -5215,6 +5216,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
           remainingFraction: targetProgress.remainingFraction,
           breakevenProtected: targetProgress.breakevenProtected,
           runnerProtected: targetProgress.runnerProtected,
+          managementPolicy: targetProgress.managementPolicy,
           managementStage: targetProgress.managementStage,
           targets: targetPayload
         },
@@ -5225,7 +5227,14 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         tenantId: trade.tenant_id,
         moduleCode: trade.module_code,
         symbol: trade.symbol,
-        payload: { tradeId: trade.id, target: targetPayload.find((item) => item.targetNumber === target.target_number), targets: targetPayload }
+        payload: {
+          tradeId: trade.id,
+          target: targetPayload.find((item) => item.targetNumber === target.target_number),
+          targets: targetPayload,
+          managementPolicy: targetProgress.managementPolicy,
+          managementStage: targetProgress.managementStage,
+          breakevenProtected: targetProgress.breakevenProtected
+        }
       });
     }
     const exit = targetProgress.stopHit

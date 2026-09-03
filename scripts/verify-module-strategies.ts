@@ -18,7 +18,7 @@ import { evaluateHorizontalBreakoutShadow } from "../apps/api/src/modules/market
 import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
 import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
-import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, paperManagedStop, paperSettlement, paperTargetTouches, shouldStartPostStopObservation, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, PAPER_MANAGEMENT_POLICY_V3, paperManagedStop, paperSettlement, paperTargetTouches, shouldStartPostStopObservation, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { paperTargetManagementSummary } from "../apps/api/src/modules/trades/paper-targets.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
@@ -597,12 +597,30 @@ assert.deepEqual(progressTouch.pendingHit.map((target) => target.target_number),
 const tp1ManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: false, managementPolicy: PAPER_MANAGEMENT_POLICY_V2 });
 assert.equal(tp1ManagedStop.stop, 98.75, "TP1 must leave a 0.25R retest buffer beyond entry");
 assert.equal(tp1ManagedStop.stage, "TP1_BUFFERED");
-assert.equal(PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, "Production paper management must retain the validated V1 policy");
+assert.equal(PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V3, "Production paper management must delay breakeven until TP2");
 const productionManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: false });
-assert.equal(productionManagedStop.stop, 100, "The default production policy must move the runner to exact breakeven after TP1");
-assert.equal(productionManagedStop.stage, "BREAKEVEN", "The default production TP1 stage must be breakeven");
+assert.equal(productionManagedStop.stop, 95, "The default production policy must retain the structural stop after TP1");
+assert.equal(productionManagedStop.stage, "STRUCTURAL", "The default production TP1 stage must remain structural");
+assert.equal(paperTargetTouches({ direction: "LONG", actual_stop: productionManagedStop.stop }, pendingLongTargets, { high: 108, low: 100 }).stopHit, false, "An entry retest after TP1 must not close the V3 runner");
+const productionTp2ManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: true });
+assert.equal(productionTp2ManagedStop.stop, 100, "The default production policy must move the runner to exact breakeven after TP2");
+assert.equal(productionTp2ManagedStop.stage, "BREAKEVEN", "The default production TP2 stage must be breakeven");
+const productionTp2Settlement = paperSettlement(
+  { direction: "LONG", actual_entry: 100, actual_stop: 100, structural_stop: 95, initial_risk_distance: 5 },
+  pendingLongTargets.map((target, index) => ({
+    ...target,
+    status: index < 2 ? ("HIT" as const) : ("PENDING" as const),
+    realized_r: index < 2 ? target.risk_multiple * target.position_fraction : null
+  })),
+  100
+);
+assert.equal(productionTp2Settlement.resultR, 0.8333, "TP2 followed by an entry retest must preserve both booked partial profits");
+const productionShortTp1Stop = paperManagedStop({ direction: "SHORT", entry: 100, structuralStop: 105, currentStop: 105, tp1Hit: true, tp2Hit: false });
+assert.equal(productionShortTp1Stop.stop, 105, "A SHORT runner must also retain its structural stop after TP1");
+assert.equal(paperTargetTouches({ direction: "SHORT", actual_stop: productionShortTp1Stop.stop }, [], { high: 100, low: 96 }).stopHit, false, "A SHORT entry retest after TP1 must remain open under V3");
 assert.equal(paperTargetManagementSummary(1, PAPER_MANAGEMENT_POLICY_V1), "The remaining runner is now protected at exact breakeven.", "V1 TP1 notification must describe exact breakeven");
 assert.equal(paperTargetManagementSummary(1, PAPER_MANAGEMENT_POLICY_V2).includes("0.25R retest buffer"), true, "V2 TP1 notification must describe its versioned buffer");
+assert.equal(paperTargetManagementSummary(1, PAPER_MANAGEMENT_POLICY_V3).includes("structural stop until TP2"), true, "V3 TP1 notification must describe delayed breakeven");
 assert.equal(paperTargetTouches({ direction: "LONG", actual_stop: tp1ManagedStop.stop }, pendingLongTargets, { high: 104, low: 99 }).stopHit, false, "A normal entry retest must not stop a TP1 runner");
 const tp1OnlyTargets = pendingLongTargets.map((target, index) => ({
   ...target,

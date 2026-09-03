@@ -3,7 +3,7 @@ import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate } from "../../infrastructure/time.js";
 import { requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
-import { shouldStartPostStopObservation } from "./paper-target-plan.js";
+import { PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "./paper-target-plan.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
   app.get("/api/trades/paper", async (request) => {
@@ -345,9 +345,9 @@ export async function tradeRoutes(app: FastifyInstance) {
     const { rows } = await query(
       `INSERT INTO trades (
         trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot,
-        commission, spread, slippage, opened_at, outcome
+        commission, spread, slippage, opened_at, outcome, management_policy
       )
-      SELECT tp.id, $2, $3, $4, $5, $6, $7, $8, now(), 'ACTIVE'
+      SELECT tp.id, $2, $3, $4, $5, $6, $7, $8, now(), 'ACTIVE', $10
       FROM trade_plans tp
       JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
       WHERE tp.id = $1 AND sc.tenant_id = $9
@@ -361,7 +361,8 @@ export async function tradeRoutes(app: FastifyInstance) {
         body.commission ?? 0,
         body.spread ?? 0,
         body.slippage ?? 0,
-        auth.tenantId
+        auth.tenantId,
+        PAPER_MANAGEMENT_POLICY_PRODUCTION
       ]
     );
     await query(
@@ -1063,9 +1064,9 @@ async function openPaperTrade(setup: any, tenantId: string | null, moduleCode = 
   }
   const { rows } = await query(
     `INSERT INTO trades (
-      trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot, commission, spread, slippage, opened_at, outcome
-    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE') RETURNING *`,
-    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price]
+      trade_plan_id, actual_entry, actual_stop, actual_target, actual_lot, commission, spread, slippage, opened_at, outcome, management_policy
+    ) VALUES ($1,$2,$3,$4,0.01,0,0.2,0,now(),'ACTIVE',$5) RETURNING *`,
+    [plan.rows[0].id, setup.entry_price, setup.stop_price, setup.target_price, PAPER_MANAGEMENT_POLICY_PRODUCTION]
   );
   await query("UPDATE setup_candidates SET status = 'PAPER_TRADE_OPENED' WHERE id = $1 AND tenant_id = $2", [setup.id, tenantId]);
   await ensurePaperTradeTargets(rows[0].id);

@@ -1788,7 +1788,7 @@ function BuySellSetupDetail({
           {tracking ? (
             <>
               <View style={styles.executionStep}><Text style={styles.executionStepNumber}>1</Text><Text style={styles.executionStepText}>Paper tracking is already active for this signal</Text></View>
-              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>TP1 books one third and moves the runner stop to breakeven</Text></View>
+              <View style={styles.executionStep}><Text style={styles.executionStepNumber}>2</Text><Text style={styles.executionStepText}>TP1 books one third; TP2 moves the final runner stop to breakeven</Text></View>
               <View style={styles.executionStep}><Text style={styles.executionStepNumber}>3</Text><Text style={styles.executionStepText}>Wait for a new entry-ready alert before another trade</Text></View>
             </>
           ) : (
