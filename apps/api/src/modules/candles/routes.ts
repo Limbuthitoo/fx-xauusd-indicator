@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
 import { redisClient } from "../../infrastructure/redis/client.js";
+import { isXauUsdTradableCandle } from "../../infrastructure/time.js";
 
 const CHART_SNAPSHOT_CACHE_SECONDS = 10;
 
@@ -37,10 +38,10 @@ export async function candleRoutes(app: FastifyInstance) {
          AND ($4::timestamptz IS NULL OR timestamp_utc <= $4::timestamptz)
        ORDER BY timestamp_utc DESC
        LIMIT $5`,
-      [symbol, timeframe, search.from ?? null, search.to ?? null, limit]
+      [symbol, timeframe, search.from ?? null, search.to ?? null, Math.min(limit + 100, 2100)]
     );
     const candles = uniqueByChartSecond(
-      rows.reverse().map((row) => ({
+      rows.reverse().filter((row) => isXauUsdTradableCandle(symbol, row.timestamp_utc)).slice(-limit).map((row) => ({
         timestampUtc: row.timestamp_utc,
         open: Number(row.open),
         high: Number(row.high),
@@ -86,11 +87,11 @@ export async function candleRoutes(app: FastifyInstance) {
        FROM candles
        WHERE symbol = $1 AND timeframe_minutes = $2
        ORDER BY timestamp_utc DESC
-       LIMIT 260`,
+       LIMIT 360`,
       [symbol, timeframe]
     );
     const candles = uniqueByChartSecond(
-      rows.reverse().map((row) => ({
+      rows.reverse().filter((row) => isXauUsdTradableCandle(symbol, row.timestamp_utc)).slice(-260).map((row) => ({
         timestampUtc: row.timestamp_utc,
         close: Number(row.close),
         high: Number(row.high),

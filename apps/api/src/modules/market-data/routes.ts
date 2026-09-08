@@ -20,7 +20,7 @@ import { pool, query } from "../../infrastructure/db/client.js";
 import { recordOperationalEvent } from "../../infrastructure/observability/operational-events.js";
 import { redisClient } from "../../infrastructure/redis/client.js";
 import { redactSensitiveText } from "../../infrastructure/security/redaction.js";
-import { newYorkDate, sessionTimesForDate } from "../../infrastructure/time.js";
+import { candleReachesXauUsdDailyClose, isXauUsdTradableCandle, newYorkDate, sessionTimesForDate, xauUsdDailyMarketClose } from "../../infrastructure/time.js";
 import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
@@ -2432,8 +2432,13 @@ async function syncTwelveDataCandlesLocked(options: {
   }
 
   let imported = 0;
+  let marketBreakCandlesSkipped = 0;
   const savedCandles = [];
   for (const candle of parseTwelveDataCandles(response)) {
+    if (!isXauUsdTradableCandle(options.symbol, candle.timestamp)) {
+      marketBreakCandlesSkipped += 1;
+      continue;
+    }
     const savedCandle = await upsertCandle(options.symbol, options.timeframeMinutes, candle);
     cacheLiveCandle(options.symbol, options.timeframeMinutes, {
       timestamp: savedCandle.timestampUtc,
@@ -2484,6 +2489,7 @@ async function syncTwelveDataCandlesLocked(options: {
     timeframeMinutes: options.timeframeMinutes,
     interval,
     imported,
+    marketBreakCandlesSkipped,
     automation
   };
 }
@@ -2586,6 +2592,7 @@ async function hydrateChartCacheFromPostgres(symbol: string, timeframe: number, 
       [symbol, targetTimeframe, Math.min(Math.max(rowLimit, 1), 5000)]
     );
     for (const row of stored.rows.reverse()) {
+      if (!isXauUsdTradableCandle(symbol, row.timestamp_utc)) continue;
       cacheLiveCandle(symbol, targetTimeframe, {
         timestamp: row.timestamp_utc,
         open: Number(row.open),
@@ -2628,7 +2635,7 @@ async function refreshDerivedCandles(symbol: string, sourceTimeframe: number, ta
     [symbol, sourceTimeframe]
   );
   const sourceCandles = stored.rows.length > 0
-    ? stored.rows.reverse().map((row: any) => ({
+    ? stored.rows.reverse().filter((row: any) => isXauUsdTradableCandle(symbol, row.timestamp_utc)).map((row: any) => ({
         timestampUtc: new Date(row.timestamp_utc).toISOString(),
         open: Number(row.open),
         high: Number(row.high),
@@ -5237,35 +5244,39 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         }
       });
     }
-    const exit = targetProgress.stopHit
+    let exit: { reason: string; price: number; ambiguous: boolean; candle?: Candle; timestampUtc?: string } | null = targetProgress.stopHit
       ? { reason: targetProgress.stopReason ?? "STOP", price: targetProgress.stopPrice, ambiguous: targetProgress.ambiguous }
       : targetProgress.finalTargetHit
         ? { reason: "TARGET", price: Number(trade.actual_target), ambiguous: false }
         : null;
+    if (!exit) exit = await resolvePaperMarketBreakExit(trade, latestRow, timeframe);
     if (!exit) continue;
+    const closedAt = exit.timestampUtc ?? latest.timestampUtc;
     const settlement = await paperTradeSettlement(trade, exit.price);
     const { resultR, outcome } = settlement;
-    const observeAfterStop = shouldStartPostStopObservation(exit.reason, latest.timestampUtc, trade.signal_window_end_at);
+    const observeAfterStop = shouldStartPostStopObservation(exit.reason, closedAt, trade.signal_window_end_at);
     const updated = await query(
       `UPDATE trades SET
         actual_exit = $2,
         result_r = $3,
         outcome = $4,
         closed_at = $5,
+        close_reason = $8,
         remaining_fraction = 0,
         shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
        RETURNING *`,
-      [trade.id, exit.price, resultR, outcome, latest.timestampUtc, observeAfterStop, trade.signal_window_end_at]
+      [trade.id, exit.price, resultR, outcome, closedAt, observeAfterStop, trade.signal_window_end_at, exit.reason]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
-    await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, latest.timestampUtc);
+    await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, closedAt);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
-    await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_EXIT',$2)", [
+    await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,$2,$3)", [
       trade.id,
-      { mode: "PAPER", exitReason: exit.reason, ambiguous: exit.ambiguous, candle: latest, timeframeMinutes: timeframe }
+      exit.reason === "MARKET_BREAK_EXIT" ? "PAPER_MARKET_BREAK_EXIT" : "PAPER_EXIT",
+      { mode: "PAPER", exitReason: exit.reason, ambiguous: exit.ambiguous, candle: exit.candle ?? latest, timeframeMinutes: timeframe }
     ]);
     await query(
       `INSERT INTO journal_entries (
@@ -5276,7 +5287,9 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         trade.setup_candidate_id,
         trade.id,
         trade.session_id,
-        `Automatic paper trade closed by ${exit.reason}${exit.ambiguous ? " on ambiguous TP/SL candle, stop-first rule used" : ""}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
+        exit.reason === "MARKET_BREAK_EXIT"
+          ? `Automatic paper trade closed before the daily XAU/USD maintenance break. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`
+          : `Automatic paper trade closed by ${exit.reason}${exit.ambiguous ? " on ambiguous TP/SL candle, stop-first rule used" : ""}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
         outcome,
         trade.tenant_id
       ]
@@ -5286,7 +5299,7 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
       `paper-exit-${trade.id}`,
       "PAPER_TRADE_CLOSED",
       `Paper trade closed: ${outcome}`,
-      `${exit.reason === "BREAKEVEN_STOP" ? "Runner stopped at breakeven" : exit.reason === "PROTECTED_STOP" ? "Runner stopped at its TP1 protection buffer" : exit.reason} at ${exit.price}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
+      `${exit.reason === "BREAKEVEN_STOP" ? "Runner stopped at breakeven" : exit.reason === "PROTECTED_STOP" ? "Runner stopped at its TP1 protection buffer" : exit.reason === "MARKET_BREAK_EXIT" ? "Position closed before the daily metals maintenance break" : exit.reason} at ${exit.price}. Locked ${settlement.lockedR.toFixed(2)}R; final result ${resultR.toFixed(2)}R.`,
       "HIGH",
       {
         moduleCode: trade.module_code,
@@ -5314,6 +5327,42 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
   }
   const shadow = await processClosedPaperTradeShadows(symbol, latestRow, activeTenantId, moduleCode);
   return { checked: openTrades.rows.length, closed, shadow };
+}
+
+async function resolvePaperMarketBreakExit(trade: any, latestRow: any, timeframe: number) {
+  const symbol = String(trade.symbol ?? "");
+  const openedAt = new Date(trade.opened_at);
+  const marketClose = xauUsdDailyMarketClose(openedAt);
+  if (!marketClose || openedAt >= marketClose) return null;
+
+  const latestAt = new Date(rowTimestamp(latestRow));
+  const latestCompletesAt = new Date(latestAt.getTime() + Math.max(1, timeframe) * 60_000);
+  if (latestCompletesAt < marketClose) return null;
+
+  let exitCandle = latestRow;
+  if (!candleReachesXauUsdDailyClose(symbol, latestAt, timeframe)) {
+    const previous = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread, source
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND timestamp_utc >= $3
+         AND timestamp_utc < $4
+       ORDER BY timestamp_utc DESC
+       LIMIT 1`,
+      [symbol, timeframe, trade.opened_at, marketClose.toISOString()]
+    );
+    exitCandle = previous.rows[0];
+  }
+  const price = Number(exitCandle?.close);
+  if (!exitCandle || !Number.isFinite(price)) return null;
+  return {
+    reason: "MARKET_BREAK_EXIT",
+    price,
+    ambiguous: false,
+    candle: toCandle(exitCandle),
+    timestampUtc: marketClose.toISOString()
+  };
 }
 
 async function processClosedPaperTradeShadows(symbol: string, latestRow: any, tenantId: string, moduleCode: string) {

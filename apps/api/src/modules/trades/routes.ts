@@ -916,7 +916,7 @@ function paperTradeView(row: any) {
     rewardToRisk: row.reward_to_risk == null ? null : Number(row.reward_to_risk),
     plannedRiskAmount: row.planned_risk_amount == null ? null : Number(row.planned_risk_amount),
     status: row.outcome,
-    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets, row.runner_protection_activated_at, row.breakeven_activated_at),
+    condition: paperTradeCondition(row.outcome, unrealizedR, row.reward_to_risk == null ? null : Number(row.reward_to_risk), row.targets, row.runner_protection_activated_at, row.breakeven_activated_at, row.close_reason),
     unrealizedR,
     lockedR,
     remainingFraction,
@@ -944,6 +944,7 @@ function paperTradeView(row: any) {
     resultMoney: row.result_money == null ? null : Number(row.result_money),
     openedAt: row.opened_at,
     closedAt: row.closed_at,
+    closeReason: row.close_reason ?? null,
     grade: row.favorability_grade,
     confidence: row.favorability_score == null ? null : Number(row.favorability_score),
     reason: row.final_reason,
@@ -978,8 +979,9 @@ function paperTargetProgress(targets: any) {
   };
 }
 
-function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any, runnerProtectionActivatedAt?: unknown, breakevenActivatedAt?: unknown) {
+function paperTradeCondition(status: string, unrealizedR: number | null, rewardToRisk: number | null, targets?: any, runnerProtectionActivatedAt?: unknown, breakevenActivatedAt?: unknown, closeReason?: unknown) {
   const progress = paperTargetProgress(targets);
+  if (closeReason === "MARKET_BREAK_EXIT") return "MARKET BREAK";
   if (status === "WIN") return progress.finalTargetHit ? "TARGET HIT" : "PARTIAL PROFIT";
   if (status === "LOSS") return "SL HIT";
   if (status === "BREAKEVEN") return "BREAKEVEN";

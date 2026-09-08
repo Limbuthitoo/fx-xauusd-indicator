@@ -9098,6 +9098,7 @@ function PaperTradingWorkspace({
 }
 
 function paperTradeTone(status: string, condition: string) {
+  if (condition === "MARKET BREAK") return "warn";
   if (status === "WIN" || condition === "IN PROFIT" || condition === "NEAR TARGET" || condition === "PARTIAL PROFIT" || condition.includes("PROTECTED") || /^TP[12] HIT$/.test(condition)) return "good";
   if (status === "LOSS" || condition === "NEAR STOP") return "bad";
   if (condition === "IN DRAWDOWN") return "warn";

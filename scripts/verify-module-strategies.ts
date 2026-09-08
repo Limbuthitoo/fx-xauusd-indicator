@@ -23,6 +23,15 @@ import { paperTargetManagementSummary } from "../apps/api/src/modules/trades/pap
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
 import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js";
+import { candleReachesXauUsdDailyClose, isXauUsdTradableCandle, xauUsdDailyMarketClose } from "../apps/api/src/infrastructure/time.js";
+
+assert.equal(isXauUsdTradableCandle("XAUUSD", "2026-09-07T20:55:00Z"), true, "The final pre-maintenance XAU/USD candle must remain tradable during New York daylight time");
+assert.equal(isXauUsdTradableCandle("XAUUSD", "2026-09-07T21:05:00Z"), false, "Synthetic candles inside the XAU/USD daily maintenance hour must be excluded");
+assert.equal(isXauUsdTradableCandle("XAUUSD", "2026-09-07T22:00:00Z"), true, "The provider reopening bucket must remain visible after the maintenance gap");
+assert.equal(candleReachesXauUsdDailyClose("XAUUSD", "2026-09-07T20:55:00Z", 5), true, "The 16:55 New York candle must trigger an intraday market-break exit");
+assert.equal(xauUsdDailyMarketClose("2026-12-07T15:00:00Z")?.toISOString(), "2026-12-07T22:00:00.000Z", "XAU/USD market close calculation must follow New York standard time");
+assert.equal(xauUsdDailyMarketClose("2026-09-07T22:30:00Z")?.toISOString(), "2026-09-08T21:00:00.000Z", "A post-reopen Tokyo-session entry must use the following New York market close");
+assert.equal(isXauUsdTradableCandle("EURUSD", "2026-09-07T21:05:00Z"), true, "The metals calendar must not filter unrelated symbols");
 
 const subscriberTradeSetup = validateModuleSetting("orb_max_options", "orb.strategy", {
   tradeSetup: { enabledSessionPresets: ["TOKYO_ORB", "LONDON_ORB"], maximumSignalsPerDay: 9 },
