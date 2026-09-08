@@ -59,6 +59,7 @@
     "validate:production-observation": "node --import tsx scripts/validate-production-observation.ts",
     "validate:horizontal-shadow": "node --import tsx scripts/validate-horizontal-breakout-shadow.ts",
     "calendar:sync": "node --import tsx scripts/sync-economic-calendar.ts",
+    "calibrate:module1-stops": "node --import tsx scripts/backfill-module1-stop-calibration.ts",
     "verify:mobile-release": "node scripts/verify-mobile-release.mjs",
     "validate:signal-policy": "node --import tsx scripts/validate-signal-policy.ts",
     "validation:history": "node --import tsx scripts/historical-strategy-validation.ts",
