@@ -3,7 +3,7 @@ import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, xauUsdDailyMarketClose } from "../../infrastructure/time.js";
 import { requireAdmin, requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
-import { PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "./paper-target-plan.js";
+import { PAPER_MANAGEMENT_POLICY_PRODUCTION, paperReplayCursor, shouldStartPostStopObservation } from "./paper-target-plan.js";
 import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "./module1-stop-shadow.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
@@ -1052,15 +1052,16 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
   );
 
   for (const trade of active.rows as any[]) {
+    const replayAfter = paperReplayCursor(trade.opened_at, trade.excursion_updated_at);
     const candles = await query(
       `SELECT timestamp_utc, open, high, low, close
        FROM candles
        WHERE symbol = $1
          AND timeframe_minutes = $2
          AND source LIKE 'TWELVE_DATA%'
-         AND timestamp_utc >= $3
+         AND timestamp_utc > $3
        ORDER BY timestamp_utc ASC`,
-      [trade.symbol, moduleExecutionTimeframeMinutes(trade.module_code), trade.opened_at]
+      [trade.symbol, moduleExecutionTimeframeMinutes(trade.module_code), replayAfter]
     );
     let exit = null as any;
     for (const candle of candles.rows as any[]) {
@@ -1084,12 +1085,13 @@ async function settleOpenPaperTrades(tenantId: string, moduleCode: string, inclu
          result_r = $3,
          outcome = $4,
          closed_at = $5,
+         close_reason = $8,
          remaining_fraction = 0,
          shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
          shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
          AND outcome = 'ACTIVE'`,
-      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, observeAfterStop, trade.signal_window_end_at]
+      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, observeAfterStop, trade.signal_window_end_at, exit.reason]
     );
     await cancelPendingPaperTargets(trade.id, exit.reason);
     await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);

@@ -16,6 +16,15 @@ export const PAPER_MANAGEMENT_POLICY_V3 = "TP1_SCALE_OUT_TP2_BREAKEVEN_V3";
 export const PAPER_MANAGEMENT_POLICY_PRODUCTION = PAPER_MANAGEMENT_POLICY_V3;
 export const PAPER_TP1_PROTECTION_BUFFER_R = 0.25;
 
+export function paperReplayCursor(openedAt: string | Date, excursionUpdatedAt?: string | Date | null) {
+  const openedTime = new Date(openedAt).getTime();
+  const excursionTime = excursionUpdatedAt == null ? Number.NaN : new Date(excursionUpdatedAt).getTime();
+  if (Number.isFinite(excursionTime) && (!Number.isFinite(openedTime) || excursionTime > openedTime)) {
+    return excursionUpdatedAt;
+  }
+  return openedAt;
+}
+
 export function shouldStartPostStopObservation(exitReason: string, exitAt: string | Date, observationUntil: string | Date) {
   if (!["STOP", "PROTECTED_STOP", "BREAKEVEN_STOP"].includes(exitReason.toUpperCase())) return false;
   const exitTime = new Date(exitAt).getTime();

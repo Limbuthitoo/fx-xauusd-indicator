@@ -100,6 +100,13 @@ try {
   ))[0];
   add("Migration 109", Boolean(targetRepairMigration), "Legacy active paper target ladders are repaired.", "Migration 109 is missing from schema_migrations.", targetRepairMigration);
 
+  const temporalReplayRepairMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '110_repair_temporal_paper_replay.sql'`
+  ))[0];
+  add("Migration 110", Boolean(temporalReplayRepairMigration), "Paper catch-up uses a monotonic candle cursor and impossible replay closures are repaired.", "Migration 110 is missing from schema_migrations.", temporalReplayRepairMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -357,6 +364,21 @@ try {
      LIMIT 50`
   );
   add("Versioned runner protection", unprotectedRunners.length === 0, "Active runners match their immutable policy; production V3 keeps the structural stop through TP1 and activates breakeven at TP2.", `${unprotectedRunners.length} active runner(s) do not match their versioned stop policy.`, unprotectedRunners);
+
+  const temporalReplayClosures = await rows(
+    `SELECT t.id, t.opened_at, t.closed_at, t.breakeven_activated_at, tp2.hit_at AS tp2_hit_at
+     FROM trades t
+     JOIN paper_trade_targets tp2
+       ON tp2.trade_id = t.id
+      AND tp2.target_number = 2
+      AND tp2.status = 'HIT'
+     WHERE t.management_policy = 'TP1_SCALE_OUT_TP2_BREAKEVEN_V3'
+       AND t.outcome <> 'ACTIVE'
+       AND t.actual_exit = t.actual_entry
+       AND t.closed_at < tp2.hit_at
+     LIMIT 50`
+  );
+  add("Monotonic paper replay", temporalReplayClosures.length === 0, "No trade was closed by applying a later breakeven state to an earlier candle.", `${temporalReplayClosures.length} paper trade(s) have impossible pre-TP2 breakeven closures.`, temporalReplayClosures);
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences

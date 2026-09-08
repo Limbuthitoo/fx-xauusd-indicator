@@ -18,7 +18,7 @@ import { evaluateHorizontalBreakoutShadow } from "../apps/api/src/modules/market
 import { fetchOfficialUsCalendar, parseBeaSchedule, parseBlsCalendar, parseCensusSchedule, parseFedSchedule } from "../apps/api/src/modules/news/official-us-calendar.js";
 import { calendarFreshness, classifyEconomicEvents } from "../apps/api/src/modules/news/service.js";
 import { brainRejectsPrediction, predictionProbability } from "../apps/api/src/modules/setups/routes.js";
-import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, PAPER_MANAGEMENT_POLICY_V3, paperManagedStop, paperSettlement, paperTargetTouches, shouldStartPostStopObservation, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V1, PAPER_MANAGEMENT_POLICY_V2, PAPER_MANAGEMENT_POLICY_V3, paperManagedStop, paperReplayCursor, paperSettlement, paperTargetTouches, shouldStartPostStopObservation, type PaperTarget } from "../apps/api/src/modules/trades/paper-target-plan.js";
 import { paperTargetManagementSummary } from "../apps/api/src/modules/trades/paper-targets.js";
 import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsAreCorrelated } from "../packages/risk-engine/src/index.js";
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
@@ -703,6 +703,16 @@ const tp1ManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structu
 assert.equal(tp1ManagedStop.stop, 98.75, "TP1 must leave a 0.25R retest buffer beyond entry");
 assert.equal(tp1ManagedStop.stage, "TP1_BUFFERED");
 assert.equal(PAPER_MANAGEMENT_POLICY_PRODUCTION, PAPER_MANAGEMENT_POLICY_V3, "Production paper management must delay breakeven until TP2");
+assert.equal(
+  new Date(paperReplayCursor("2026-09-08T14:00:00.000Z", "2026-09-08T18:45:00.000Z")).toISOString(),
+  "2026-09-08T18:45:00.000Z",
+  "Ledger catch-up must resume after the latest evaluated candle instead of replaying old candles with a newer stop"
+);
+assert.equal(
+  new Date(paperReplayCursor("2026-09-08T14:00:00.000Z", null)).toISOString(),
+  "2026-09-08T14:00:00.000Z",
+  "A never-evaluated trade must begin catch-up after its entry candle"
+);
 const productionManagedStop = paperManagedStop({ direction: "LONG", entry: 100, structuralStop: 95, currentStop: 95, tp1Hit: true, tp2Hit: false });
 assert.equal(productionManagedStop.stop, 95, "The default production policy must retain the structural stop after TP1");
 assert.equal(productionManagedStop.stage, "STRUCTURAL", "The default production TP1 stage must remain structural");
