@@ -388,11 +388,12 @@ function App() {
   const orb = state.session?.opening_range;
   const orbStrategyConfig = (state.orbModuleSettings ?? []).find((item: any) => item.key === "orb.strategy")?.value ?? {};
   const showModule1OrbSessionLevels = orbStrategyConfig?.chart?.showOrbSessionLevels !== false;
+  const module1ProfileMode = String(orbStrategyConfig?.tradeSetup?.profileMode ?? "ORB_AND_HORIZONTAL");
   const liquiditySweepConfig = (state.activeModuleSettings ?? []).find((item: any) => item.key === "liquiditySweep.strategy")?.value ?? {};
   const chartIndicatorDefaults: ChartIndicatorVisibility = selectedModuleCode === "orb_max_options"
     ? {
-        orbLevels: showModule1OrbSessionLevels,
-        horizontalRange: orbStrategyConfig?.chart?.showHorizontalRange !== false
+        orbLevels: showModule1OrbSessionLevels && module1ProfileMode !== "HORIZONTAL_ONLY",
+        horizontalRange: orbStrategyConfig?.chart?.showHorizontalRange !== false && module1ProfileMode !== "ORB_ONLY"
       }
     : selectedModuleCode === "high_probability_strategy_2"
       ? {
@@ -1418,6 +1419,7 @@ function App() {
             {selectedModuleCode === "orb_max_options" ? (
               <>
                 <HorizontalBreakoutObserverPanel />
+                <Module1StopCalibrationPanel />
                 <OrbDataReadinessPanel readiness={state.orbDataReadiness} onBackfill={runOrbBackfill} onBacktest={runCacheBacktest} />
                 <ModuleLaunchRehearsalPanel moduleName="Module 1" rehearsals={state.orbRehearsals} onRun={runOrbLaunchRehearsal} />
                 <OrbQAControlPanel onRunSuite={runOrbQaSuite} suite={orbQaSuite} />
@@ -7202,6 +7204,92 @@ function HorizontalBreakoutObserverPanel() {
   );
 }
 
+function Module1StopCalibrationPanel() {
+  const [report, setReport] = useState<any>(null);
+  const [days, setDays] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("Loading stop evidence...");
+
+  async function load() {
+    setBusy(true);
+    try {
+      const next = await api<any>("/api/trades/module1/stop-calibration");
+      setReport(next);
+      setStatus(`Updated ${formatNepalTime(new Date().toISOString())}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Stop evidence could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function replay() {
+    setBusy(true);
+    setStatus("Replaying promoted Module 1 setups...");
+    try {
+      const result = await api<any>("/api/trades/module1/stop-calibration/backfill", {
+        method: "POST",
+        body: JSON.stringify({ days, setupLimit: 300 })
+      });
+      const next = await api<any>("/api/trades/module1/stop-calibration");
+      setReport(next);
+      setStatus(`${result.setupsEvaluated ?? 0} setups replayed; ${result.candidatesCompleted ?? 0} candidates completed.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Stop replay failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch(() => undefined);
+  }, []);
+
+  const profiles = report?.profiles ?? [];
+  const recent = report?.recent ?? [];
+  return (
+    <Panel icon={<ShieldCheck />} title="Module 1 Stop Calibration">
+      <Metric label="Mode" value={report?.mode ?? "OBSERVE_ONLY"} />
+      <Metric label="Cohorts" value={profiles.length} />
+      <Metric label="Completed candidates" value={recent.filter((row: any) => row.status === "COMPLETED").length} />
+      <Metric label="Promotion ready" value={profiles.filter((row: any) => row.promotion_ready).length} />
+      <div className="observer-toolbar">
+        <label>
+          Replay window
+          <select value={days} onChange={(event) => setDays(Number(event.target.value))} disabled={busy}>
+            <option value={7}>7 days</option>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+          </select>
+        </label>
+        <button onClick={() => replay().catch(() => undefined)} disabled={busy}><Database size={16} />Replay Stops</button>
+        <button onClick={() => load().catch(() => undefined)} disabled={busy}><RefreshCw size={16} />Refresh</button>
+        <span className="observer-status">{status}</span>
+      </div>
+      <h3>Profile Evidence</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Profile</th><th>Side</th><th>Candidate</th><th>N</th><th>Avg R</th><th>Delta</th><th>Max DD</th><th>TP2</th><th>Decision</th></tr></thead>
+          <tbody>
+            {profiles.map((row: any) => (
+              <tr key={`${row.strategy_profile}-${row.direction}-${row.candidate_code}`}>
+                <td>{row.strategy_profile === "ORB_BREAKOUT" ? "ORB" : "Horizontal"}</td>
+                <td>{row.direction}</td><td title={row.candidate_label}>{formatScenario(row.candidate_code)}</td>
+                <td>{row.observed_signals}</td><td>{formatR(row.average_r)}</td><td>{formatR(row.expectancy_improvement_r)}</td>
+                <td>{formatR(row.maximum_drawdown_r)}</td><td>{`${(Number(row.tp2_rate ?? 0) * 100).toFixed(1)}%`}</td>
+                <td><span className={`pill ${row.promotion_ready ? "good" : "warn"}`}>{row.promotion_ready ? "READY" : row.calibration_eligible ? "HOLD" : "COLLECTING"}</span></td>
+              </tr>
+            ))}
+            {profiles.length === 0 ? <tr><td colSpan={9}>No completed stop comparisons.</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
 function AccountLockedPanel({ state, subscriptionActive }: { state: PanelState; subscriptionActive: boolean }) {
   return (
     <Panel icon={<Lock />} title={subscriptionActive ? "Module Locked" : "Subscription Inactive"}>
@@ -7568,20 +7656,31 @@ function OrbStrategySettings({ settings, onUpdate }: { settings: any[]; onUpdate
             <option value="LONDON_ORB">London</option>
             <option value="NEW_YORK_ORB">New York</option>
           </select></label>
+          <label>Strategy profiles<select value={draft?.tradeSetup?.profileMode ?? "ORB_AND_HORIZONTAL"} onChange={(event) => patch("tradeSetup.profileMode", event.target.value)}>
+            <option value="ORB_AND_HORIZONTAL">ORB + Horizontal</option>
+            <option value="ORB_ONLY">ORB only</option>
+            <option value="HORIZONTAL_ONLY">Horizontal only</option>
+          </select></label>
           <label>Signals per day<input type="number" min="1" max="3" value={draft?.tradeSetup?.maximumSignalsPerDay ?? 3} onChange={(event) => {
             const value = Number(event.target.value);
             patch("tradeSetup.maximumSignalsPerDay", value);
             patch("risk.maximumTradesPerSession", value);
             patch("paperTrading.maximumTradesPerSession", value);
           }} /></label>
+          <label>ORB signals per day<input type="number" min="1" max="2" value={draft?.strategyProfiles?.orb?.maximumSignalsPerDay ?? 1} onChange={(event) => patch("strategyProfiles.orb.maximumSignalsPerDay", Number(event.target.value))} /></label>
+          <label>ORB signal window ends<input type="time" value={draft?.strategyProfiles?.orb?.signalWindowEnd ?? "11:00"} onChange={(event) => patch("strategyProfiles.orb.signalWindowEnd", event.target.value)} /></label>
+          <label>Horizontal signals per day<input type="number" min="1" max="2" value={draft?.strategyProfiles?.horizontal?.maximumSignalsPerDay ?? 1} onChange={(event) => patch("strategyProfiles.horizontal.maximumSignalsPerDay", Number(event.target.value))} /></label>
+          <label>Horizontal signals begin<input type="time" value={draft?.strategyProfiles?.horizontal?.signalWindowStart ?? "11:00"} onChange={(event) => patch("strategyProfiles.horizontal.signalWindowStart", event.target.value)} /></label>
           <label>Minimum body ratio<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.minimumBodyRatio ?? 0.45} onChange={(event) => patch("breakout.minimumBodyRatio", Number(event.target.value))} /></label>
           <label>Close location ratio<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.minimumCloseLocationRatio ?? 0.6} onChange={(event) => patch("breakout.minimumCloseLocationRatio", Number(event.target.value))} /></label>
           <label>Max extension<input type="number" min="0" max="1" step="0.01" value={draft?.breakout?.maximumEntryExtensionPercentOfRange ?? 0.25} onChange={(event) => patch("breakout.maximumEntryExtensionPercentOfRange", Number(event.target.value))} /></label>
           <label>Retest zone<input type="number" min="0" max="1" step="0.01" value={draft?.retest?.zonePercentOfRange ?? 0.1} onChange={(event) => patch("retest.zonePercentOfRange", Number(event.target.value))} /></label>
           <label>Retest candles<input type="number" min="1" max="50" value={draft?.retest?.maximumCandles ?? 4} onChange={(event) => patch("retest.maximumCandles", Number(event.target.value))} /></label>
           <label>Minimum R:R<input type="number" min="0.1" max="10" step="0.1" value={draft?.risk?.minimumRewardToRisk ?? 2} onChange={(event) => patch("risk.minimumRewardToRisk", Number(event.target.value))} /></label>
-          <label>Minimum stop ATR<input type="number" min="2" max="4" step="0.1" value={draft?.risk?.minimumStopAtr ?? 2} onChange={(event) => patch("risk.minimumStopAtr", Number(event.target.value))} /></label>
-          <label>Liquidity buffer ATR<input type="number" min="0.25" max="1" step="0.05" value={draft?.risk?.liquidityBufferAtr ?? 0.25} onChange={(event) => patch("risk.liquidityBufferAtr", Number(event.target.value))} /></label>
+          <label>ORB minimum stop ATR<input type="number" min="2" max="4" step="0.1" value={draft?.strategyProfiles?.orb?.risk?.minimumStopAtr ?? 2} onChange={(event) => patch("strategyProfiles.orb.risk.minimumStopAtr", Number(event.target.value))} /></label>
+          <label>ORB liquidity buffer ATR<input type="number" min="0.25" max="1" step="0.05" value={draft?.strategyProfiles?.orb?.risk?.liquidityBufferAtr ?? 0.25} onChange={(event) => patch("strategyProfiles.orb.risk.liquidityBufferAtr", Number(event.target.value))} /></label>
+          <label>Horizontal minimum stop ATR<input type="number" min="2" max="4" step="0.1" value={draft?.strategyProfiles?.horizontal?.risk?.minimumStopAtr ?? 2} onChange={(event) => patch("strategyProfiles.horizontal.risk.minimumStopAtr", Number(event.target.value))} /></label>
+          <label>Horizontal liquidity buffer ATR<input type="number" min="0.25" max="1" step="0.05" value={draft?.strategyProfiles?.horizontal?.risk?.liquidityBufferAtr ?? 0.25} onChange={(event) => patch("strategyProfiles.horizontal.risk.liquidityBufferAtr", Number(event.target.value))} /></label>
           <label>News guard<select value={draft?.newsFilter?.mode ?? "BLOCK"} onChange={(event) => { patch("newsFilter.mode", event.target.value); patch("newsFilter.enabled", event.target.value !== "OFF"); }}>
             <option value="BLOCK">Block high impact</option>
             <option value="WARN_ONLY">Warning only</option>

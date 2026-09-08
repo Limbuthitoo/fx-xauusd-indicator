@@ -23,6 +23,7 @@ import { redactSensitiveText } from "../../infrastructure/security/redaction.js"
 import { candleReachesXauUsdDailyClose, isXauUsdTradableCandle, newYorkDate, sessionTimesForDate, xauUsdDailyMarketClose } from "../../infrastructure/time.js";
 import { runDeterministicStrategyCoachPython, runMainBrainPython, runModule2LearningPython, runOrbLearningPython } from "../admin/learning.js";
 import { getRuntimeSettings, getTenantModuleStrategyConfiguration, getTenantOrbStrategyConfiguration, type RuntimeSettings } from "../admin/settings.js";
+import { module1StrategyProfile, resolveModule1ProfilePolicy, type Module1ProfilePolicy } from "./module1-profiles.js";
 import { requireAdmin, requireTenantModule } from "../auth/routes.js";
 import { canCreateTenantNotification } from "../billing/limits.js";
 import { broadcastLiveEvent, liveClientCount } from "../live-stream/hub.js";
@@ -31,6 +32,7 @@ import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetManagementSummary, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
 import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "../trades/paper-target-plan.js";
+import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "../trades/module1-stop-shadow.js";
 import { evaluateHorizontalBreakoutShadow } from "./horizontal-breakout-shadow.js";
 
 type TwelveDataTimeSeriesResponse = {
@@ -2804,6 +2806,22 @@ function normalizeToTimeframe(timestamp: string, timeframeMinutes: number) {
 
 async function processLiveSession(symbol: string, timeframe: number, liveCandles: LiveCandle[] = [], tenantId?: string | null) {
   const activeTenantId = tenantId ?? (await defaultTenantId());
+  const completedAtOrBefore = new Date(Date.now() - timeframe * 60_000).toISOString();
+  const lifecycleCandle = (
+    await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND timestamp_utc <= $3
+       ORDER BY timestamp_utc DESC
+       LIMIT 1`,
+      [symbol, timeframe, completedAtOrBefore]
+    )
+  ).rows[0] as any;
+  if (lifecycleCandle) {
+    await processModule1StopShadowCandidates(symbol, lifecycleCandle, activeTenantId);
+  }
   const settings = await getRuntimeSettings(activeTenantId);
   const enabledSessionPresets = settings.orb.enabledSessionPresets.includes("NEW_YORK_ORB")
     ? [...settings.orb.enabledSessionPresets, "NY_0915", "NY_0930"]
@@ -2862,7 +2880,6 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
   if (!range || range.status !== "LOCKED") return { sessionFound: true, rangeStatus: range?.status ?? "FORMING" };
   if (now < new Date(session.opening_range_end_at) || now > signalEnd) return { sessionFound: true, rangeStatus: range.status, evaluation: "OUTSIDE_SIGNAL_WINDOW" };
 
-  const completedAtOrBefore = new Date(now.getTime() - timeframe * 60_000).toISOString();
   const current =
     latestCachedCandle(liveCandles, session.opening_range_end_at, session.signal_window_end_at, completedAtOrBefore) ??
     ((await query(
@@ -2934,7 +2951,6 @@ async function processLiveSession(symbol: string, timeframe: number, liveCandles
     await notifyTenantOnce(session.tenant_id, `no-trade-${saved.setup.id}`, "NO_TRADE", "No trade classification", saved.setup.final_reason);
   }
   const tradeLifecycle = await processOpenPaperTrades(symbol, timeframe, current, activeTenantId);
-
   return { sessionFound: true, rangeStatus: range.status, setupId: saved?.setup?.id, setupStatus: saved?.setup?.status, paperTrade, tradeLifecycle, brainDecision };
 }
 
@@ -4163,7 +4179,7 @@ async function productionSignalCompetitionGate(session: any, moduleCode: string,
   const candidates = await query(
     `SELECT tp.id AS plan_id, tp.planned_entry, tp.planned_stop,
             COALESCE(tp.promoted_at, tp.created_at) AS signal_at,
-            sc.id AS setup_id, sc.module_code, sc.direction, sc.scenario,
+            sc.id AS setup_id, sc.module_code, sc.symbol, sc.direction, sc.scenario, sc.strategy_profile,
             sc.favorability_score, sc.scenario_flags, t.id AS trade_id, t.outcome
      FROM trade_plans tp
      JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -4184,29 +4200,35 @@ async function productionSignalCompetitionGate(session: any, moduleCode: string,
     riskDistance: Math.abs(Number(setup.entry_price) - Number(setup.stop_price)),
     signalAt: setup.detected_at ?? new Date()
   };
-  const incumbent = (candidates.rows as any[]).find((row) => signalsAreCorrelated(candidate, {
+  const activeIncumbent = (candidates.rows as any[]).find((row) => row.outcome === "ACTIVE" && String(row.symbol).replace("/", "").toUpperCase() === "XAUUSD");
+  const correlatedIncumbent = (candidates.rows as any[]).find((row) => signalsAreCorrelated(candidate, {
     direction: String(row.direction ?? ""),
     entry: Number(row.planned_entry),
     riskDistance: Math.abs(Number(row.planned_entry) - Number(row.planned_stop)),
     signalAt: row.signal_at
   }, PRODUCTION_SIGNAL_POLICY.correlatedSignalWindowMinutes, PRODUCTION_SIGNAL_POLICY.correlatedEntryDistanceR));
+  const incumbent = activeIncumbent ?? correlatedIncumbent;
   const result = {
     passed: !incumbent,
-    arbitration: "FIRST_QUALIFIED_CONTRACT_WINS",
+    arbitration: activeIncumbent ? "ONE_ACTIVE_XAUUSD_POSITION" : "FIRST_QUALIFIED_CONTRACT_WINS",
     candidateScore: Number(setup.scenario_flags?.signalExecutionPolicy?.executionScore ?? setup.favorability_score ?? 0),
     incumbent: incumbent ? {
       setupId: incumbent.setup_id,
       planId: incumbent.plan_id,
       tradeId: incumbent.trade_id ?? null,
       moduleCode: incumbent.module_code,
-      strategyProfile: releaseGateProfileCode(incumbent.module_code, incumbent) ?? incumbent.scenario,
+      strategyProfile: incumbent.module_code === "orb_max_options" ? module1StrategyProfile(incumbent) : releaseGateProfileCode(incumbent.module_code, incumbent) ?? incumbent.scenario,
       evidenceScore: Number(incumbent.favorability_score ?? 0),
       signalAt: incumbent.signal_at,
       outcome: incumbent.outcome ?? null
     } : null,
     windowMinutes: PRODUCTION_SIGNAL_POLICY.correlatedSignalWindowMinutes,
     maximumEntryDistanceR: PRODUCTION_SIGNAL_POLICY.correlatedEntryDistanceR,
-    reasons: incumbent ? ["A recently promoted same-direction XAUUSD contract already represents this exposure."] : []
+    reasons: incumbent
+      ? [activeIncumbent
+          ? "An active XAUUSD paper position already owns this exposure."
+          : "A recently promoted same-direction XAUUSD contract already represents this exposure."]
+      : []
   };
   setup.scenario_flags = { ...(setup.scenario_flags ?? {}), signalCompetitionPolicy: result };
   const reason = result.passed ? null : `Signal competition policy blocked this setup: ${result.reasons.join(" ")}`;
@@ -4243,7 +4265,7 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
   if (existing.rows[0]) return { passed: true, resumed: true, reasons: [] as string[] };
 
   const plans = await query(
-    `SELECT sc.module_code, sc.scenario, sc.scenario_flags,
+    `SELECT sc.module_code, sc.scenario, sc.strategy_profile, sc.scenario_flags,
             COALESCE(tp.promoted_at, tp.created_at) AS signal_at
      FROM trade_plans tp
      JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
@@ -4258,7 +4280,9 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
      ORDER BY COALESCE(tp.promoted_at, tp.created_at) DESC`,
     [session.tenant_id, session.session_date ?? newYorkDate()]
   );
-  const strategyProfile = releaseGateProfileCode(moduleCode, setup) ?? String(setup.scenario ?? "UNCLASSIFIED");
+  const strategyProfile = moduleCode === "orb_max_options"
+    ? module1StrategyProfile(setup)
+    : releaseGateProfileCode(moduleCode, setup) ?? String(setup.scenario ?? "UNCLASSIFIED");
   const moduleConfiguration = moduleCode === "orb_max_options"
     ? await getTenantOrbStrategyConfiguration(session.tenant_id, session.configuration_json)
     : {};
@@ -4270,14 +4294,23 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
     : PRODUCTION_SIGNAL_POLICY.maximumSignalsPerNewYorkDate;
   const profilePlans = plans.rows.filter((row: any) =>
     row.module_code === moduleCode
-    && (releaseGateProfileCode(row.module_code, row) ?? String(row.scenario ?? "UNCLASSIFIED")) === strategyProfile
+    && (row.module_code === "orb_max_options"
+      ? module1StrategyProfile(row)
+      : releaseGateProfileCode(row.module_code, row) ?? String(row.scenario ?? "UNCLASSIFIED")) === strategyProfile
   );
+  const profileConfiguration = strategyProfile === "HORIZONTAL_RANGE_BREAKOUT"
+    ? objectRecord(objectRecord((moduleConfiguration as any)?.strategyProfiles).horizontal)
+    : objectRecord(objectRecord((moduleConfiguration as any)?.strategyProfiles).orb);
+  const configuredProfileMaximum = Math.max(1, Math.round(Number(profileConfiguration.maximumSignalsPerDay ?? 1)));
+  const profileMaximum = moduleCode === "orb_max_options"
+    ? Math.min(PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile, configuredProfileMaximum)
+    : PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile;
   const reasons: string[] = [];
   if (plans.rows.length >= subscriberDailyMaximum) {
     reasons.push(`Your daily quality-signal limit of ${subscriberDailyMaximum} has been reached.`);
   }
-  if (profilePlans.length >= PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile) {
-    reasons.push(`${strategyProfile} has reached its daily limit of ${PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile} quality signals.`);
+  if (profilePlans.length >= profileMaximum) {
+    reasons.push(`${strategyProfile} has reached its daily limit of ${profileMaximum} quality signals.`);
   }
   const signalAt = new Date(setup.detected_at ?? Date.now()).getTime();
   const previousSignalAt = profilePlans[0]?.signal_at ? new Date(profilePlans[0].signal_at).getTime() : Number.NaN;
@@ -4291,7 +4324,7 @@ async function productionSignalFrequencyGate(session: any, moduleCode: string, s
     dailyMaximum: subscriberDailyMaximum,
     strategyProfile,
     profileSignals: profilePlans.length,
-    profileMaximum: PRODUCTION_SIGNAL_POLICY.maximumSignalsPerStrategyProfile,
+    profileMaximum,
     cooldownMinutes: PRODUCTION_SIGNAL_POLICY.sameProfileCooldownMinutes,
     elapsedMinutes: Number.isFinite(elapsedMinutes) ? Number(elapsedMinutes.toFixed(1)) : null,
     reasons
@@ -4508,6 +4541,9 @@ async function attemptProductionPaperTrade({
     stop_price: signalPlan.planned_stop,
     target_price: signalPlan.planned_target
   };
+  if (moduleCode === "orb_max_options") {
+    await ensureModule1StopShadowCandidates(session, signalSetup, current);
+  }
   const alert = entryAlertDetails(moduleCode, signalSetup, null, Number(signalPlan.reward_to_risk ?? effectiveRisk?.rewardToRisk ?? 0));
   const duplicateThesis = await query(
     `SELECT id, created_at
@@ -5329,6 +5365,142 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
   return { checked: openTrades.rows.length, closed, shadow };
 }
 
+async function ensureModule1StopShadowCandidates(session: any, setup: any, currentRow: any) {
+  const flags = objectRecord(setup.scenario_flags);
+  const horizontal = module1StrategyProfile(setup) === "HORIZONTAL_RANGE_BREAKOUT";
+  const tradePlan = horizontal
+    ? objectRecord(objectRecord(flags.horizontalRangeSignal).tradePlan)
+    : objectRecord(flags.tradePlan);
+  const entry = Number(setup.entry_price);
+  const baselineStop = Number(setup.stop_price);
+  const structuralInvalidation = Number(tradePlan.structuralInvalidation ?? baselineStop);
+  const atr = nullableFiniteNumber(tradePlan.atr);
+  const candidates = buildModule1StopShadowCandidates({
+    direction: setup.direction === "SHORT" ? "SHORT" : "LONG",
+    entry,
+    baselineStop,
+    structuralInvalidation,
+    atr,
+    spread: nullableFiniteNumber(currentRow?.spread),
+    baselineMinimumStopAtr: nullableFiniteNumber(tradePlan.minimumStopAtr),
+    baselineLiquidityBufferAtr: nullableFiniteNumber(tradePlan.liquidityBufferAtr)
+  });
+  const startedAt = new Date(setup.detected_at ?? rowTimestamp(currentRow));
+  const marketClose = xauUsdDailyMarketClose(startedAt);
+  const sessionEnd = new Date(session.signal_window_end_at);
+  const observationUntil = marketClose && marketClose < sessionEnd ? marketClose : sessionEnd;
+  for (const candidate of candidates) {
+    const skipped = !candidate.tradeAccepted;
+    await query(
+      `INSERT INTO module1_stop_shadow_observations (
+        tenant_id, setup_candidate_id, strategy_profile, direction, candidate_code, candidate_label,
+        entry_price, stop_price, target_price, risk_distance, atr, stop_distance_atr,
+        minimum_stop_atr, liquidity_buffer_atr, trade_accepted, rejection_reason,
+        started_at, observation_until, status, outcome, result_r, remaining_fraction, completed_at
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+        CASE WHEN $15 THEN 'ACTIVE' ELSE 'SKIPPED' END,
+        CASE WHEN $15 THEN 'ACTIVE' ELSE 'SKIPPED' END,
+        CASE WHEN $15 THEN NULL ELSE 0 END,
+        CASE WHEN $15 THEN 1 ELSE 0 END,
+        CASE WHEN $15 THEN NULL ELSE $17::timestamptz END
+      )
+      ON CONFLICT (setup_candidate_id, candidate_code) DO NOTHING`,
+      [
+        session.tenant_id,
+        setup.id,
+        module1StrategyProfile(setup),
+        setup.direction,
+        candidate.code,
+        candidate.label,
+        candidate.entry,
+        candidate.stop,
+        candidate.target,
+        candidate.riskDistance,
+        atr,
+        candidate.stopDistanceAtr,
+        candidate.minimumStopAtr,
+        candidate.liquidityBufferAtr,
+        candidate.tradeAccepted,
+        candidate.rejectionReason,
+        startedAt.toISOString(),
+        observationUntil.toISOString()
+      ]
+    );
+  }
+  return { candidates: candidates.length, observationUntil: observationUntil.toISOString() };
+}
+
+async function processModule1StopShadowCandidates(symbol: string, latestRow: any, tenantId: string) {
+  const latest = toCandle(latestRow);
+  const active = await query(
+    `SELECT observation.*
+     FROM module1_stop_shadow_observations observation
+     JOIN setup_candidates setup ON setup.id = observation.setup_candidate_id
+     WHERE observation.tenant_id = $1
+       AND setup.symbol = $2
+       AND observation.status = 'ACTIVE'
+       AND observation.started_at < $3::timestamptz
+     ORDER BY observation.started_at, observation.candidate_code`,
+    [tenantId, symbol, latest.timestampUtc]
+  );
+  let completed = 0;
+  for (const observation of active.rows as any[]) {
+    const previousTargetIndex = Number(observation.target_hit_index ?? 0);
+    const next = evaluateModule1StopShadowCandle({
+      direction: observation.direction,
+      entry: Number(observation.entry_price),
+      stop: Number(observation.stop_price),
+      target: Number(observation.target_price),
+      riskDistance: Number(observation.risk_distance),
+      targetHitIndex: previousTargetIndex,
+      realizedR: Number(observation.realized_r ?? 0),
+      remainingFraction: Number(observation.remaining_fraction ?? 1),
+      maximumFavorableExcursionR: Number(observation.maximum_favorable_excursion_r ?? 0),
+      maximumAdverseExcursionR: Number(observation.maximum_adverse_excursion_r ?? 0),
+      observationUntil: observation.observation_until
+    }, latest);
+    await query(
+      `UPDATE module1_stop_shadow_observations SET
+         status = CASE WHEN $2 THEN 'COMPLETED' ELSE 'ACTIVE' END,
+         outcome = $3,
+         close_reason = $4,
+         exit_price = $5,
+         result_r = $6,
+         target_hit_index = $7,
+         tp1_hit_at = CASE WHEN tp1_hit_at IS NULL AND $7 >= 1 AND $13 < 1 THEN $8::timestamptz ELSE tp1_hit_at END,
+         tp2_hit_at = CASE WHEN tp2_hit_at IS NULL AND $7 >= 2 AND $13 < 2 THEN $8::timestamptz ELSE tp2_hit_at END,
+         tp3_hit_at = CASE WHEN tp3_hit_at IS NULL AND $7 >= 3 AND $13 < 3 THEN $8::timestamptz ELSE tp3_hit_at END,
+         realized_r = $9,
+         remaining_fraction = $10,
+         maximum_favorable_excursion_r = $11,
+         maximum_adverse_excursion_r = $12,
+         ambiguous_exit = ambiguous_exit OR $14,
+         completed_at = CASE WHEN $2 THEN $8::timestamptz ELSE completed_at END,
+         updated_at = now()
+       WHERE id = $1`,
+      [
+        observation.id,
+        next.completed,
+        next.outcome,
+        next.closeReason,
+        next.exitPrice,
+        next.resultR,
+        next.targetHitIndex,
+        latest.timestampUtc,
+        next.realizedR,
+        next.remainingFraction,
+        next.maximumFavorableExcursionR,
+        next.maximumAdverseExcursionR,
+        previousTargetIndex,
+        next.ambiguous
+      ]
+    );
+    if (next.completed) completed += 1;
+  }
+  return { checked: active.rows.length, completed };
+}
+
 async function resolvePaperMarketBreakExit(trade: any, latestRow: any, timeframe: number) {
   const symbol = String(trade.symbol ?? "");
   const openedAt = new Date(trade.opened_at);
@@ -5721,6 +5893,11 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     maximumWeeklyLossPercent: Number(row.maximum_weekly_loss_percent)
   });
   const configuration = await getTenantOrbStrategyConfiguration(session.tenant_id, session.configuration_json);
+  const orbRisk = objectRecord(objectRecord(objectRecord(configuration.strategyProfiles).orb).risk);
+  const orbConfiguration = {
+    ...configuration,
+    risk: { ...objectRecord(configuration.risk), ...orbRisk }
+  };
   const news = await economicEventStatus(currentCandle.timestampUtc);
   const ruleContext: RuleContext = {
     now: currentCandle.timestampUtc,
@@ -5744,12 +5921,12 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
     spread: currentCandle.spread ?? undefined,
     newsStatus: news.status,
     riskStatus: initialRisk.status,
-    configuration: configuration as any
+    configuration: orbConfiguration as any
   };
   const rangeEngineMetadata = buildModule1RangeEngineMetadata(session, range, currentCandle, previousRows.map(toCandle), configuration);
   let decision = withModule1RangeMetadata(
     range,
-    withChecklistMetadata("orb_max_options", evaluateSetup(ruleContext)),
+    withChecklistMetadata("orb_max_options", applyModule1ProfilePolicy(evaluateSetup(ruleContext), rangeEngineMetadata.profilePolicies.orb)),
     rangeEngineMetadata
   );
   const horizontalDecision = buildHorizontalRangeSetupDecision(rangeEngineMetadata, currentCandle, session);
@@ -5768,7 +5945,7 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
       withChecklistMetadata("orb_max_options", applyModule1NewsGate(
         usingHorizontalDecision && horizontalDecision
           ? horizontalDecision
-          : evaluateSetup({ ...ruleContext, riskStatus: risk.status }),
+          : applyModule1ProfilePolicy(evaluateSetup({ ...ruleContext, riskStatus: risk.status }), rangeEngineMetadata.profilePolicies.orb),
         news.status,
         configuration?.newsFilter,
         news.reason,
@@ -5797,10 +5974,10 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
   };
   const saved = await query(
     `INSERT INTO setup_candidates (
-      tenant_id, module_code, session_id, strategy_version_id, symbol, scenario, direction, status, detected_at,
+      tenant_id, module_code, strategy_profile, session_id, strategy_version_id, symbol, scenario, direction, status, detected_at,
       expires_at, entry_price, stop_price, target_price, final_reason,
       favorability_score, favorability_grade, favorability_reasons, scenario_flags
-    ) VALUES ($17,'orb_max_options',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+    ) VALUES ($17,'orb_max_options',$18,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
     [
       session.id,
       session.strategy_version_id,
@@ -5818,7 +5995,8 @@ async function evaluateAndSaveSetup(session: any, range: any, currentRow: any, p
       decision.favorabilityGrade,
       JSON.stringify(decision.favorabilityReasons),
       JSON.stringify(decision.scenarioFlags),
-      session.tenant_id
+      session.tenant_id,
+      decision.scenario.startsWith("HORIZONTAL_RANGE_") ? "HORIZONTAL_RANGE_BREAKOUT" : "ORB_BREAKOUT"
     ]
   );
   await persistGenericRangeEngineEvidence(session, saved.rows[0], rangeEngineMetadata, currentCandle, previousRows.map(toCandle));
@@ -5870,11 +6048,13 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
   const rangeEngine = objectRecord(configuration.rangeEngine);
   const horizontalInput = objectRecord(rangeEngine.horizontalRange);
   const activeNewYorkRange = isModule1ActiveOrbPreset(range.module1RangeSessionPreset ?? session.session_preset);
-  const horizontalSignalMode = horizontalInput.signalMode === "DISABLED" ? "DISABLED" : "ACTIVE_SIGNAL";
+  const orbPolicy = resolveModule1ProfilePolicy({ configuration, session, timestamp: currentCandle.timestampUtc, profile: "ORB_BREAKOUT" });
+  const horizontalPolicy = resolveModule1ProfilePolicy({ configuration, session, timestamp: currentCandle.timestampUtc, profile: "HORIZONTAL_RANGE_BREAKOUT" });
+  const horizontalSignalMode = horizontalInput.signalMode === "DISABLED" || !horizontalPolicy.enabled ? "DISABLED" : "ACTIVE_SIGNAL";
   const horizontalConfig = {
     ...DEFAULT_HORIZONTAL_RANGE_CONFIG,
     ...horizontalInput,
-    enabled: activeNewYorkRange && horizontalInput.enabled === true && horizontalSignalMode === "ACTIVE_SIGNAL",
+    enabled: activeNewYorkRange && horizontalInput.enabled === true,
     observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL"
   };
   const context = {
@@ -5985,8 +6165,12 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
       })
     : null;
 
-  const configuredMinimumStopAtr = Number(configuration?.risk?.minimumStopAtr ?? 2);
-  const configuredLiquidityBufferAtr = Number(configuration?.risk?.liquidityBufferAtr ?? 0.25);
+  const orbRisk = objectRecord(objectRecord(objectRecord(configuration.strategyProfiles).orb).risk);
+  const horizontalRisk = objectRecord(objectRecord(objectRecord(configuration.strategyProfiles).horizontal).risk);
+  const configuredMinimumStopAtr = Number(orbRisk.minimumStopAtr ?? configuration?.risk?.minimumStopAtr ?? 2);
+  const configuredLiquidityBufferAtr = Number(orbRisk.liquidityBufferAtr ?? configuration?.risk?.liquidityBufferAtr ?? 0.25);
+  const configuredHorizontalMinimumStopAtr = Number(horizontalRisk.minimumStopAtr ?? configuration?.risk?.minimumStopAtr ?? 2);
+  const configuredHorizontalLiquidityBufferAtr = Number(horizontalRisk.liquidityBufferAtr ?? configuration?.risk?.liquidityBufferAtr ?? 0.25);
   return {
     version: "GENERIC_RANGE_ENGINE_V1",
     authoritativeDetector: "MAX_OPTIONS_NY_ORB",
@@ -5998,6 +6182,8 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
     minimumStopAtr: Number.isFinite(configuredMinimumStopAtr) ? Math.max(2, configuredMinimumStopAtr) : 2,
     liquidityBufferAtr: Number.isFinite(configuredLiquidityBufferAtr) ? Math.max(0.25, configuredLiquidityBufferAtr) : 0.25,
     nyOnly: true,
+    profileMode: orbPolicy.mode,
+    profilePolicies: { orb: orbPolicy, horizontal: horizontalPolicy },
     breakout,
     falseBreakout,
     retest,
@@ -6017,6 +6203,9 @@ export function buildModule1RangeEngineMetadata(session: any, range: any, curren
       nyOnly: true,
       observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL",
       signalMode: horizontalSignalMode,
+      profilePolicy: horizontalPolicy,
+      minimumStopAtr: Number.isFinite(configuredHorizontalMinimumStopAtr) ? Math.max(2, configuredHorizontalMinimumStopAtr) : 2,
+      liquidityBufferAtr: Number.isFinite(configuredHorizontalLiquidityBufferAtr) ? Math.max(0.25, configuredHorizontalLiquidityBufferAtr) : 0.25,
       range: horizontalRange,
       candidateRange: horizontalResult.candidateRange ?? null,
       lifecycle: horizontalLifecycle,
@@ -6038,7 +6227,7 @@ export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, curr
   const breakout = horizontal?.breakout;
   const retest = horizontal?.retest;
   const decision = horizontal?.decision;
-  if (!horizontal?.enabled || !range || !["BUY_READY", "SELL_READY"].includes(String(decision?.status))) return null;
+  if (!horizontal?.enabled || !horizontal?.profilePolicy?.eligible || !range || !["BUY_READY", "SELL_READY"].includes(String(decision?.status))) return null;
   const direction: Direction = decision.status === "BUY_READY" ? "LONG" : "SHORT";
   const entry = currentCandle.close;
   const estimatedAtr = Number(range.widthAtr) && Number(range.widthAtr) > 0 ? Number(range.width) / Number(range.widthAtr) : Number(range.width);
@@ -6056,8 +6245,8 @@ export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, curr
     structuralInvalidation,
     atr,
     spread: currentCandle.spread,
-    minimumStopAtr: rangeEngineMetadata?.minimumStopAtr,
-    liquidityBufferAtr: rangeEngineMetadata?.liquidityBufferAtr
+    minimumStopAtr: horizontal?.minimumStopAtr,
+    liquidityBufferAtr: horizontal?.liquidityBufferAtr
   });
   const stop = stopPlan.stop;
   const riskDistance = Math.max(Math.abs(entry - stop), 0.00001);
@@ -6083,6 +6272,8 @@ export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, curr
     evaluations,
     scenarioFlags: {
       setupTier: "HORIZONTAL",
+      strategyProfile: "HORIZONTAL_RANGE_BREAKOUT",
+      profilePolicy: horizontal.profilePolicy,
       fullChecklistMatched: true,
       mandatoryChecklistMatched: true,
       horizontalRangeSignal: {
@@ -6126,6 +6317,33 @@ export function buildHorizontalRangeSetupDecision(rangeEngineMetadata: any, curr
       retest?.reason ?? "Retest confirmed",
       "Horizontal profile promoted to Module 1 MVP signal path"
     ]
+  };
+}
+
+export function applyModule1ProfilePolicy(decision: SetupDecision, policy: Module1ProfilePolicy): SetupDecision {
+  const ready = ["LONG SETUP READY", "SHORT SETUP READY"].includes(String(decision.status));
+  const evaluation: RuleEvaluation = {
+    ruleCode: "STRATEGY_PROFILE_ELIGIBILITY",
+    name: `${policy.profile === "ORB_BREAKOUT" ? "ORB" : "Horizontal Breakout"} profile window`,
+    status: policy.eligible ? "PASS" : "FAIL",
+    blocking: true,
+    source: "AUTOMATIC",
+    ruleLayer: "MANDATORY",
+    requiredForEntry: true,
+    actualValue: policy.eligible ? "ELIGIBLE" : "INELIGIBLE",
+    requiredValue: "ELIGIBLE",
+    explanation: policy.reason
+  };
+  return {
+    ...decision,
+    status: ready && !policy.eligible ? "BLOCKED" : decision.status,
+    finalReason: ready && !policy.eligible ? policy.reason : decision.finalReason,
+    evaluations: [...decision.evaluations.filter((item) => item.ruleCode !== evaluation.ruleCode), evaluation],
+    scenarioFlags: {
+      ...(decision.scenarioFlags ?? {}),
+      strategyProfile: policy.profile,
+      profilePolicy: policy
+    }
   };
 }
 
@@ -6463,8 +6681,8 @@ async function observeModule1HorizontalBreakouts(session: any, setup: any, metad
     structuralInvalidation,
     atr,
     spread: breakoutCandle.spread,
-    minimumStopAtr: metadata?.minimumStopAtr,
-    liquidityBufferAtr: metadata?.liquidityBufferAtr
+    minimumStopAtr: horizontal?.minimumStopAtr,
+    liquidityBufferAtr: horizontal?.liquidityBufferAtr
   });
   const risk = Math.abs(entry - stopPlan.stop);
   if (!Number.isFinite(risk) || risk <= 0) return;
@@ -7420,6 +7638,12 @@ function numericParam(value: unknown, decimals: number) {
   return Number(number.toFixed(decimals));
 }
 
+function nullableFiniteNumber(value: unknown) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 async function notifyOnce(eventKey: string, eventType: string, title: string, body: string) {
   const tenantId = await defaultTenantId();
   return notifyTenantOnce(tenantId, eventKey, eventType, title, body);
@@ -7517,9 +7741,12 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
   const grade = setup.favorability_grade ?? setup.scenario_flags?.tradeGrade ?? setup.scenario_flags?.grade ?? null;
   const confidence = setup.favorability_score ?? setup.scenario_flags?.confidence ?? null;
   const rr = Number.isFinite(rewardToRisk) ? rewardToRisk.toFixed(2) : "--";
-  const title = `${moduleName}: ${setupTier === "MANDATORY" ? "Core" : "Full"} ${action} ${direction}`;
+  const strategyProfile = moduleCode === "orb_max_options" ? module1StrategyProfile(setup) : null;
+  const profileLabel = strategyProfile === "HORIZONTAL_RANGE_BREAKOUT" ? "Horizontal Breakout" : strategyProfile === "ORB_BREAKOUT" ? "ORB" : null;
+  const title = `${moduleName}${profileLabel ? ` ${profileLabel}` : ""}: ${setupTier === "MANDATORY" ? "Core" : "Full"} ${action} ${direction}`;
   const bodyParts = [
     setupTier === "MANDATORY" ? "Mandatory setup" : "Full checklist setup",
+    profileLabel ? `Profile ${profileLabel}` : null,
     variantLabel ? `Variant ${variantLabel}` : null,
     `${scenario}`,
     `Entry ${entry}`,
@@ -7537,6 +7764,8 @@ function entryAlertDetails(moduleCode: string, setup: any, trade: any, rewardToR
     data: {
       moduleCode,
       moduleName,
+      strategyProfile,
+      profileLabel,
       setupTier,
       variantCode: variant?.code ?? setup.scenario_flags?.variantCode ?? null,
       variantName: variant?.name ?? null,

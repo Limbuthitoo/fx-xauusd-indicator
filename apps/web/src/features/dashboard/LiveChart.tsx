@@ -253,7 +253,7 @@ function shouldShowPriceLine(moduleCode: string, line: ChartPriceLine, visibilit
 
 function isModule1HorizontalRangeActive(setup: TwelveDataChartProps["setup"]) {
   const horizontal = setup?.scenario_flags?.horizontalRangeObservation ?? setup?.scenario_flags?.genericRangeEngine?.horizontal;
-  if (horizontal?.enabled !== true || !horizontal?.range) return false;
+  if (horizontal?.enabled !== true || horizontal?.profilePolicy?.eligible !== true || !horizontal?.range) return false;
   const status = String(horizontal.status ?? horizontal.range?.state ?? "").toUpperCase();
   const decisionStatus = String(horizontal?.decision?.status ?? "").toUpperCase();
   return ["VALID", "LOCKED", "BREAKOUT_CANDIDATE", "BREAKOUT_CONFIRMED", "WAITING_FOR_RETEST", "RETEST_CONFIRMED", "ENTRY_READY", "BUY_READY", "SELL_READY", "TRADE_ACTIVE"].includes(status)
@@ -735,7 +735,7 @@ export function TwelveDataChart({ symbol, timeframeMinutes, moduleCode = "orb_ma
               ) : (
                 <span><i style={{ background: "#56616b" }} />NY ORB levels hidden</span>
               )}
-              <span><i style={{ background: "#8b5cf6" }} />NY horizontal breakout</span>
+              {indicatorVisibility.horizontalRange !== false ? <span><i style={{ background: "#8b5cf6" }} />NY horizontal breakout</span> : null}
             </>
           )}
         </div>
@@ -1398,7 +1398,7 @@ function buildPositionedOverlays(input: {
     }
     const horizontal = input.setup?.scenario_flags?.horizontalRangeObservation ?? input.setup?.scenario_flags?.genericRangeEngine?.horizontal;
     const horizontalRange = horizontal?.range;
-    if (input.indicatorVisibility?.horizontalRange !== false && horizontal?.enabled === true && horizontalRange?.low != null && horizontalRange?.high != null) {
+    if (input.indicatorVisibility?.horizontalRange !== false && horizontal?.enabled === true && horizontal?.profilePolicy?.enabled !== false && horizontalRange?.low != null && horizontalRange?.high != null) {
       addBox(
         "module1-horizontal-breakout",
         "NY horizontal breakout",

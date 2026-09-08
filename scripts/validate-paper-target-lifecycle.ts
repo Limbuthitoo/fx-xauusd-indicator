@@ -79,6 +79,27 @@ try {
   ))[0];
   add("Migration 105", Boolean(tp2BreakevenMigration), "TP2 breakeven production migration is recorded.", "Migration 105 is missing from schema_migrations.", tp2BreakevenMigration);
 
+  const profileSeparationMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '107_module1_strategy_profile_separation.sql'`
+  ))[0];
+  add("Migration 107", Boolean(profileSeparationMigration), "Module 1 strategy profiles are separated.", "Migration 107 is missing from schema_migrations.", profileSeparationMigration);
+
+  const stopShadowMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '108_module1_profile_stop_shadow.sql'`
+  ))[0];
+  add("Migration 108", Boolean(stopShadowMigration), "Module 1 profile stop calibration is installed.", "Migration 108 is missing from schema_migrations.", stopShadowMigration);
+
+  const targetRepairMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '109_repair_missing_paper_target_ladders.sql'`
+  ))[0];
+  add("Migration 109", Boolean(targetRepairMigration), "Legacy active paper target ladders are repaired.", "Migration 109 is missing from schema_migrations.", targetRepairMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -105,6 +126,8 @@ try {
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'shadow_max_favorable_excursion_r') AS shadow_mfe,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'shadow_max_adverse_before_tp1_r') AS shadow_mae,
        to_regclass('public.module1_stop_calibration') IS NOT NULL AS stop_calibration_view,
+       to_regclass('public.module1_stop_shadow_observations') IS NOT NULL AS profile_stop_shadow_table,
+       to_regclass('public.module1_profile_stop_shadow_calibration') IS NOT NULL AS profile_stop_shadow_view,
        to_regclass('public.economic_calendar_sync_state') IS NOT NULL AS calendar_sync_state,
        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'economic_events' AND column_name = 'external_event_id') AS external_event_id,
        to_regclass('public.economic_events_provider_external_id_idx') IS NOT NULL AS calendar_dedup_index,
@@ -125,6 +148,20 @@ try {
   add("Lifecycle schema", schemaReady, "Target table, structural-risk columns, and milestone uniqueness index are installed.", "The multi-target schema is incomplete.", schemaRow);
 
   if (!schemaReady) finish();
+
+  const invalidProfileStopShadows = await rows(
+    `SELECT id, strategy_profile, direction, status, outcome, trade_accepted,
+            risk_distance, target_hit_index, realized_r, remaining_fraction
+     FROM module1_stop_shadow_observations
+     WHERE risk_distance <= 0
+        OR target_hit_index NOT BETWEEN 0 AND 3
+        OR remaining_fraction NOT BETWEEN 0 AND 1
+        OR (status = 'SKIPPED' AND (trade_accepted OR outcome <> 'SKIPPED'))
+        OR (status = 'COMPLETED' AND outcome NOT IN ('WIN', 'LOSS', 'BREAKEVEN'))
+        OR (status = 'ACTIVE' AND outcome <> 'ACTIVE')
+     LIMIT 50`
+  );
+  add("Profile stop shadows", invalidProfileStopShadows.length === 0, "ORB and Horizontal stop candidates have valid observe-only lifecycle state.", `${invalidProfileStopShadows.length} stop candidate record(s) are inconsistent.`, invalidProfileStopShadows);
 
   if (analyticsMigration) {
     const analyticsSchema = (await rows(

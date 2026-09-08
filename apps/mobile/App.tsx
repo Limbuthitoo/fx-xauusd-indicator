@@ -971,7 +971,7 @@ function AppContent() {
     setPushPreferences(normalizePushPreferences(result.preferences));
   }
 
-  async function saveTradeSetup(input: { sessionPreset: string; maximumSignalsPerDay: number }) {
+  async function saveTradeSetup(input: { sessionPreset: string; maximumSignalsPerDay: number; profileMode: string; maximumOrbSignalsPerDay: number; maximumHorizontalSignalsPerDay: number }) {
     if (!token) return;
     const current = dashboard?.orbStrategy ?? {};
     const maximumSignalsPerDay = Math.min(3, Math.max(1, Math.round(input.maximumSignalsPerDay)));
@@ -980,7 +980,19 @@ function AppContent() {
       tradeSetup: {
         ...(current.tradeSetup ?? {}),
         enabledSessionPresets: [input.sessionPreset],
+        profileMode: input.profileMode,
         maximumSignalsPerDay
+      },
+      strategyProfiles: {
+        ...(current.strategyProfiles ?? {}),
+        orb: {
+          ...(current.strategyProfiles?.orb ?? {}),
+          maximumSignalsPerDay: Math.min(2, Math.max(1, Math.round(input.maximumOrbSignalsPerDay)))
+        },
+        horizontal: {
+          ...(current.strategyProfiles?.horizontal ?? {}),
+          maximumSignalsPerDay: Math.min(2, Math.max(1, Math.round(input.maximumHorizontalSignalsPerDay)))
+        }
       },
       risk: { ...(current.risk ?? {}), maximumTradesPerSession: maximumSignalsPerDay },
       paperTrading: { ...(current.paperTrading ?? {}), maximumTradesPerSession: maximumSignalsPerDay }
@@ -2482,7 +2494,7 @@ function MoreScreen({
   onTestPush: () => void;
   onDisablePushDevice: (deviceId: string) => void;
   onSavePushPreferences: (preferences: PushPreferences) => void;
-  onSaveTradeSetup: (input: { sessionPreset: string; maximumSignalsPerDay: number }) => void;
+  onSaveTradeSetup: (input: { sessionPreset: string; maximumSignalsPerDay: number; profileMode: string; maximumOrbSignalsPerDay: number; maximumHorizontalSignalsPerDay: number }) => void;
   onStartMfa: () => Promise<{ secret: string; otpAuthUrl: string }>;
   onEnableMfa: (otp: string) => void;
   onDisableMfa: (otp: string) => void;
@@ -2500,10 +2512,16 @@ function MoreScreen({
   const [mfaCode, setMfaCode] = useState("");
   const [sessionPreset, setSessionPreset] = useState("NEW_YORK_ORB");
   const [maximumSignalsPerDay, setMaximumSignalsPerDay] = useState(3);
+  const [profileMode, setProfileMode] = useState("ORB_AND_HORIZONTAL");
+  const [maximumOrbSignalsPerDay, setMaximumOrbSignalsPerDay] = useState(1);
+  const [maximumHorizontalSignalsPerDay, setMaximumHorizontalSignalsPerDay] = useState(1);
 
   useEffect(() => {
     setSessionPreset(String(dashboard?.orbStrategy?.tradeSetup?.enabledSessionPresets?.[0] ?? "NEW_YORK_ORB"));
     setMaximumSignalsPerDay(Math.min(3, Math.max(1, Number(dashboard?.orbStrategy?.tradeSetup?.maximumSignalsPerDay ?? 3))));
+    setProfileMode(String(dashboard?.orbStrategy?.tradeSetup?.profileMode ?? "ORB_AND_HORIZONTAL"));
+    setMaximumOrbSignalsPerDay(Math.min(2, Math.max(1, Number(dashboard?.orbStrategy?.strategyProfiles?.orb?.maximumSignalsPerDay ?? 1))));
+    setMaximumHorizontalSignalsPerDay(Math.min(2, Math.max(1, Number(dashboard?.orbStrategy?.strategyProfiles?.horizontal?.maximumSignalsPerDay ?? 1))));
   }, [dashboard?.orbStrategy]);
 
   function submitTicket() {
@@ -2602,6 +2620,14 @@ function MoreScreen({
       { preset: "NEW_YORK_ORB", label: "New York", window: "09:15-16:00 New York" }
     ];
     const selectedSession = sessions.find((session) => session.preset === sessionPreset) ?? sessions[3];
+    const profileModes = sessionPreset === "NEW_YORK_ORB"
+      ? [
+          { value: "ORB_AND_HORIZONTAL", label: "ORB + Horizontal" },
+          { value: "ORB_ONLY", label: "ORB only" },
+          { value: "HORIZONTAL_ONLY", label: "Horizontal only" }
+        ]
+      : [{ value: "ORB_ONLY", label: "ORB only" }];
+    const profileLabel = profileModes.find((profile) => profile.value === profileMode)?.label ?? "ORB only";
     return (
       <>
         <MoreHeader title="Trade Setup" onBack={() => setView("menu")} />
@@ -2609,18 +2635,32 @@ function MoreScreen({
           <Metric label="New York" value={dashboard?.clocks.newYork ?? "--"} />
           <Metric label="Nepal" value={dashboard?.clocks.nepal ?? "--"} />
           <Metric label="Session" value={selectedSession.label} />
+          <Metric label="Profiles" value={profileLabel} />
           <Metric label="Daily signals" value={maximumSignalsPerDay} />
         </View>
         <View style={styles.moreMenuGroup}>
           <Text style={styles.sectionMini}>Trading Session</Text>
           <View style={styles.ticketTypeGrid}>
             {sessions.map((session) => (
-              <Pressable key={session.preset} style={[styles.ticketTypeButton, sessionPreset === session.preset && styles.ticketTypeButtonActive]} onPress={() => setSessionPreset(session.preset)}>
+              <Pressable key={session.preset} style={[styles.ticketTypeButton, sessionPreset === session.preset && styles.ticketTypeButtonActive]} onPress={() => {
+                setSessionPreset(session.preset);
+                if (session.preset !== "NEW_YORK_ORB") setProfileMode("ORB_ONLY");
+              }}>
                 <Text style={[styles.ticketTypeText, sessionPreset === session.preset && styles.ticketTypeTextActive]}>{session.label}</Text>
               </Pressable>
             ))}
           </View>
           <Text style={styles.reason}>{selectedSession.window}</Text>
+        </View>
+        <View style={styles.moreMenuGroup}>
+          <Text style={styles.sectionMini}>Strategy Profiles</Text>
+          <View style={styles.ticketTypeGrid}>
+            {profileModes.map((profile) => (
+              <Pressable key={profile.value} style={[styles.ticketTypeButton, profileMode === profile.value && styles.ticketTypeButtonActive]} onPress={() => setProfileMode(profile.value)}>
+                <Text style={[styles.ticketTypeText, profileMode === profile.value && styles.ticketTypeTextActive]}>{profile.label}</Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
         <View style={styles.moreMenuGroup}>
           <Text style={styles.sectionMini}>Signals Per Day</Text>
@@ -2633,7 +2673,9 @@ function MoreScreen({
               <Text style={styles.tradeLimitButtonText}>+</Text>
             </Pressable>
           </View>
-          <Pressable style={styles.fullButton} onPress={() => onSaveTradeSetup({ sessionPreset, maximumSignalsPerDay })}>
+          {profileMode !== "HORIZONTAL_ONLY" ? <TradeLimitRow label="ORB" value={maximumOrbSignalsPerDay} onDecrease={() => setMaximumOrbSignalsPerDay((value) => Math.max(1, value - 1))} onIncrease={() => setMaximumOrbSignalsPerDay((value) => Math.min(2, value + 1))} /> : null}
+          {sessionPreset === "NEW_YORK_ORB" && profileMode !== "ORB_ONLY" ? <TradeLimitRow label="Horizontal" value={maximumHorizontalSignalsPerDay} onDecrease={() => setMaximumHorizontalSignalsPerDay((value) => Math.max(1, value - 1))} onIncrease={() => setMaximumHorizontalSignalsPerDay((value) => Math.min(2, value + 1))} /> : null}
+          <Pressable style={styles.fullButton} onPress={() => onSaveTradeSetup({ sessionPreset, maximumSignalsPerDay, profileMode, maximumOrbSignalsPerDay, maximumHorizontalSignalsPerDay })}>
             <Text style={styles.fullButtonText}>Save Trade Setup</Text>
           </Pressable>
           <MoreMenuRow icon="alerts" title="Pre-session alert" subtitle="Controlled from Push Notification Settings." value={pushPreferences.nyPreSession ? "On" : "Off"} onPress={() => setView("push-settings")} />
@@ -2797,6 +2839,23 @@ function MoreScreen({
         </Pressable>
       </View>
     </>
+  );
+}
+
+function TradeLimitRow({ label, value, onDecrease, onIncrease }: { label: string; value: number; onDecrease: () => void; onIncrease: () => void }) {
+  return (
+    <View style={styles.profileLimitRow}>
+      <Text style={styles.moreMenuTitle}>{label}</Text>
+      <View style={styles.profileLimitControl}>
+        <Pressable accessibilityLabel={`Decrease ${label} signals`} style={styles.tradeLimitButton} onPress={onDecrease}>
+          <Text style={styles.tradeLimitButtonText}>-</Text>
+        </Pressable>
+        <Text style={styles.profileLimitValue}>{value}</Text>
+        <Pressable accessibilityLabel={`Increase ${label} signals`} style={styles.tradeLimitButton} onPress={onIncrease}>
+          <Text style={styles.tradeLimitButtonText}>+</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -4718,6 +4777,9 @@ const styles = StyleSheet.create({
   disabledButton: { opacity: 0.45 },
   ticketTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, marginBottom: 10 },
   tradeLimitControl: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 22, marginTop: 14 },
+  profileLimitRow: { minHeight: 58, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderTopColor: "#252c28", marginTop: 14, paddingTop: 14 },
+  profileLimitControl: { flexDirection: "row", alignItems: "center", gap: 12 },
+  profileLimitValue: { color: "#edf5f0", fontSize: 18, fontWeight: "800", minWidth: 24, textAlign: "center" },
   tradeLimitButton: { width: 46, height: 46, borderRadius: 6, borderWidth: 1, borderColor: "#38443e", backgroundColor: "#171b19", alignItems: "center", justifyContent: "center" },
   tradeLimitButtonText: { color: "#edf5f0", fontSize: 24, fontWeight: "900" },
   tradeLimitValue: { minWidth: 42, color: "#2fe6a8", fontSize: 30, fontWeight: "900", textAlign: "center" },

@@ -24,6 +24,8 @@ import { evaluateSignalExecutionQuality, evaluateSignalGeometryQuality, signalsA
 import { redactSensitiveText, redactSensitiveValue } from "../apps/api/src/infrastructure/security/redaction.js";
 import { validateModuleSetting } from "../apps/api/src/modules/admin/settings.js";
 import { candleReachesXauUsdDailyClose, isXauUsdTradableCandle, xauUsdDailyMarketClose } from "../apps/api/src/infrastructure/time.js";
+import { module1StrategyProfile, normalizeModule1ProfileMode, resolveModule1ProfilePolicy } from "../apps/api/src/modules/market-data/module1-profiles.js";
+import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "../apps/api/src/modules/trades/module1-stop-shadow.js";
 
 assert.equal(isXauUsdTradableCandle("XAUUSD", "2026-09-07T20:55:00Z"), true, "The final pre-maintenance XAU/USD candle must remain tradable during New York daylight time");
 assert.equal(isXauUsdTradableCandle("XAUUSD", "2026-09-07T21:05:00Z"), false, "Synthetic candles inside the XAU/USD daily maintenance hour must be excluded");
@@ -39,10 +41,104 @@ const subscriberTradeSetup = validateModuleSetting("orb_max_options", "orb.strat
 }) as any;
 assert.deepEqual(subscriberTradeSetup.tradeSetup.enabledSessionPresets, ["TOKYO_ORB"], "Subscriber automation must use one explicit session preset");
 assert.equal(subscriberTradeSetup.tradeSetup.maximumSignalsPerDay, 3, "Subscriber daily signals must stay inside the production cap");
+assert.equal(subscriberTradeSetup.tradeSetup.profileMode, "ORB_ONLY", "Non-New-York sessions must be normalized to the supported ORB-only profile");
+assert.equal(subscriberTradeSetup.strategyProfiles.orb.maximumSignalsPerDay, 1, "ORB must have an independent daily signal cap");
+assert.equal(subscriberTradeSetup.strategyProfiles.horizontal.maximumSignalsPerDay, 1, "Horizontal Breakout must have an independent daily signal cap");
 assert.equal(subscriberTradeSetup.risk.minimumStopAtr, 2, "Module 1 settings must preserve the volatility stop floor");
 assert.equal(subscriberTradeSetup.risk.liquidityBufferAtr, 0.25, "Module 1 settings must preserve the structural liquidity buffer");
 assert.equal(subscriberTradeSetup.newsFilter.enabled, true, "Module 1 economic-event protection must default on");
 assert.equal(subscriberTradeSetup.newsFilter.mode, "BLOCK", "Legacy high-impact news mode must normalize to a real blocking mode");
+assert.equal(normalizeModule1ProfileMode("horizontal_only"), "HORIZONTAL_ONLY", "Profile mode normalization must accept the supported modes");
+assert.equal(normalizeModule1ProfileMode("invalid"), "ORB_AND_HORIZONTAL", "Invalid profile modes must fall back safely");
+assert.equal(module1StrategyProfile({ strategy_profile: "HORIZONTAL_RANGE_BREAKOUT", scenario: "ORB_BREAKOUT" }), "HORIZONTAL_RANGE_BREAKOUT", "Persisted Module 1 profile identity must take priority over scenario parsing");
+const separatedSession = {
+  session_date: "2026-09-08",
+  session_preset: "NEW_YORK_ORB",
+  opening_range_end_at: "2026-09-08T13:30:00Z",
+  signal_window_end_at: "2026-09-08T20:00:00Z"
+};
+const newYorkTradeSetup = validateModuleSetting("orb_max_options", "orb.strategy", { tradeSetup: { enabledSessionPresets: ["NEW_YORK_ORB"] } }) as any;
+assert.equal(newYorkTradeSetup.tradeSetup.profileMode, "ORB_AND_HORIZONTAL", "New York must default to the separated combined profile mode");
+const normalizedOverlap = validateModuleSetting("orb_max_options", "orb.strategy", {
+  tradeSetup: { enabledSessionPresets: ["NEW_YORK_ORB"], profileMode: "ORB_AND_HORIZONTAL" },
+  strategyProfiles: { orb: { signalWindowEnd: "12:00" }, horizontal: { signalWindowStart: "10:00" } }
+}) as any;
+assert.equal(normalizedOverlap.strategyProfiles.horizontal.signalWindowStart, "12:00", "Combined profile windows must never overlap");
+const openingOrbPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: separatedSession, timestamp: "2026-09-08T14:55:00Z", profile: "ORB_BREAKOUT" });
+const openingHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: separatedSession, timestamp: "2026-09-08T14:55:00Z", profile: "HORIZONTAL_RANGE_BREAKOUT" });
+assert.equal(openingOrbPolicy.eligible, true, "ORB must own the opening window before 11:00 New York");
+assert.equal(openingHorizontalPolicy.eligible, false, "Horizontal Breakout must observe without signaling during the ORB window");
+const continuationOrbPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: separatedSession, timestamp: "2026-09-08T15:05:00Z", profile: "ORB_BREAKOUT" });
+const continuationHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: separatedSession, timestamp: "2026-09-08T15:05:00Z", profile: "HORIZONTAL_RANGE_BREAKOUT" });
+assert.equal(continuationOrbPolicy.eligible, false, "ORB must stop producing entries after its exclusive window");
+assert.equal(continuationHorizontalPolicy.eligible, true, "Horizontal Breakout must own the continuation window after 11:00 New York");
+const tokyoHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: { ...separatedSession, session_preset: "TOKYO_ORB" }, timestamp: "2026-09-08T15:05:00Z", profile: "HORIZONTAL_RANGE_BREAKOUT" });
+assert.equal(tokyoHorizontalPolicy.enabled, false, "Horizontal Breakout must remain New York only");
+const stopCandidates = buildModule1StopShadowCandidates({
+  direction: "LONG",
+  entry: 100,
+  baselineStop: 96,
+  structuralInvalidation: 96.5,
+  atr: 2,
+  spread: 0,
+  baselineMinimumStopAtr: 2,
+  baselineLiquidityBufferAtr: 0.25
+});
+assert.deepEqual(
+  stopCandidates.map((candidate) => candidate.code),
+  ["BASELINE_CURRENT", "STRUCTURAL_ATR_2_25", "STRUCTURAL_ATR_2_50", "SWING_BUFFER_0_50", "MAX_STOP_3_ATR"],
+  "Stop calibration must compare a stable candidate set"
+);
+assert.equal(stopCandidates.find((candidate) => candidate.code === "STRUCTURAL_ATR_2_50")!.riskDistance >= 5, true, "The 2.50 ATR challenger must be wider than the current 2 ATR floor");
+assert.equal(
+  buildModule1StopShadowCandidates({ direction: "LONG", entry: 100, baselineStop: 93, structuralInvalidation: 94, atr: 2 })
+    .find((candidate) => candidate.code === "MAX_STOP_3_ATR")!.tradeAccepted,
+  false,
+  "The maximum-stop policy must skip a setup whose required stop exceeds 3 ATR"
+);
+const shadowBase = {
+  direction: "LONG" as const,
+  entry: 100,
+  stop: 95,
+  target: 110,
+  riskDistance: 5,
+  realizedR: 0,
+  remainingFraction: 1,
+  maximumFavorableExcursionR: 0,
+  maximumAdverseExcursionR: 0,
+  observationUntil: "2026-09-08T20:00:00Z"
+};
+const shadowAfterTp1 = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 0 },
+  { timestampUtc: "2026-09-08T14:00:00Z", high: 105.5, low: 99, close: 105 }
+);
+assert.equal(shadowAfterTp1.completed, false, "TP1 must leave the shadow runner active on its structural stop");
+assert.equal(shadowAfterTp1.targetHitIndex, 1, "TP1 must be recorded once");
+const shadowStoppedAfterTp1 = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 1, realizedR: shadowAfterTp1.realizedR, remainingFraction: shadowAfterTp1.remainingFraction },
+  { timestampUtc: "2026-09-08T14:05:00Z", high: 104, low: 94.5, close: 96 }
+);
+assert.equal(shadowStoppedAfterTp1.resultR, -0.3333, "A stop after TP1 must preserve the booked third and lose only the remaining two thirds");
+const shadowAfterTp2 = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 1, realizedR: 0.3333, remainingFraction: 2 / 3 },
+  { timestampUtc: "2026-09-08T14:10:00Z", high: 108, low: 101, close: 107 }
+);
+const shadowBreakevenAfterTp2 = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 2, realizedR: shadowAfterTp2.realizedR, remainingFraction: shadowAfterTp2.remainingFraction },
+  { timestampUtc: "2026-09-08T14:15:00Z", high: 106, low: 99.5, close: 101 }
+);
+assert.equal(shadowBreakevenAfterTp2.resultR, 0.8333, "The runner may move to entry only after TP2, preserving +0.83R");
+const shadowTp3 = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 2, realizedR: 0.8333, remainingFraction: 1 / 3 },
+  { timestampUtc: "2026-09-08T14:20:00Z", high: 110.5, low: 101, close: 110 }
+);
+assert.equal(shadowTp3.resultR, 1.5, "The complete equal-third target ladder must settle at +1.50R");
+const ambiguousShadow = evaluateModule1StopShadowCandle(
+  { ...shadowBase, targetHitIndex: 0 },
+  { timestampUtc: "2026-09-08T14:25:00Z", high: 106, low: 94, close: 101 }
+);
+assert.equal(ambiguousShadow.resultR, -1, "A candle touching TP1 and stop must use conservative stop-first sequencing");
+assert.equal(ambiguousShadow.ambiguous, true, "Ambiguous shadow exits must remain visible in calibration evidence");
 const fetchedAt = new Date("2026-08-01T00:00:00Z");
 const blsFixture = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:cpi-2026-08\nDTSTART;TZID=US-Eastern:20260812T083000\nSUMMARY:Consumer Price Index\nEND:VEVENT\nBEGIN:VEVENT\nUID:minor\nDTSTART;TZID=US-Eastern:20260813T100000\nSUMMARY:Productivity and Costs\nEND:VEVENT\nEND:VCALENDAR`;
 const blsCalendar = parseBlsCalendar(blsFixture, fetchedAt);

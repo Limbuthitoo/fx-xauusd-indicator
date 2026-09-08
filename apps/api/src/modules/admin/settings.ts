@@ -1,11 +1,13 @@
 import { config } from "../../infrastructure/config.js";
 import { query } from "../../infrastructure/db/client.js";
 import { defaultLiquiditySweepConfiguration } from "@orb-guide/liquidity-sweep-engine";
+import { normalizeModule1ProfileMode } from "../market-data/module1-profiles.js";
 
 const SEVEN_DAY_FIVE_MINUTE_CANDLES = 7 * 24 * 12;
 const ORB_SESSION_PRESETS = ["SYDNEY_ORB", "TOKYO_ORB", "LONDON_ORB", "NEW_YORK_ORB"] as const;
 const DEFAULT_ORB_SESSION_PRESETS = ["NEW_YORK_ORB"];
 const MAXIMUM_DAILY_SIGNALS = 3;
+const MAXIMUM_PROFILE_SIGNALS = 2;
 
 export type RuntimeSettings = {
   symbol: string;
@@ -376,7 +378,18 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
   const horizontalSignalMode = String(horizontalRange.signalMode ?? "ACTIVE_SIGNAL") === "DISABLED" ? "DISABLED" : "ACTIVE_SIGNAL";
   const chart = objectValue(base.chart);
   const tradeSetup = objectValue(base.tradeSetup);
+  const strategyProfiles = objectValue(base.strategyProfiles);
+  const orbProfile = objectValue(strategyProfiles.orb);
+  const horizontalProfile = objectValue(strategyProfiles.horizontal);
   const maximumSignalsPerDay = positiveInteger(tradeSetup.maximumSignalsPerDay, MAXIMUM_DAILY_SIGNALS, MAXIMUM_DAILY_SIGNALS);
+  const enabledSessionPresets = sessionPresetsValue(tradeSetup.enabledSessionPresets);
+  const requestedProfileMode = normalizeModule1ProfileMode(tradeSetup.profileMode);
+  const profileMode = enabledSessionPresets[0] === "NEW_YORK_ORB" ? requestedProfileMode : "ORB_ONLY";
+  const orbSignalWindowEnd = timeValue(orbProfile.signalWindowEnd, "11:00");
+  const requestedHorizontalSignalWindowStart = timeValue(horizontalProfile.signalWindowStart, "11:00");
+  const horizontalSignalWindowStart = profileMode === "ORB_AND_HORIZONTAL" && requestedHorizontalSignalWindowStart < orbSignalWindowEnd
+    ? orbSignalWindowEnd
+    : requestedHorizontalSignalWindowStart;
 
   return {
     ...base,
@@ -388,8 +401,34 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
     signalTimeframeMinutes: supportedTimeframe(numberValue(base.signalTimeframeMinutes, defaults.timeframeMinutes)),
     tradeSetup: {
       ...tradeSetup,
-      enabledSessionPresets: sessionPresetsValue(tradeSetup.enabledSessionPresets),
+      enabledSessionPresets,
+      profileMode,
       maximumSignalsPerDay
+    },
+    strategyProfiles: {
+      ...strategyProfiles,
+      orb: {
+        ...orbProfile,
+        enabled: booleanValue(orbProfile.enabled, true),
+        signalWindowEnd: orbSignalWindowEnd,
+        maximumSignalsPerDay: positiveInteger(orbProfile.maximumSignalsPerDay, 1, MAXIMUM_PROFILE_SIGNALS),
+        risk: {
+          ...objectValue(orbProfile.risk),
+          minimumStopAtr: Math.max(2, positiveNumber(objectValue(orbProfile.risk).minimumStopAtr, 2, 4)),
+          liquidityBufferAtr: Math.max(0.25, positiveNumber(objectValue(orbProfile.risk).liquidityBufferAtr, 0.25, 1))
+        }
+      },
+      horizontal: {
+        ...horizontalProfile,
+        enabled: booleanValue(horizontalProfile.enabled, true),
+        signalWindowStart: horizontalSignalWindowStart,
+        maximumSignalsPerDay: positiveInteger(horizontalProfile.maximumSignalsPerDay, 1, MAXIMUM_PROFILE_SIGNALS),
+        risk: {
+          ...objectValue(horizontalProfile.risk),
+          minimumStopAtr: Math.max(2, positiveNumber(objectValue(horizontalProfile.risk).minimumStopAtr, 2, 4)),
+          liquidityBufferAtr: Math.max(0.25, positiveNumber(objectValue(horizontalProfile.risk).liquidityBufferAtr, 0.25, 1))
+        }
+      }
     },
     breakout: {
       ...breakout,
@@ -452,7 +491,7 @@ export function validateModuleSetting(moduleCode: string, key: string, value: un
       detectorVersion: stringValue(rangeEngine.detectorVersion, "GENERIC_RANGE_ENGINE_V1"),
       horizontalRange: {
         ...horizontalRange,
-        enabled: booleanValue(horizontalRange.enabled, false),
+        enabled: booleanValue(horizontalRange.enabled, true),
         observationOnly: horizontalSignalMode !== "ACTIVE_SIGNAL",
         signalMode: horizontalSignalMode,
         timeframe: ["5min", "15min"].includes(String(horizontalRange.timeframe)) ? String(horizontalRange.timeframe) : "5min",

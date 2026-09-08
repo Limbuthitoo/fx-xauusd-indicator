@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../../infrastructure/db/client.js";
-import { newYorkDate } from "../../infrastructure/time.js";
-import { requirePermission, requireTenantModule } from "../auth/routes.js";
+import { newYorkDate, xauUsdDailyMarketClose } from "../../infrastructure/time.js";
+import { requireAdmin, requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
 import { PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "./paper-target-plan.js";
+import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "./module1-stop-shadow.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
   app.get("/api/trades/paper", async (request) => {
@@ -61,6 +62,7 @@ export async function tradeRoutes(app: FastifyInstance) {
          sc.symbol,
          sc.direction,
          sc.scenario,
+         sc.strategy_profile,
          sc.module_code,
          sc.favorability_grade,
          sc.favorability_score,
@@ -112,17 +114,42 @@ export async function tradeRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/trades/module1/stop-calibration", async (request) => {
-    requirePermission(request, "signals.view");
-    const { rows } = await query(
+    const auth = requirePermission(request, "signals.view");
+    if (!auth.tenantId) return { mode: "OBSERVE_ONLY", minimumIndependentSignals: 30, profiles: [], recent: [] };
+    const [profiles, recent] = await Promise.all([
+      query(
       `SELECT *
-       FROM module1_stop_calibration
-       ORDER BY calibration_eligible DESC, observed_signals DESC, scenario, direction`
-    );
+       FROM module1_profile_stop_shadow_calibration
+       WHERE tenant_id = $1
+       ORDER BY strategy_profile, direction, candidate_code`,
+        [auth.tenantId]
+      ),
+      query(
+        `SELECT observation.*, setup.scenario
+         FROM module1_stop_shadow_observations observation
+         JOIN setup_candidates setup ON setup.id = observation.setup_candidate_id
+         WHERE observation.tenant_id = $1
+         ORDER BY observation.started_at DESC, observation.candidate_code
+         LIMIT 100`,
+        [auth.tenantId]
+      )
+    ]);
     return {
       mode: "OBSERVE_ONLY",
       minimumIndependentSignals: 30,
-      profiles: rows
+      profiles: profiles.rows,
+      recent: recent.rows
     };
+  });
+
+  app.post("/api/trades/module1/stop-calibration/backfill", async (request) => {
+    const auth = requireAdmin(request);
+    if (!auth.tenantId) throw Object.assign(new Error("Tenant admin account required."), { statusCode: 403 });
+    await requireTenantModule(request, "orb_max_options");
+    const body = request.body as { days?: number; setupLimit?: number };
+    const days = Math.min(Math.max(Number(body?.days ?? 30), 1), 180);
+    const setupLimit = Math.min(Math.max(Number(body?.setupLimit ?? 100), 1), 300);
+    return replayModule1StopCalibration(auth.tenantId, days, setupLimit);
   });
 
   app.post("/api/trades/recover-stale", async (request) => {
@@ -753,6 +780,220 @@ export async function tradeRoutes(app: FastifyInstance) {
       }
     };
   });
+}
+
+export async function replayModule1StopCalibration(tenantId: string, days: number, setupLimit: number) {
+  const setups = await query(
+    `SELECT
+       setup.*,
+       plan.planned_entry,
+       plan.planned_stop,
+       session.signal_window_end_at,
+       candle.spread
+     FROM setup_candidates setup
+     JOIN trade_plans plan ON plan.setup_candidate_id = setup.id
+     JOIN trading_sessions session ON session.id = setup.session_id
+     LEFT JOIN LATERAL (
+       SELECT spread
+       FROM candles
+       WHERE symbol = setup.symbol
+         AND timeframe_minutes = 5
+         AND timestamp_utc <= setup.detected_at
+       ORDER BY timestamp_utc DESC
+       LIMIT 1
+     ) candle ON true
+     WHERE setup.tenant_id = $1
+       AND setup.module_code = 'orb_max_options'
+       AND setup.strategy_profile IN ('ORB_BREAKOUT', 'HORIZONTAL_RANGE_BREAKOUT')
+       AND setup.detected_at >= now() - ($2::text || ' days')::interval
+       AND setup.scenario <> 'QA_TEST_SIGNAL'
+       AND COALESCE(setup.scenario_flags->>'replay', 'false') <> 'true'
+       AND (plan.signal_thesis_key IS NOT NULL OR EXISTS (
+         SELECT 1 FROM trades trade WHERE trade.trade_plan_id = plan.id
+       ))
+     ORDER BY setup.detected_at DESC
+     LIMIT $3`,
+    [tenantId, days, setupLimit]
+  );
+  let candidatesCreated = 0;
+  let candidatesCompleted = 0;
+  const profiles = new Set<string>();
+
+  for (const setup of setups.rows as any[]) {
+    profiles.add(setup.strategy_profile);
+    const flags = asRecord(setup.scenario_flags);
+    const horizontal = setup.strategy_profile === "HORIZONTAL_RANGE_BREAKOUT";
+    const tradePlan = horizontal
+      ? asRecord(asRecord(flags.horizontalRangeSignal).tradePlan)
+      : asRecord(flags.tradePlan);
+    const entry = Number(setup.planned_entry ?? setup.entry_price);
+    const baselineStop = Number(setup.planned_stop ?? setup.stop_price);
+    const atr = finiteOrNull(tradePlan.atr) ?? await historicalAtrBeforeSetup(setup.symbol, setup.detected_at);
+    const startedAt = new Date(setup.detected_at);
+    const sessionEnd = new Date(setup.signal_window_end_at);
+    const marketClose = xauUsdDailyMarketClose(startedAt);
+    const observationUntil = marketClose && marketClose < sessionEnd ? marketClose : sessionEnd;
+    const candidates = buildModule1StopShadowCandidates({
+      direction: setup.direction === "SHORT" ? "SHORT" : "LONG",
+      entry,
+      baselineStop,
+      structuralInvalidation: Number(tradePlan.structuralInvalidation ?? baselineStop),
+      atr,
+      spread: finiteOrNull(setup.spread),
+      baselineMinimumStopAtr: finiteOrNull(tradePlan.minimumStopAtr),
+      baselineLiquidityBufferAtr: finiteOrNull(tradePlan.liquidityBufferAtr)
+    });
+    for (const candidate of candidates) {
+      const inserted = await query(
+        `INSERT INTO module1_stop_shadow_observations (
+           tenant_id, setup_candidate_id, strategy_profile, direction, candidate_code, candidate_label,
+           entry_price, stop_price, target_price, risk_distance, atr, stop_distance_atr,
+           minimum_stop_atr, liquidity_buffer_atr, trade_accepted, rejection_reason,
+           started_at, observation_until, status, outcome, result_r, remaining_fraction, completed_at
+         ) VALUES (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+           CASE WHEN $15 THEN 'ACTIVE' ELSE 'SKIPPED' END,
+           CASE WHEN $15 THEN 'ACTIVE' ELSE 'SKIPPED' END,
+           CASE WHEN $15 THEN NULL ELSE 0 END,
+           CASE WHEN $15 THEN 1 ELSE 0 END,
+           CASE WHEN $15 THEN NULL ELSE $17::timestamptz END
+         )
+         ON CONFLICT (setup_candidate_id, candidate_code) DO NOTHING
+         RETURNING id`,
+        [tenantId, setup.id, setup.strategy_profile, setup.direction, candidate.code, candidate.label,
+          candidate.entry, candidate.stop, candidate.target, candidate.riskDistance, atr,
+          candidate.stopDistanceAtr, candidate.minimumStopAtr, candidate.liquidityBufferAtr,
+          candidate.tradeAccepted, candidate.rejectionReason, startedAt.toISOString(), observationUntil.toISOString()]
+      );
+      candidatesCreated += inserted.rowCount ?? 0;
+    }
+
+    const candles = await query(
+      `SELECT timestamp_utc, high, low, close
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = 5
+         AND timestamp_utc > $2
+         AND timestamp_utc <= $3
+       ORDER BY timestamp_utc ASC`,
+      [setup.symbol, startedAt.toISOString(), observationUntil.toISOString()]
+    );
+    const observations = await query(
+      `SELECT * FROM module1_stop_shadow_observations
+       WHERE setup_candidate_id = $1 AND status = 'ACTIVE'
+       ORDER BY candidate_code`,
+      [setup.id]
+    );
+    for (const observation of observations.rows as any[]) {
+      let state = shadowState(observation);
+      let result: ReturnType<typeof evaluateModule1StopShadowCandle> | null = null;
+      let tp1HitAt = observation.tp1_hit_at;
+      let tp2HitAt = observation.tp2_hit_at;
+      let tp3HitAt = observation.tp3_hit_at;
+      let completedAt: Date | string | null = observation.completed_at;
+      for (const candle of candles.rows as any[]) {
+        const previousTarget = state.targetHitIndex;
+        result = evaluateModule1StopShadowCandle(state, {
+          timestampUtc: new Date(candle.timestamp_utc).toISOString(),
+          high: Number(candle.high),
+          low: Number(candle.low),
+          close: Number(candle.close)
+        });
+        if (result.targetHitIndex >= 1 && previousTarget < 1) tp1HitAt = candle.timestamp_utc;
+        if (result.targetHitIndex >= 2 && previousTarget < 2) tp2HitAt = candle.timestamp_utc;
+        if (result.targetHitIndex >= 3 && previousTarget < 3) tp3HitAt = candle.timestamp_utc;
+        state = { ...state, targetHitIndex: result.targetHitIndex, realizedR: result.realizedR,
+          remainingFraction: result.remainingFraction, maximumFavorableExcursionR: result.maximumFavorableExcursionR,
+          maximumAdverseExcursionR: result.maximumAdverseExcursionR };
+        if (result.completed) {
+          completedAt = candle.timestamp_utc;
+          break;
+        }
+      }
+      if (!result?.completed && candles.rows.length > 0 && observationUntil.getTime() <= Date.now()) {
+        const last = candles.rows.at(-1) as any;
+        result = evaluateModule1StopShadowCandle(state, {
+          timestampUtc: observationUntil.toISOString(),
+          high: Number(last.close), low: Number(last.close), close: Number(last.close)
+        });
+        completedAt = observationUntil.toISOString();
+      }
+      if (!result) continue;
+      await query(
+        `UPDATE module1_stop_shadow_observations SET
+           status = CASE WHEN $2 THEN 'COMPLETED' ELSE 'ACTIVE' END,
+           outcome = $3, close_reason = $4, exit_price = $5, result_r = $6,
+           target_hit_index = $7, tp1_hit_at = $8, tp2_hit_at = $9, tp3_hit_at = $10,
+           realized_r = $11, remaining_fraction = $12,
+           maximum_favorable_excursion_r = $13, maximum_adverse_excursion_r = $14,
+           ambiguous_exit = ambiguous_exit OR $15,
+           completed_at = CASE WHEN $2 THEN COALESCE(completed_at, $16::timestamptz) ELSE completed_at END,
+           updated_at = now()
+         WHERE id = $1`,
+        [observation.id, result.completed, result.outcome, result.closeReason, result.exitPrice, result.resultR,
+          result.targetHitIndex, tp1HitAt, tp2HitAt, tp3HitAt, result.realizedR, result.remainingFraction,
+          result.maximumFavorableExcursionR, result.maximumAdverseExcursionR, result.ambiguous,
+          result.completed ? completedAt : null]
+      );
+      if (result.completed) candidatesCompleted += 1;
+    }
+  }
+  return {
+    mode: "OBSERVE_ONLY",
+    days,
+    setupsEvaluated: setups.rows.length,
+    profiles: [...profiles].sort(),
+    candidatesCreated,
+    candidatesCompleted
+  };
+}
+
+function shadowState(observation: any) {
+  return {
+    direction: observation.direction === "SHORT" ? "SHORT" as const : "LONG" as const,
+    entry: Number(observation.entry_price),
+    stop: Number(observation.stop_price),
+    target: Number(observation.target_price),
+    riskDistance: Number(observation.risk_distance),
+    targetHitIndex: Number(observation.target_hit_index ?? 0),
+    realizedR: Number(observation.realized_r ?? 0),
+    remainingFraction: Number(observation.remaining_fraction ?? 1),
+    maximumFavorableExcursionR: Number(observation.maximum_favorable_excursion_r ?? 0),
+    maximumAdverseExcursionR: Number(observation.maximum_adverse_excursion_r ?? 0),
+    observationUntil: observation.observation_until
+  };
+}
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
+}
+
+function finiteOrNull(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+async function historicalAtrBeforeSetup(symbol: string, detectedAt: string | Date) {
+  const result = await query(
+    `SELECT high, low, close
+     FROM candles
+     WHERE symbol = $1
+       AND timeframe_minutes = 5
+       AND timestamp_utc < $2
+     ORDER BY timestamp_utc DESC
+     LIMIT 15`,
+    [symbol, detectedAt]
+  );
+  const candles = [...result.rows].reverse() as Array<{ high: number | string; low: number | string; close: number | string }>;
+  if (candles.length < 15) return null;
+  const trueRanges = candles.slice(1).map((candle, index) => {
+    const high = Number(candle.high);
+    const low = Number(candle.low);
+    const previousClose = Number(candles[index].close);
+    return Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose));
+  });
+  const atr = trueRanges.reduce((sum, value) => sum + value, 0) / trueRanges.length;
+  return Number.isFinite(atr) && atr > 0 ? atr : null;
 }
 
 function emptyPaperTradeSummary() {

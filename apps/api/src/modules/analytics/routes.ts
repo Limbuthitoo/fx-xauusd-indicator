@@ -527,11 +527,10 @@ async function buildModuleProductionAudit(tenantId: string | null, moduleCode: s
       `SELECT count(*)::int AS count
        FROM (
          SELECT sc.session_id,
-                CASE
-                  WHEN upper(sc.scenario) LIKE '%HORIZONTAL%' THEN 'HORIZONTAL_RANGE_BREAKOUT'
-                  WHEN upper(sc.scenario) LIKE '%RETEST%' THEN 'BREAKOUT_RETEST'
-                  ELSE 'ORB_BREAKOUT'
-                END AS strategy_profile
+                COALESCE(
+                  sc.strategy_profile,
+                  CASE WHEN upper(sc.scenario) LIKE '%HORIZONTAL%' THEN 'HORIZONTAL_RANGE_BREAKOUT' ELSE 'ORB_BREAKOUT' END
+                ) AS strategy_profile
          FROM trades t
          JOIN trade_plans tp ON tp.id = t.trade_plan_id
          JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
