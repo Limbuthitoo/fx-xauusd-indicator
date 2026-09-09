@@ -114,6 +114,13 @@ try {
   ))[0];
   add("Migration 111", Boolean(watchdogMigration), "Continuous paper lifecycle reconciliation is installed.", "Migration 111 is missing from schema_migrations.", watchdogMigration);
 
+  const targetNotificationRepairMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '112_repair_paper_target_notifications.sql'`
+  ))[0];
+  add("Migration 112", Boolean(targetNotificationRepairMigration), "Paper target notification reconciliation is installed.", "Migration 112 is missing from schema_migrations.", targetNotificationRepairMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];

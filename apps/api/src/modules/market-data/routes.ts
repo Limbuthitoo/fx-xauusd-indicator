@@ -5404,6 +5404,7 @@ export async function reconcileActivePaperTradeLifecycles() {
   let checked = 0;
   let candlesReplayed = 0;
   let tradesClosed = 0;
+  let notificationsRepaired = 0;
   try {
     const previousState = (await query(
       `SELECT status, anomaly_count, details
@@ -5452,6 +5453,66 @@ export async function reconcileActivePaperTradeLifecycles() {
       tradesClosed += result.closed.length;
     }
 
+    const notificationRepair = await query(
+      `INSERT INTO notifications (
+         tenant_id, event_key, event_type, title, body, priority, data, created_at
+       )
+       SELECT
+         setup.tenant_id,
+         'paper-tp' || target.target_number || '-' || event.trade_id,
+         event.event_type,
+         'Paper trade TP' || target.target_number || ' reached',
+         concat(
+           CASE WHEN setup.direction = 'SHORT' THEN 'SELL' ELSE 'BUY' END,
+           ' ', setup.symbol, ' booked ', round(target.position_fraction * 100),
+           '% at TP', target.target_number, ' (', target.risk_multiple, 'R). ',
+           CASE
+             WHEN target.target_number = 3 THEN 'The final runner is complete.'
+             WHEN trade.management_policy = 'TP1_STRUCTURAL_TP2_BREAKEVEN_V3' AND target.target_number = 1
+               THEN 'TP1 is booked. The runner keeps its structural stop until TP2.'
+             WHEN trade.management_policy = 'TP1_BUFFERED_TP2_BREAKEVEN_V2' AND target.target_number = 1
+               THEN 'The runner has a 0.25R retest buffer; true breakeven activates after TP2.'
+             WHEN target.target_number = 1 THEN 'The remaining runner is protected at exact breakeven.'
+             ELSE 'The TP3 runner is protected at breakeven.'
+           END
+         ),
+         'HIGH',
+         jsonb_strip_nulls(jsonb_build_object(
+           'moduleCode', setup.module_code, 'tradeId', trade.id, 'setupId', setup.id,
+           'symbol', setup.symbol, 'direction', setup.direction,
+           'action', CASE WHEN setup.direction = 'SHORT' THEN 'SELL' ELSE 'BUY' END,
+           'entry', trade.actual_entry, 'stopLoss', trade.actual_stop,
+           'takeProfit', trade.actual_target, 'targetNumber', target.target_number,
+           'targetPrice', target.price, 'riskMultiple', target.risk_multiple,
+           'positionFraction', target.position_fraction, 'realizedR', target.realized_r,
+           'managementPolicy', trade.management_policy,
+           'eventKey', 'paper-tp' || target.target_number || '-' || event.trade_id,
+           'eventType', event.event_type, 'backfilled', true,
+           'repair', 'PAPER_LIFECYCLE_WATCHDOG'
+         )),
+         event.created_at
+       FROM trade_events event
+       JOIN trades trade ON trade.id = event.trade_id
+       JOIN trade_plans plan ON plan.id = trade.trade_plan_id
+       JOIN setup_candidates setup ON setup.id = plan.setup_candidate_id
+       JOIN paper_trade_targets target
+         ON target.trade_id = event.trade_id
+        AND event.event_type = 'PAPER_TP' || target.target_number || '_HIT'
+       WHERE event.event_type IN ('PAPER_TP1_HIT', 'PAPER_TP2_HIT', 'PAPER_TP3_HIT')
+         AND COALESCE(event.payload->>'backfilled', 'false') <> 'true'
+         AND NOT EXISTS (
+           SELECT 1 FROM notifications existing
+           WHERE existing.data->>'tradeId' = event.trade_id::text
+             AND existing.event_type = event.event_type
+         )
+       ON CONFLICT (event_key) DO UPDATE SET
+         tenant_id = EXCLUDED.tenant_id, event_type = EXCLUDED.event_type,
+         title = EXCLUDED.title, body = EXCLUDED.body, priority = EXCLUDED.priority,
+         data = notifications.data || EXCLUDED.data
+       RETURNING id`
+    );
+    notificationsRepaired = notificationRepair.rowCount ?? 0;
+
     const audit = (await query(
       `WITH target_state AS (
          SELECT trade_id,
@@ -5470,6 +5531,16 @@ export async function reconcileActivePaperTradeLifecycles() {
            GROUP BY trade_id, event_type
            HAVING count(*) > 1
          ) duplicate
+       ), missing_notifications AS (
+         SELECT count(*)::int AS count
+         FROM trade_events event
+         WHERE event.event_type IN ('PAPER_TP1_HIT','PAPER_TP2_HIT','PAPER_TP3_HIT')
+           AND COALESCE(event.payload->>'backfilled', 'false') <> 'true'
+           AND NOT EXISTS (
+             SELECT 1 FROM notifications notification
+             WHERE notification.data->>'tradeId' = event.trade_id::text
+               AND notification.event_type = event.event_type
+           )
        )
        SELECT
          count(*) FILTER (WHERE COALESCE(target_state.target_count, 0) <> 3)::int AS incomplete_ladders,
@@ -5488,7 +5559,8 @@ export async function reconcileActivePaperTradeLifecycles() {
              AND candle.timestamp_utc > greatest(trade.opened_at, COALESCE(trade.excursion_updated_at, trade.opened_at))
              AND candle.timestamp_utc <= now() - interval '5 minutes'
          ))::int AS lifecycle_cursor_lag,
-         (SELECT count FROM duplicate_events)::int AS duplicate_events
+         (SELECT count FROM duplicate_events)::int AS duplicate_events,
+         (SELECT count FROM missing_notifications)::int AS missing_notifications
        FROM trades trade
        JOIN trade_plans plan ON plan.id = trade.trade_plan_id
        JOIN setup_candidates setup ON setup.id = plan.setup_candidate_id
@@ -5502,7 +5574,8 @@ export async function reconcileActivePaperTradeLifecycles() {
            '-infinity'::timestamptz
          )`
     )).rows[0] as any;
-    const anomalyCount = ["incomplete_ladders", "skipped_tp1", "skipped_tp2", "out_of_order_targets", "terminal_conflicts", "pre_open_closures", "invalid_cursors", "pre_open_targets", "lifecycle_cursor_lag", "duplicate_events"]
+    audit.notifications_repaired = notificationsRepaired;
+    const anomalyCount = ["incomplete_ladders", "skipped_tp1", "skipped_tp2", "out_of_order_targets", "terminal_conflicts", "pre_open_closures", "invalid_cursors", "pre_open_targets", "lifecycle_cursor_lag", "duplicate_events", "missing_notifications"]
       .reduce((sum, key) => sum + Number(audit?.[key] ?? 0), 0);
     const status = anomalyCount > 0 ? "CAUTION" : "HEALTHY";
     await query(
@@ -5524,7 +5597,7 @@ export async function reconcileActivePaperTradeLifecycles() {
         metadata: { checked, candlesReplayed, tradesClosed, ...audit }
       });
     }
-    return { skipped: false, status, checked, candlesReplayed, tradesClosed, anomalyCount, details: audit };
+    return { skipped: false, status, checked, candlesReplayed, tradesClosed, notificationsRepaired, anomalyCount, details: audit };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await query(
@@ -5534,7 +5607,7 @@ export async function reconcileActivePaperTradeLifecycles() {
     ).catch(() => undefined);
     await recordOperationalEvent({
       severity: "ERROR", category: "WORKER", eventType: "PAPER_LIFECYCLE_WATCHDOG_FAILED",
-      source: "paper-lifecycle-watchdog", message, metadata: { checked, candlesReplayed, tradesClosed }
+      source: "paper-lifecycle-watchdog", message, metadata: { checked, candlesReplayed, tradesClosed, notificationsRepaired }
     });
     throw error;
   } finally {
