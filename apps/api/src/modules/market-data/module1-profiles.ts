@@ -18,10 +18,10 @@ export type Module1ProfilePolicy = {
 type ProfilePolicyInput = {
   configuration?: Record<string, any> | null;
   session: {
-    session_date?: string;
+    session_date?: string | Date;
     session_preset?: string;
-    opening_range_end_at: string;
-    signal_window_end_at: string;
+    opening_range_end_at: string | Date;
+    signal_window_end_at: string | Date;
   };
   timestamp: string | Date;
   profile: Module1StrategyProfile;
@@ -51,7 +51,7 @@ export function resolveModule1ProfilePolicy(input: ProfilePolicyInput): Module1P
   const horizontalProfile = objectRecord(strategyProfiles.horizontal);
   const mode = normalizeModule1ProfileMode(tradeSetup.profileMode);
   const timestamp = new Date(input.timestamp);
-  const sessionDate = String(input.session.session_date ?? "").slice(0, 10);
+  const sessionDate = isoDateValue(input.session.session_date);
   const sessionStart = new Date(input.session.opening_range_end_at);
   const sessionEnd = new Date(input.session.signal_window_end_at);
   const isNewYork = ["NEW_YORK_ORB", "NY_0915", "NY_0930"].includes(String(input.session.session_preset));
@@ -112,4 +112,10 @@ function boundedInteger(value: unknown, fallback: number, maximum: number) {
 function timeValue(value: unknown, fallback: string) {
   const text = String(value ?? "");
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : fallback;
+}
+
+function isoDateValue(value: unknown) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const parsed = value instanceof Date ? value : new Date(String(value ?? ""));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : "";
 }

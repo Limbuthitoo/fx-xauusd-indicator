@@ -72,6 +72,15 @@ const continuationOrbPolicy = resolveModule1ProfilePolicy({ configuration: newYo
 const continuationHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: separatedSession, timestamp: "2026-09-08T15:05:00Z", profile: "HORIZONTAL_RANGE_BREAKOUT" });
 assert.equal(continuationOrbPolicy.eligible, false, "ORB must stop producing entries after its exclusive window");
 assert.equal(continuationHorizontalPolicy.eligible, true, "Horizontal Breakout must own the continuation window after 11:00 New York");
+const postgresDateSession = {
+  ...separatedSession,
+  session_date: new Date("2026-09-08T00:00:00.000Z"),
+  opening_range_end_at: new Date(separatedSession.opening_range_end_at),
+  signal_window_end_at: new Date(separatedSession.signal_window_end_at)
+};
+const postgresDateHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: postgresDateSession, timestamp: new Date("2026-09-08T15:05:00Z"), profile: "HORIZONTAL_RANGE_BREAKOUT" });
+assert.equal(postgresDateHorizontalPolicy.eligible, true, "Module 1 policy dates returned by PostgreSQL must preserve Horizontal Breakout eligibility");
+assert.equal(postgresDateHorizontalPolicy.windowStartAt, "2026-09-08T15:00:00.000Z", "PostgreSQL date values must normalize to the New York session date");
 const tokyoHorizontalPolicy = resolveModule1ProfilePolicy({ configuration: newYorkTradeSetup, session: { ...separatedSession, session_preset: "TOKYO_ORB" }, timestamp: "2026-09-08T15:05:00Z", profile: "HORIZONTAL_RANGE_BREAKOUT" });
 assert.equal(tokyoHorizontalPolicy.enabled, false, "Horizontal Breakout must remain New York only");
 const stopCandidates = buildModule1StopShadowCandidates({
