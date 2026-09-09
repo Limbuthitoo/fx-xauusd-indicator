@@ -2660,7 +2660,7 @@ function PlatformSystemPanel({ user, message, health, lifecycle, observation, au
           <div>
             <strong>Paper Target Lifecycle</strong>
             <span>{lifecycle?.trades ?? 0} observed trade(s) · {lifecycle?.active ?? 0} active · {lifecycle?.staleActive ?? 0} stale</span>
-            <em>{lifecycle?.incompleteTargetLadders ?? 0} incomplete ladder(s) · {lifecycle?.terminalStateConflicts ?? 0} terminal conflict(s) · latest {formatNepalTime(lifecycle?.latestTradeAt)}</em>
+            <em>Watchdog {lifecycle?.watchdog?.stale ? "STALE" : lifecycle?.watchdog?.status ?? "WAITING"} · {lifecycle?.watchdog?.candlesReplayed ?? 0} candle(s) replayed · {lifecycle?.watchdog?.anomalyCount ?? 0} anomaly(s) · checked {formatNepalTime(lifecycle?.watchdog?.lastCompletedAt)}</em>
           </div>
           <span className={`pill ${lifecycle?.status === "HEALTHY" ? "good" : "warn"}`}>{lifecycle?.status ?? "UNKNOWN"}</span>
         </div>

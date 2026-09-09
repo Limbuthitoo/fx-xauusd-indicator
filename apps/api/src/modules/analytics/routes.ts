@@ -391,7 +391,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       error.statusCode = 403;
       throw error;
     }
-    const result = await query(
+    const [result, watchdogResult, activeRunnersResult] = await Promise.all([query(
       `SELECT count(*)::int AS trades,
          count(*) FILTER (WHERE outcome = 'ACTIVE')::int AS active,
          count(*) FILTER (WHERE outcome = 'ACTIVE' AND opened_at < now() - interval '12 hours')::int AS stale_active,
@@ -399,15 +399,79 @@ export async function analyticsRoutes(app: FastifyInstance) {
          count(*) FILTER (WHERE outcome = 'ACTIVE' AND (tp3_hit OR sl_hit))::int AS terminal_state_conflicts,
          max(opened_at) AS latest_trade_at
        FROM paper_trade_target_performance WHERE is_qa = false`
-    );
+    ), query(
+      `SELECT worker_name, status, last_started_at, last_completed_at,
+              active_trades_checked, candles_replayed, trades_closed,
+              anomaly_count, last_error, details, updated_at
+       FROM paper_lifecycle_watchdog_state
+       WHERE worker_name = 'paper-lifecycle-watchdog'`
+    ), query(
+      `SELECT trade.id AS trade_id, setup.tenant_id, setup.module_code, setup.symbol,
+              setup.direction, trade.opened_at,
+              greatest(trade.opened_at, COALESCE(trade.excursion_updated_at, trade.opened_at)) AS last_processed_candle_at,
+              latest.timestamp_utc AS latest_completed_candle_at,
+              greatest(0, floor(extract(epoch FROM (
+                latest.timestamp_utc - greatest(trade.opened_at, COALESCE(trade.excursion_updated_at, trade.opened_at))
+              )) / 60))::int AS cursor_lag_minutes
+       FROM trades trade
+       JOIN trade_plans plan ON plan.id = trade.trade_plan_id
+       JOIN setup_candidates setup ON setup.id = plan.setup_candidate_id
+       LEFT JOIN LATERAL (
+         SELECT candle.timestamp_utc
+         FROM candles candle
+         WHERE candle.symbol = setup.symbol
+           AND candle.timeframe_minutes = 5
+           AND candle.source LIKE 'TWELVE_DATA%'
+           AND candle.timestamp_utc <= now() - interval '5 minutes'
+         ORDER BY candle.timestamp_utc DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE trade.outcome = 'ACTIVE'
+         AND trade.opened_at IS NOT NULL
+         AND setup.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(setup.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(setup.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(setup.scenario_flags->>'productionProof', 'false') <> 'true'
+       ORDER BY trade.opened_at
+       LIMIT 50`
+    )]);
     const row = result.rows[0] ?? {};
+    const watchdog = watchdogResult.rows[0] as any;
     const stale = Number(row.stale_active ?? 0);
     const incomplete = Number(row.incomplete_target_ladders ?? 0);
     const conflicts = Number(row.terminal_state_conflicts ?? 0);
+    const watchdogAgeSeconds = watchdog?.last_completed_at
+      ? Math.max(0, Math.round((Date.now() - new Date(watchdog.last_completed_at).getTime()) / 1000))
+      : null;
+    const watchdogStale = watchdogAgeSeconds == null || watchdogAgeSeconds > 180;
     return {
-      checkedAt: new Date().toISOString(), status: stale + incomplete + conflicts > 0 ? "CAUTION" : "HEALTHY",
+      checkedAt: new Date().toISOString(), status: watchdog?.status !== "HEALTHY" || watchdogStale || stale + incomplete + conflicts > 0 || Number(watchdog?.anomaly_count ?? 0) > 0 ? "CAUTION" : "HEALTHY",
       trades: Number(row.trades ?? 0), active: Number(row.active ?? 0), staleActive: stale,
-      incompleteTargetLadders: incomplete, terminalStateConflicts: conflicts, latestTradeAt: row.latest_trade_at ?? null
+      incompleteTargetLadders: incomplete, terminalStateConflicts: conflicts, latestTradeAt: row.latest_trade_at ?? null,
+      watchdog: watchdog ? {
+        status: watchdog.status,
+        lastStartedAt: watchdog.last_started_at,
+        lastCompletedAt: watchdog.last_completed_at,
+        ageSeconds: watchdogAgeSeconds,
+        stale: watchdogStale,
+        activeTradesChecked: Number(watchdog.active_trades_checked ?? 0),
+        candlesReplayed: Number(watchdog.candles_replayed ?? 0),
+        tradesClosed: Number(watchdog.trades_closed ?? 0),
+        anomalyCount: Number(watchdog.anomaly_count ?? 0),
+        lastError: watchdog.last_error,
+        details: watchdog.details ?? {}
+      } : null,
+      activeRunners: activeRunnersResult.rows.map((runner: any) => ({
+        tradeId: runner.trade_id,
+        tenantId: runner.tenant_id,
+        moduleCode: runner.module_code,
+        symbol: runner.symbol,
+        direction: runner.direction,
+        openedAt: runner.opened_at,
+        lastProcessedCandleAt: runner.last_processed_candle_at,
+        latestCompletedCandleAt: runner.latest_completed_candle_at,
+        cursorLagMinutes: Number(runner.cursor_lag_minutes ?? 0)
+      }))
     };
   });
 

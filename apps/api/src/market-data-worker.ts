@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { config } from "./infrastructure/config.js";
 import { startWorkerHeartbeat, writeWorkerHeartbeat } from "./infrastructure/workers/heartbeat.js";
-import { startMarketDataWorker } from "./modules/market-data/routes.js";
+import { reconcileActivePaperTradeLifecycles, startMarketDataWorker } from "./modules/market-data/routes.js";
 import { startEconomicCalendarWorker } from "./modules/news/service.js";
 import { refreshProductionSignalObservations } from "./modules/observations/service.js";
 
@@ -12,6 +12,7 @@ verifyPythonBrainRuntime();
 startMarketDataWorker();
 const economicCalendarTimers = startEconomicCalendarWorker();
 const observationTimer = startProductionObservationWorker();
+const paperLifecycleTimer = startPaperLifecycleWatchdog();
 const heartbeatTimer = startWorkerHeartbeat({
   workerName: "market-data-worker",
   status: "RUNNING",
@@ -36,6 +37,7 @@ console.log(JSON.stringify({
 async function shutdown(signal: string) {
   clearInterval(heartbeatTimer);
   clearInterval(observationTimer);
+  clearInterval(paperLifecycleTimer);
   if (economicCalendarTimers) {
     clearTimeout(economicCalendarTimers.startupTimer);
     clearInterval(economicCalendarTimers.intervalTimer);
@@ -88,4 +90,17 @@ function startProductionObservationWorker() {
   });
   setTimeout(run, 30_000);
   return setInterval(run, 5 * 60_000);
+}
+
+function startPaperLifecycleWatchdog() {
+  const run = () => reconcileActivePaperTradeLifecycles().catch((error) => {
+    console.error(JSON.stringify({
+      level: "error",
+      service: "paper-lifecycle-watchdog",
+      message: "Paper lifecycle reconciliation failed.",
+      error: error instanceof Error ? error.message : String(error)
+    }));
+  });
+  setTimeout(run, 5_000);
+  return setInterval(run, 60_000);
 }

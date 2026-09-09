@@ -107,6 +107,13 @@ try {
   ))[0];
   add("Migration 110", Boolean(temporalReplayRepairMigration), "Paper catch-up uses a monotonic candle cursor and impossible replay closures are repaired.", "Migration 110 is missing from schema_migrations.", temporalReplayRepairMigration);
 
+  const watchdogMigration = (await rows(
+    `SELECT filename, applied_at
+     FROM schema_migrations
+     WHERE filename = '111_paper_lifecycle_watchdog.sql'`
+  ))[0];
+  add("Migration 111", Boolean(watchdogMigration), "Continuous paper lifecycle reconciliation is installed.", "Migration 111 is missing from schema_migrations.", watchdogMigration);
+
   const analyticsMigration = (await rows(
     `SELECT filename, applied_at FROM schema_migrations WHERE filename = '083_target_performance_analytics.sql'`
   ))[0];
@@ -148,7 +155,8 @@ try {
          WHERE table_schema = 'public' AND table_name = 'trades' AND column_name = 'management_policy'
            AND column_default LIKE '%TP1_SCALE_OUT_TP2_BREAKEVEN_V3%'
        ) AS production_policy_v3_default,
-       to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index`
+       to_regclass('public.trade_events_paper_milestone_unique_idx') IS NOT NULL AS milestone_index,
+       to_regclass('public.paper_lifecycle_watchdog_state') IS NOT NULL AS lifecycle_watchdog_state`
   );
   const schemaRow = schema[0] ?? {};
   const schemaReady = Object.values(schemaRow).every(Boolean);
@@ -379,6 +387,23 @@ try {
      LIMIT 50`
   );
   add("Monotonic paper replay", temporalReplayClosures.length === 0, "No trade was closed by applying a later breakeven state to an earlier candle.", `${temporalReplayClosures.length} paper trade(s) have impossible pre-TP2 breakeven closures.`, temporalReplayClosures);
+
+  const watchdog = (await rows(
+    `SELECT status, last_started_at, last_completed_at, active_trades_checked,
+            candles_replayed, trades_closed, anomaly_count, last_error, details
+     FROM paper_lifecycle_watchdog_state
+     WHERE worker_name = 'paper-lifecycle-watchdog'`
+  ))[0];
+  checks.push({
+    name: "Lifecycle watchdog",
+    status: watchdog?.status === "ERROR" ? "FAIL" : watchdog?.status === "HEALTHY" ? "PASS" : "WARN",
+    detail: watchdog?.status === "HEALTHY"
+      ? `Worker reconciliation is healthy; the latest run checked ${watchdog.active_trades_checked ?? 0} active trade(s) and replayed ${watchdog.candles_replayed ?? 0} completed candle(s).`
+      : watchdog?.status === "ERROR"
+        ? `Worker reconciliation failed: ${watchdog.last_error ?? "unknown error"}`
+        : "The watchdog is installed and waiting for the new worker to complete its first reconciliation run.",
+    evidence: watchdog ?? null
+  });
 
   const duplicateEvents = await rows(
     `SELECT trade_id, event_type, count(*)::int AS occurrences

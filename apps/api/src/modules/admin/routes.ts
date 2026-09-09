@@ -1456,6 +1456,7 @@ async function platformSystemHealth() {
 
   const database = await databaseHealth();
   const worker = await workerHealth();
+  const paperLifecycleWatchdog = await paperLifecycleWatchdogHealth();
   const feed = await feedHealth();
   const calendar = await economicCalendarHealth();
   const configuration = configurationHealth();
@@ -1466,6 +1467,7 @@ async function platformSystemHealth() {
     healthItem("PostgreSQL", database.status, database.message, database),
     healthItem("Redis", redis.status, redis.message, redis),
     healthItem("Market-data worker", worker.status, worker.message, worker),
+    healthItem("Paper lifecycle watchdog", paperLifecycleWatchdog.status, paperLifecycleWatchdog.message, paperLifecycleWatchdog),
     healthItem("Twelve Data guardrail", feed.status, feed.message, feed),
     healthItem("Economic calendar", calendar.status, calendar.message, calendar),
     healthItem("Production configuration", configuration.status, configuration.message, configuration),
@@ -1600,6 +1602,54 @@ async function workerHealth() {
     return {
       status: "CRITICAL",
       message: "Worker heartbeat could not be read from PostgreSQL.",
+      error: (error as Error).message
+    };
+  }
+}
+
+async function paperLifecycleWatchdogHealth() {
+  try {
+    const { rows } = await query(
+      `SELECT status, last_started_at, last_completed_at, active_trades_checked,
+              candles_replayed, trades_closed, anomaly_count, last_error, details
+       FROM paper_lifecycle_watchdog_state
+       WHERE worker_name = 'paper-lifecycle-watchdog'
+       LIMIT 1`
+    );
+    const row = rows[0] as any;
+    const ageSeconds = row?.last_completed_at
+      ? Math.max(0, Math.round((Date.now() - new Date(row.last_completed_at).getTime()) / 1000))
+      : null;
+    const stale = ageSeconds == null || ageSeconds > 180;
+    const anomalyCount = Number(row?.anomaly_count ?? 0);
+    const status = row?.status === "ERROR" || anomalyCount > 0
+      ? "CRITICAL"
+      : stale || row?.status !== "HEALTHY"
+        ? "STALE"
+        : "HEALTHY";
+    return {
+      status,
+      message: status === "HEALTHY"
+        ? `Paper lifecycle reconciliation is current (${ageSeconds}s old).`
+        : row?.last_error ?? (anomalyCount > 0
+          ? `${anomalyCount} paper lifecycle anomaly(s) require review.`
+          : "Paper lifecycle reconciliation has not completed recently."),
+      workerStatus: row?.status ?? "MISSING",
+      lastStartedAt: row?.last_started_at ?? null,
+      lastCompletedAt: row?.last_completed_at ?? null,
+      ageSeconds,
+      stale,
+      activeTradesChecked: Number(row?.active_trades_checked ?? 0),
+      candlesReplayed: Number(row?.candles_replayed ?? 0),
+      tradesClosed: Number(row?.trades_closed ?? 0),
+      anomalyCount,
+      details: row?.details ?? {},
+      lastError: row?.last_error ?? null
+    };
+  } catch (error) {
+    return {
+      status: "CRITICAL",
+      message: "Paper lifecycle watchdog state could not be read from PostgreSQL.",
       error: (error as Error).message
     };
   }

@@ -31,7 +31,7 @@ import { sendTenantPush } from "../notifications/push.js";
 import { economicEventStatus } from "../news/service.js";
 import { recentOrbRangesForTenant } from "../sessions/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTargetManagementSummary, paperTargetPayload, paperTradeSettlement, paperTradeTargets } from "../trades/paper-targets.js";
-import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, shouldStartPostStopObservation } from "../trades/paper-target-plan.js";
+import { buildPaperTargetPlan, PAPER_MANAGEMENT_POLICY_PRODUCTION, paperReplayCursor, shouldStartPostStopObservation } from "../trades/paper-target-plan.js";
 import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "../trades/module1-stop-shadow.js";
 import { evaluateHorizontalBreakoutShadow } from "./horizontal-breakout-shadow.js";
 
@@ -1015,6 +1015,16 @@ export async function marketDataRoutes(app: FastifyInstance) {
       triggerSource: "PLATFORM_FORCE_SYNC",
       usageReason: body.reason ?? "Platform admin forced guarded market-data sync"
     });
+  });
+
+  app.post("/api/platform/paper-lifecycle/reconcile", async (request) => {
+    const session = requireAdmin(request);
+    if (!session.platformSuperAdmin) {
+      const error = new Error("Platform super-admin access required.") as Error & { statusCode?: number };
+      error.statusCode = 403;
+      throw error;
+    }
+    return reconcileActivePaperTradeLifecycles();
   });
 
   app.put("/api/platform/tenants/:id/automation", async (request) => {
@@ -5213,9 +5223,25 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
     [symbol, latest.timestampUtc, activeTenantId, moduleCode]
   );
   const closed = [];
+  let candlesReplayed = 0;
   for (const trade of openTrades.rows as any[]) {
-    const targetProgress = await evaluatePaperTargetMilestones(trade, latestRow);
-    for (const target of targetProgress.newlyHit) {
+    const replayAfter = paperReplayCursor(trade.opened_at, trade.excursion_updated_at);
+    const lifecycleCandles = await query(
+      `SELECT timestamp_utc, open, high, low, close, volume, spread
+       FROM candles
+       WHERE symbol = $1
+         AND timeframe_minutes = $2
+         AND source LIKE 'TWELVE_DATA%'
+         AND timestamp_utc > $3
+         AND timestamp_utc <= $4
+       ORDER BY timestamp_utc ASC`,
+      [symbol, timeframe, replayAfter, latest.timestampUtc]
+    );
+    candlesReplayed += lifecycleCandles.rows.length;
+    for (const lifecycleRow of lifecycleCandles.rows as any[]) {
+      const lifecycleCandle = toCandle(lifecycleRow);
+      const targetProgress = await evaluatePaperTargetMilestones(trade, lifecycleRow);
+      for (const target of targetProgress.newlyHit) {
       if (target.target_number < 3) {
         await query(
           `INSERT INTO journal_entries (
@@ -5279,19 +5305,19 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
           breakevenProtected: targetProgress.breakevenProtected
         }
       });
-    }
-    let exit: { reason: string; price: number; ambiguous: boolean; candle?: Candle; timestampUtc?: string } | null = targetProgress.stopHit
-      ? { reason: targetProgress.stopReason ?? "STOP", price: targetProgress.stopPrice, ambiguous: targetProgress.ambiguous }
-      : targetProgress.finalTargetHit
-        ? { reason: "TARGET", price: Number(trade.actual_target), ambiguous: false }
-        : null;
-    if (!exit) exit = await resolvePaperMarketBreakExit(trade, latestRow, timeframe);
-    if (!exit) continue;
-    const closedAt = exit.timestampUtc ?? latest.timestampUtc;
-    const settlement = await paperTradeSettlement(trade, exit.price);
-    const { resultR, outcome } = settlement;
-    const observeAfterStop = shouldStartPostStopObservation(exit.reason, closedAt, trade.signal_window_end_at);
-    const updated = await query(
+      }
+      let exit: { reason: string; price: number; ambiguous: boolean; candle?: Candle; timestampUtc?: string } | null = targetProgress.stopHit
+        ? { reason: targetProgress.stopReason ?? "STOP", price: targetProgress.stopPrice, ambiguous: targetProgress.ambiguous }
+        : targetProgress.finalTargetHit
+          ? { reason: "TARGET", price: Number(trade.actual_target), ambiguous: false }
+          : null;
+      if (!exit) exit = await resolvePaperMarketBreakExit(trade, lifecycleRow, timeframe);
+      if (!exit) continue;
+      const closedAt = exit.timestampUtc ?? lifecycleCandle.timestampUtc;
+      const settlement = await paperTradeSettlement(trade, exit.price);
+      const { resultR, outcome } = settlement;
+      const observeAfterStop = shouldStartPostStopObservation(exit.reason, closedAt, trade.signal_window_end_at);
+      const updated = await query(
       `UPDATE trades SET
         actual_exit = $2,
         result_r = $3,
@@ -5302,19 +5328,21 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
        WHERE id = $1
+         AND outcome = 'ACTIVE'
        RETURNING *`,
       [trade.id, exit.price, resultR, outcome, closedAt, observeAfterStop, trade.signal_window_end_at, exit.reason]
-    );
-    await cancelPendingPaperTargets(trade.id, exit.reason);
-    const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
-    await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, closedAt);
-    await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
-    await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,$2,$3)", [
+      );
+      if (!updated.rows[0]) break;
+      await cancelPendingPaperTargets(trade.id, exit.reason);
+      const closedTargets = paperTargetPayload(await paperTradeTargets(trade.id));
+      await closeModule2PositionFromPaperTrade(trade, updated.rows[0], exit, resultR, closedAt);
+      await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
+      await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,$2,$3)", [
       trade.id,
       exit.reason === "MARKET_BREAK_EXIT" ? "PAPER_MARKET_BREAK_EXIT" : "PAPER_EXIT",
-      { mode: "PAPER", exitReason: exit.reason, ambiguous: exit.ambiguous, candle: exit.candle ?? latest, timeframeMinutes: timeframe }
-    ]);
-    await query(
+      { mode: "PAPER", exitReason: exit.reason, ambiguous: exit.ambiguous, candle: exit.candle ?? lifecycleCandle, timeframeMinutes: timeframe, replayCursor: replayAfter }
+      ]);
+      await query(
       `INSERT INTO journal_entries (
         tenant_id, setup_candidate_id, trade_id, session_id, decision, emotion_after,
         rule_violations, lesson, process_grade, outcome
@@ -5329,8 +5357,8 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         outcome,
         trade.tenant_id
       ]
-    );
-    await notifyTenantOnce(
+      );
+      await notifyTenantOnce(
       trade.tenant_id,
       `paper-exit-${trade.id}`,
       "PAPER_TRADE_CLOSED",
@@ -5358,11 +5386,160 @@ async function processOpenPaperTrades(symbol: string, timeframe: number, latestR
         targets: closedTargets
       },
       "takeProfitStopLoss"
-    );
-    closed.push(updated.rows[0]);
+      );
+      closed.push(updated.rows[0]);
+      break;
+    }
   }
   const shadow = await processClosedPaperTradeShadows(symbol, latestRow, activeTenantId, moduleCode);
-  return { checked: openTrades.rows.length, closed, shadow };
+  return { checked: openTrades.rows.length, candlesReplayed, closed, shadow };
+}
+
+let paperLifecycleWatchdogRunning = false;
+
+export async function reconcileActivePaperTradeLifecycles() {
+  if (paperLifecycleWatchdogRunning) return { skipped: true, reason: "RUN_IN_PROGRESS" };
+  paperLifecycleWatchdogRunning = true;
+  const startedAt = new Date().toISOString();
+  let checked = 0;
+  let candlesReplayed = 0;
+  let tradesClosed = 0;
+  try {
+    const previousState = (await query(
+      `SELECT status, anomaly_count, details
+       FROM paper_lifecycle_watchdog_state
+       WHERE worker_name = 'paper-lifecycle-watchdog'`
+    )).rows[0] as any;
+    await query(
+      `INSERT INTO paper_lifecycle_watchdog_state (worker_name, status, last_started_at, details)
+       VALUES ('paper-lifecycle-watchdog', 'STARTING', $1, '{}'::jsonb)
+       ON CONFLICT (worker_name) DO UPDATE SET
+         status = 'STARTING', last_started_at = EXCLUDED.last_started_at,
+         last_error = NULL, updated_at = now()`,
+      [startedAt]
+    );
+    const groups = await query(
+      `SELECT DISTINCT sc.tenant_id, sc.module_code, sc.symbol
+       FROM trades trade
+       JOIN trade_plans plan ON plan.id = trade.trade_plan_id
+       JOIN setup_candidates sc ON sc.id = plan.setup_candidate_id
+       WHERE trade.outcome = 'ACTIVE'
+         AND trade.opened_at IS NOT NULL
+         AND sc.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'`
+    );
+    for (const group of groups.rows as any[]) {
+      const runtimeSettings = await getRuntimeSettings(group.tenant_id);
+      const timeframe = moduleTimeframeMinutes(group.module_code, runtimeSettings);
+      const completedAtOrBefore = new Date(Date.now() - timeframe * 60_000).toISOString();
+      const latestResult = await query(
+        `SELECT timestamp_utc, open, high, low, close, volume, spread
+         FROM candles
+         WHERE symbol = $1
+           AND timeframe_minutes = $2
+           AND source LIKE 'TWELVE_DATA%'
+           AND timestamp_utc <= $3
+         ORDER BY timestamp_utc DESC
+         LIMIT 1`,
+        [group.symbol, timeframe, completedAtOrBefore]
+      );
+      if (!latestResult.rows[0]) continue;
+      const result = await processOpenPaperTrades(group.symbol, timeframe, latestResult.rows[0], group.tenant_id, group.module_code);
+      checked += result.checked;
+      candlesReplayed += result.candlesReplayed;
+      tradesClosed += result.closed.length;
+    }
+
+    const audit = (await query(
+      `WITH target_state AS (
+         SELECT trade_id,
+                count(*)::int AS target_count,
+                min(hit_at) FILTER (WHERE target_number = 1 AND status = 'HIT') AS tp1_at,
+                min(hit_at) FILTER (WHERE target_number = 2 AND status = 'HIT') AS tp2_at,
+                min(hit_at) FILTER (WHERE target_number = 3 AND status = 'HIT') AS tp3_at
+         FROM paper_trade_targets
+         GROUP BY trade_id
+       ), duplicate_events AS (
+         SELECT count(*)::int AS count
+         FROM (
+           SELECT trade_id, event_type
+           FROM trade_events
+           WHERE event_type IN ('PAPER_TP1_HIT','PAPER_TP2_HIT','PAPER_TP3_HIT','PAPER_SL_HIT')
+           GROUP BY trade_id, event_type
+           HAVING count(*) > 1
+         ) duplicate
+       )
+       SELECT
+         count(*) FILTER (WHERE COALESCE(target_state.target_count, 0) <> 3)::int AS incomplete_ladders,
+         count(*) FILTER (WHERE target_state.tp2_at IS NOT NULL AND target_state.tp1_at IS NULL)::int AS skipped_tp1,
+         count(*) FILTER (WHERE target_state.tp3_at IS NOT NULL AND target_state.tp2_at IS NULL)::int AS skipped_tp2,
+         count(*) FILTER (WHERE target_state.tp2_at < target_state.tp1_at OR target_state.tp3_at < target_state.tp2_at)::int AS out_of_order_targets,
+         count(*) FILTER (WHERE trade.outcome = 'ACTIVE' AND target_state.tp3_at IS NOT NULL)::int AS terminal_conflicts,
+         count(*) FILTER (WHERE trade.closed_at < trade.opened_at)::int AS pre_open_closures,
+         count(*) FILTER (WHERE trade.excursion_updated_at < trade.opened_at)::int AS invalid_cursors,
+         count(*) FILTER (WHERE target_state.tp1_at < trade.opened_at OR target_state.tp2_at < trade.opened_at OR target_state.tp3_at < trade.opened_at)::int AS pre_open_targets,
+         count(*) FILTER (WHERE trade.outcome = 'ACTIVE' AND EXISTS (
+           SELECT 1 FROM candles candle
+           WHERE candle.symbol = setup.symbol
+             AND candle.timeframe_minutes = 5
+             AND candle.source LIKE 'TWELVE_DATA%'
+             AND candle.timestamp_utc > greatest(trade.opened_at, COALESCE(trade.excursion_updated_at, trade.opened_at))
+             AND candle.timestamp_utc <= now() - interval '5 minutes'
+         ))::int AS lifecycle_cursor_lag,
+         (SELECT count FROM duplicate_events)::int AS duplicate_events
+       FROM trades trade
+       JOIN trade_plans plan ON plan.id = trade.trade_plan_id
+       JOIN setup_candidates setup ON setup.id = plan.setup_candidate_id
+       LEFT JOIN target_state ON target_state.trade_id = trade.id
+       WHERE setup.scenario <> 'QA_TEST_SIGNAL'
+         AND COALESCE(setup.scenario_flags->>'replay', 'false') <> 'true'
+         AND COALESCE(setup.scenario_flags->>'rehearsal', 'false') <> 'true'
+         AND COALESCE(setup.scenario_flags->>'productionProof', 'false') <> 'true'
+         AND trade.opened_at >= COALESCE(
+           (SELECT applied_at FROM schema_migrations WHERE filename = '082_paper_trade_multi_target_lifecycle.sql'),
+           '-infinity'::timestamptz
+         )`
+    )).rows[0] as any;
+    const anomalyCount = ["incomplete_ladders", "skipped_tp1", "skipped_tp2", "out_of_order_targets", "terminal_conflicts", "pre_open_closures", "invalid_cursors", "pre_open_targets", "lifecycle_cursor_lag", "duplicate_events"]
+      .reduce((sum, key) => sum + Number(audit?.[key] ?? 0), 0);
+    const status = anomalyCount > 0 ? "CAUTION" : "HEALTHY";
+    await query(
+      `UPDATE paper_lifecycle_watchdog_state SET
+         status = $1, last_completed_at = now(), active_trades_checked = $2,
+         candles_replayed = $3, trades_closed = $4, anomaly_count = $5,
+         details = $6::jsonb, last_error = NULL, updated_at = now()
+       WHERE worker_name = 'paper-lifecycle-watchdog'`,
+      [status, checked, candlesReplayed, tradesClosed, anomalyCount, JSON.stringify(audit ?? {})]
+    );
+    const anomalyChanged = previousState?.status !== "CAUTION"
+      || Number(previousState?.anomaly_count ?? 0) !== anomalyCount
+      || JSON.stringify(previousState?.details ?? {}) !== JSON.stringify(audit ?? {});
+    if (anomalyCount > 0 && anomalyChanged) {
+      await recordOperationalEvent({
+        severity: "ERROR", category: "WORKER", eventType: "PAPER_LIFECYCLE_ANOMALY",
+        source: "paper-lifecycle-watchdog",
+        message: `${anomalyCount} paper lifecycle integrity anomaly(s) require admin review.`,
+        metadata: { checked, candlesReplayed, tradesClosed, ...audit }
+      });
+    }
+    return { skipped: false, status, checked, candlesReplayed, tradesClosed, anomalyCount, details: audit };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await query(
+      `UPDATE paper_lifecycle_watchdog_state SET status = 'ERROR', last_error = $1, updated_at = now()
+       WHERE worker_name = 'paper-lifecycle-watchdog'`,
+      [message]
+    ).catch(() => undefined);
+    await recordOperationalEvent({
+      severity: "ERROR", category: "WORKER", eventType: "PAPER_LIFECYCLE_WATCHDOG_FAILED",
+      source: "paper-lifecycle-watchdog", message, metadata: { checked, candlesReplayed, tradesClosed }
+    });
+    throw error;
+  } finally {
+    paperLifecycleWatchdogRunning = false;
+  }
 }
 
 async function ensureModule1StopShadowCandidates(session: any, setup: any, currentRow: any) {

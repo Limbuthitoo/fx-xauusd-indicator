@@ -3,7 +3,7 @@ import { query } from "../../infrastructure/db/client.js";
 import { newYorkDate, xauUsdDailyMarketClose } from "../../infrastructure/time.js";
 import { requireAdmin, requirePermission, requireTenantModule } from "../auth/routes.js";
 import { cancelPendingPaperTargets, ensurePaperTradeTargets, evaluatePaperTargetMilestones, paperTradeSettlement } from "./paper-targets.js";
-import { PAPER_MANAGEMENT_POLICY_PRODUCTION, paperReplayCursor, shouldStartPostStopObservation } from "./paper-target-plan.js";
+import { PAPER_MANAGEMENT_POLICY_PRODUCTION, paperReplayCursor } from "./paper-target-plan.js";
 import { buildModule1StopShadowCandidates, evaluateModule1StopShadowCandle } from "./module1-stop-shadow.js";
 
 export async function tradeRoutes(app: FastifyInstance) {
@@ -15,7 +15,6 @@ export async function tradeRoutes(app: FastifyInstance) {
     const status = String(search.status ?? "ALL").toUpperCase();
     const moduleCode = String(search.moduleCode ?? "ALL");
     const includeProof = search.includeProof === "true";
-    await settleOpenPaperTrades(auth.tenantId, moduleCode, includeProof);
     const params: unknown[] = [auth.tenantId];
     const statusFilter = status !== "ALL" ? `AND t.outcome = $${params.push(status)}` : "";
     const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
@@ -182,14 +181,17 @@ export async function tradeRoutes(app: FastifyInstance) {
     );
     const recovered = [];
     for (const trade of active.rows as any[]) {
+      const replayAfter = paperReplayCursor(trade.opened_at, trade.excursion_updated_at);
       const candles = await query(
         `SELECT timestamp_utc, open, high, low, close
          FROM candles
          WHERE symbol = $1
            AND timeframe_minutes = $2
-           AND timestamp_utc >= $3
+           AND source LIKE 'TWELVE_DATA%'
+           AND timestamp_utc > $3
+           AND timestamp_utc <= now() - ($2::text || ' minutes')::interval
          ORDER BY timestamp_utc ASC`,
-        [trade.symbol, timeframe, trade.opened_at]
+        [trade.symbol, timeframe, replayAfter]
       );
       let exit = null as any;
       for (const candle of candles.rows as any[]) {
@@ -212,11 +214,14 @@ export async function tradeRoutes(app: FastifyInstance) {
            result_r = $3,
            outcome = $4,
            closed_at = $5,
+           close_reason = $6,
            remaining_fraction = 0
          WHERE id = $1
+           AND outcome = 'ACTIVE'
          RETURNING *`,
-        [trade.id, exit.price, resultR, outcome, exit.timestampUtc]
+        [trade.id, exit.price, resultR, outcome, exit.timestampUtc, exit.reason]
       );
+      if (!updated.rows[0]) continue;
       await cancelPendingPaperTargets(trade.id, exit.reason);
       await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
       await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_RECOVERY_CLOSE',$2)", [
@@ -1015,105 +1020,6 @@ function summarizePaperTrades(trades: any[]) {
     totalR,
     averageR: closed.length > 0 ? totalR / closed.length : 0
   };
-}
-
-async function settleOpenPaperTrades(tenantId: string, moduleCode: string, includeProof = false) {
-  const params: unknown[] = [tenantId];
-  const moduleFilter = moduleCode !== "ALL" ? `AND sc.module_code = $${params.push(moduleCode)}` : "";
-  const productionFilter = includeProof
-    ? ""
-    : `AND sc.scenario <> 'QA_TEST_SIGNAL'
-       AND COALESCE(sc.scenario_flags->>'replay', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'rehearsal', 'false') <> 'true'
-       AND COALESCE(sc.scenario_flags->>'productionProof', 'false') <> 'true'`;
-  const active = await query(
-    `SELECT
-       t.*,
-       tp.id AS trade_plan_id,
-       tp.setup_candidate_id,
-       sc.tenant_id,
-       sc.session_id,
-       sc.symbol,
-       sc.direction,
-       sc.scenario,
-       sc.module_code,
-       ts.signal_window_end_at
-     FROM trades t
-     JOIN trade_plans tp ON tp.id = t.trade_plan_id
-     JOIN setup_candidates sc ON sc.id = tp.setup_candidate_id
-     JOIN trading_sessions ts ON ts.id = sc.session_id
-     WHERE sc.tenant_id = $1
-       AND t.outcome = 'ACTIVE'
-       AND t.opened_at IS NOT NULL
-       ${moduleFilter}
-       ${productionFilter}
-     ORDER BY t.opened_at ASC`,
-    params
-  );
-
-  for (const trade of active.rows as any[]) {
-    const replayAfter = paperReplayCursor(trade.opened_at, trade.excursion_updated_at);
-    const candles = await query(
-      `SELECT timestamp_utc, open, high, low, close
-       FROM candles
-       WHERE symbol = $1
-         AND timeframe_minutes = $2
-         AND source LIKE 'TWELVE_DATA%'
-         AND timestamp_utc > $3
-       ORDER BY timestamp_utc ASC`,
-      [trade.symbol, moduleExecutionTimeframeMinutes(trade.module_code), replayAfter]
-    );
-    let exit = null as any;
-    for (const candle of candles.rows as any[]) {
-      const progress = await evaluatePaperTargetMilestones(trade, candle);
-      if (progress.stopHit) {
-        exit = { reason: progress.stopReason ?? "STOP", price: progress.stopPrice, timestampUtc: candle.timestamp_utc, candle, ambiguous: progress.ambiguous };
-        break;
-      }
-      if (progress.finalTargetHit) {
-        exit = { reason: "TARGET", price: Number(trade.actual_target), timestampUtc: candle.timestamp_utc, candle, ambiguous: false };
-        break;
-      }
-    }
-    if (!exit) continue;
-    const settlement = await paperTradeSettlement(trade, exit.price);
-    const { resultR, outcome } = settlement;
-    const observeAfterStop = shouldStartPostStopObservation(exit.reason, exit.timestampUtc, trade.signal_window_end_at);
-    await query(
-      `UPDATE trades SET
-         actual_exit = $2,
-         result_r = $3,
-         outcome = $4,
-         closed_at = $5,
-         close_reason = $8,
-         remaining_fraction = 0,
-         shadow_observation_started_at = CASE WHEN $6 THEN $5::timestamptz ELSE shadow_observation_started_at END,
-         shadow_observation_until = CASE WHEN $6 THEN $7::timestamptz ELSE shadow_observation_until END
-       WHERE id = $1
-         AND outcome = 'ACTIVE'`,
-      [trade.id, exit.price, resultR, outcome, exit.timestampUtc, observeAfterStop, trade.signal_window_end_at, exit.reason]
-    );
-    await cancelPendingPaperTargets(trade.id, exit.reason);
-    await query("UPDATE trade_plans SET status = 'CLOSED' WHERE id = $1", [trade.trade_plan_id]);
-    await query("INSERT INTO trade_events (trade_id, event_type, payload) VALUES ($1,'PAPER_AUTO_CLOSE',$2)", [
-      trade.id,
-      { mode: "PAPER", moduleCode: trade.module_code, exitReason: exit.reason, candle: exit.candle, settledFrom: "paper-ledger" }
-    ]);
-    await query(
-      `INSERT INTO journal_entries (
-        tenant_id, setup_candidate_id, trade_id, session_id, decision, emotion_after,
-        rule_violations, lesson, process_grade, outcome
-      ) VALUES ($6,$1,$2,$3,'PAPER_AUTO_CLOSE','AUTO','NONE',$4,'A',$5)`,
-      [
-        trade.setup_candidate_id,
-        trade.id,
-        trade.session_id,
-        `Paper trade auto-closed by ${exit.reason}. Result ${resultR.toFixed(2)}R.`,
-        outcome,
-        trade.tenant_id
-      ]
-    );
-  }
 }
 
 function paperTradeView(row: any) {

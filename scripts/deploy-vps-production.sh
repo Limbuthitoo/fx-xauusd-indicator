@@ -169,6 +169,7 @@ done
 echo "[8/9] Verifying deterministic target sequences and PostgreSQL lifecycle integrity"
 run_validation calendar:sync
 run_validation verify:modules
+run_validation validate:paper-lifecycle
 run_validation validate:mvp-runtime
 run_validation validate:signal-policy
 run_validation validate:production-observation
